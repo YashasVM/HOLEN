@@ -1,0 +1,45 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD}
+      APP_SECRET: ${APP_SECRET}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
+      MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
+      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-5}
+      MAX_TEMP_GB: ${MAX_TEMP_GB:-20}
+      FILE_TTL_SECONDS: ${FILE_TTL_SECONDS:-3600}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
+      DOWNLOAD_DIR: /downloads
+      SQLITE_PATH: /data/app.db
+    volumes:
+      - ${DOWNLOAD_DIR:-./downloads}:/downloads
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8888:80"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    depends_on:
+      frontend:
+        condition: service_started
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
