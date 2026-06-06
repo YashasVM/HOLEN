@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import {
   Download,
@@ -13,6 +13,7 @@ import {
   Play,
   Settings,
   ShieldCheck,
+  X,
 } from "lucide-react";
 
 /* ── Types ───────────────────────────────────────────────── */
@@ -45,8 +46,9 @@ type Job = {
   id: string;
   url: string;
   title?: string;
+  thumbnail?: string;
   format: "best" | "best_video" | "1080p" | "720p" | "audio" | "mp3";
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   progress: number;
   message?: string;
   file_name?: string;
@@ -65,7 +67,7 @@ const FMT_ICONS: Record<string, typeof Film> = {
 /* ── Helpers ─────────────────────────────────────────────── */
 
 function fmtDuration(s?: number): string {
-  if (!s) return "\u2014";
+  if (!s) return "—";
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = String(Math.floor(s % 60)).padStart(2, "0");
@@ -73,7 +75,7 @@ function fmtDuration(s?: number): string {
 }
 
 function fmtBytes(b?: number): string {
-  if (!b) return "\u2014";
+  if (!b) return "—";
   const units = ["B", "KB", "MB", "GB"];
   let val = b;
   let idx = 0;
@@ -82,6 +84,23 @@ function fmtBytes(b?: number): string {
     idx++;
   }
   return `${val.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function extractVideoId(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes("youtu.be")) return u.pathname.slice(1);
+    return u.searchParams.get("v");
+  } catch {
+    return null;
+  }
+}
+
+function getJobThumbnail(job: Job): string | null {
+  if (job.thumbnail) return job.thumbnail;
+  const vid = extractVideoId(job.url);
+  if (vid) return `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
+  return null;
 }
 
 /* ── Props ───────────────────────────────────────────────── */
@@ -105,6 +124,8 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const sseRef = useRef<EventSource | null>(null);
 
   const headers = useMemo(
     () => ({
@@ -114,9 +135,9 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     [token],
   );
 
-  /* ── API helper ─────────────────────────────────────── */
+  /* ── API helper ─────────────────────────────────────────── */
 
-  async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const r = await fetch(path, {
       ...init,
       headers: { ...headers, ...(init?.headers || {}) },
@@ -132,7 +153,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     return r.json();
   }
 
-  /* ── Backend password login ─────────────────────────── */
+  /* ── Backend password login ─────────────────────────────── */
 
   async function backendLogin(e: FormEvent) {
     e.preventDefault();
@@ -153,7 +174,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     }
   }
 
-  /* ── Analyze URL ────────────────────────────────────── */
+  /* ── Analyze URL ────────────────────────────────────────── */
 
   async function preview(e: FormEvent) {
     e.preventDefault();
@@ -162,7 +183,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     setMetadata(null);
     try {
       setMetadata(
-        await api<Metadata>("/api/analyze", {
+        await apiFetch<Metadata>("/api/analyze", {
           method: "POST",
           body: JSON.stringify({ url }),
         }),
@@ -174,16 +195,21 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     }
   }
 
-  /* ── Create download job ────────────────────────────── */
+  /* ── Create download job ────────────────────────────────── */
 
   async function createJob(format: Job["format"]) {
     if (!metadata) return;
     setBusy(true);
     setError("");
     try {
-      const job = await api<Job>("/api/jobs", {
+      const job = await apiFetch<Job>("/api/jobs", {
         method: "POST",
-        body: JSON.stringify({ url: metadata.webpage_url, format }),
+        body: JSON.stringify({
+          url: metadata.webpage_url,
+          format,
+          title: metadata.title,
+          thumbnail: metadata.thumbnail,
+        }),
       });
       setJobs((cur) => [job, ...cur.filter((j) => j.id !== job.id)]);
     } catch (err) {
@@ -193,29 +219,78 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     }
   }
 
-  /* ── Poll job status ────────────────────────────────── */
+  /* ── Cancel job ─────────────────────────────────────────── */
+
+  async function cancelJob(jobId: string) {
+    // Optimistic update
+    setJobs((cur) =>
+      cur.map((j) => (j.id === jobId ? { ...j, status: "cancelled" as const } : j)),
+    );
+    try {
+      await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+    } catch {
+      // SSE will correct the state if it failed
+    }
+  }
+
+  /* ── Secure blob download ───────────────────────────────── */
+
+  async function downloadFile(job: Job) {
+    if (!job.download_url) return;
+    setDownloading(job.id);
+    try {
+      const r = await fetch(job.download_url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error("Download failed");
+      const blob = await r.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = job.file_name || "download";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setDownloading(null);
+    }
+  }
+
+  /* ── SSE job stream ─────────────────────────────────────── */
 
   useEffect(() => {
     if (!token) return;
-    let cancelled = false;
-    const load = async () => {
+
+    // Initial load via REST
+    apiFetch<Job[]>("/api/jobs").then(setJobs).catch(() => setJobs([]));
+
+    // Open SSE stream
+    const es = new EventSource(`/api/jobs/stream?token=${encodeURIComponent(token)}`);
+    sseRef.current = es;
+
+    es.onmessage = (e) => {
       try {
-        const j = await api<Job[]>("/api/jobs");
-        if (!cancelled) setJobs(j);
+        setJobs(JSON.parse(e.data) as Job[]);
       } catch {
-        if (!cancelled) setJobs([]);
+        // ignore malformed frames
       }
     };
-    load();
-    const interval = setInterval(load, 2000);
+
+    es.onerror = () => {
+      // Browser auto-reconnects; no action needed
+    };
+
     return () => {
-      cancelled = true;
-      clearInterval(interval);
+      es.close();
+      sseRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  /* ── Download options ───────────────────────────────── */
+  /* ── Download options ───────────────────────────────────── */
 
   const dlOptions = useMemo(() => {
     if (!metadata) return [];
@@ -234,7 +309,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     return list;
   }, [metadata]);
 
-  /* ── App Password Gate ─────────────────────────────── */
+  /* ── App Password Gate ──────────────────────────────────── */
 
   if (!token) {
     return (
@@ -306,7 +381,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     );
   }
 
-  /* ── Main Downloader UI ────────────────────────────── */
+  /* ── Main Downloader UI ─────────────────────────────────── */
 
   return (
     <main className="app-shell fade-in">
@@ -450,7 +525,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
                   <span>{f.ext || f.format_id}</span>
                   <span>
                     {f.resolution ||
-                      (f.vcodec === "none" ? "audio" : "\u2014")}
+                      (f.vcodec === "none" ? "audio" : "—")}
                   </span>
                   <span>{fmtBytes(f.filesize)}</span>
                 </div>
@@ -468,47 +543,95 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
           </h2>
         </div>
         <div className="job-list">
-          {jobs.map((job) => (
-            <article className="job-card" key={job.id}>
-              <div className="job-top">
-                <span className={`badge ${job.status}`}>{job.status}</span>
-                <strong>{job.file_name || job.url}</strong>
-              </div>
-              <div className="progress-bar">
-                <div
-                  className="progress-fill"
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(
-                    Math.max(0, Math.min(100, job.progress)),
+          {jobs.map((job) => {
+            const thumb = getJobThumbnail(job);
+            const canCancel = job.status === "queued" || job.status === "running";
+            const isDownloading = downloading === job.id;
+            return (
+              <article className="job-card" key={job.id}>
+                <div className="job-card-inner">
+                  {/* Thumbnail */}
+                  {thumb ? (
+                    <img className="job-thumb" src={thumb} alt="" loading="lazy" />
+                  ) : (
+                    <div className="job-thumb-placeholder">
+                      {job.format.includes("audio") || job.format === "mp3" ? (
+                        <Music size={20} />
+                      ) : (
+                        <Film size={20} />
+                      )}
+                    </div>
                   )}
-                  style={{
-                    width: `${Math.max(0, Math.min(100, job.progress))}%`,
-                  }}
-                />
-              </div>
-              <div className="job-bottom">
-                <span>{job.message || job.format}</span>
+                  {/* Content */}
+                  <div className="job-content">
+                    <div className="job-top">
+                      <span className={`badge ${job.status}`}>{job.status}</span>
+                      <strong>{job.title || job.file_name || job.url}</strong>
+                      {canCancel && (
+                        <button
+                          className="btn btn-dark"
+                          type="button"
+                          title="Cancel job"
+                          onClick={() => cancelJob(job.id)}
+                          style={{ marginLeft: "auto", padding: "2px 6px", minWidth: 0 }}
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="progress-bar">
+                      <div
+                        className="progress-fill"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(
+                          Math.max(0, Math.min(100, job.progress)),
+                        )}
+                        style={{
+                          width: `${Math.max(0, Math.min(100, job.progress))}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="job-bottom">
+                      <span>{job.message || job.format}</span>
+                    </div>
+                  </div>
+                </div>
+                {/* Secure Download Button */}
                 {job.download_url && (
-                  <a
-                    className="save-link"
-                    href={`${job.download_url}?token=${token}`}
-                    download
+                  <button
+                    className="download-btn"
+                    type="button"
+                    onClick={() => downloadFile(job)}
+                    disabled={isDownloading}
                   >
-                    <Download size={12} /> Save
-                  </a>
+                    {isDownloading ? (
+                      <Loader2 className="spin" size={16} />
+                    ) : (
+                      <Download size={16} />
+                    )}
+                    <span>{isDownloading ? "Saving…" : "Download"}</span>
+                  </button>
                 )}
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
           {!jobs.length && (
             <p className="empty-msg">
-              No jobs yet \u2014 paste a URL above to start.
+              No jobs yet — paste a URL above to start.
             </p>
           )}
         </div>
       </section>
+
+      {/* Watermark */}
+      <footer className="watermark">
+        made by{" "}
+        <a href="https://github.com/YashasVM" target="_blank" rel="noopener noreferrer">
+          @yashas.vm
+        </a>
+      </footer>
     </main>
   );
 }
