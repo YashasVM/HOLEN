@@ -10,10 +10,13 @@ import platform
 import re
 import secrets
 import shutil
+import smtplib
 import sqlite3
 import subprocess
 import threading
 import time
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,7 +28,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 
-APP_PASSWORD = os.environ["APP_PASSWORD"]
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 APP_SECRET = os.environ["APP_SECRET"].encode("utf-8")
 PUBLIC_ORIGIN = os.environ.get("PUBLIC_ORIGIN", "http://localhost:8080")
 DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "./downloads")).resolve()
@@ -37,7 +40,11 @@ MAX_QUEUED_JOBS = int(os.environ.get("MAX_QUEUED_JOBS", "5"))
 MAX_TEMP_GB = float(os.environ.get("MAX_TEMP_GB", "20"))
 FILE_TTL_SECONDS = int(os.environ.get("FILE_TTL_SECONDS", str(60 * 60)))
 CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", str(15 * 60)))
+YTDLP_AUTO_UPDATE_HOURS = int(os.environ.get("YTDLP_AUTO_UPDATE_HOURS", "0"))  # 0 = disabled
 SERVER_START_TIME = time.time()
+
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -45,14 +52,19 @@ SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
 db_lock = threading.Lock()
 scheduler_lock: asyncio.Lock | None = None
 
-# SSE: set of queues, one per connected client
+# SSE clients
 _sse_clients: set[asyncio.Queue] = set()
 
-# Running subprocess handles keyed by job_id
+# Running subprocess handles
 running_processes: dict[str, asyncio.subprocess.Process] = {}
 
-# Rate limiting: token subject -> list of call timestamps
+# Rate limiting
 _analyze_calls: dict[str, list[float]] = {}
+
+# yt-dlp update state
+_ytdlp_update_log: list[str] = []
+_ytdlp_updating = False
+_ytdlp_auto_update_hours = YTDLP_AUTO_UPDATE_HOURS
 
 
 class LoginRequest(BaseModel):
@@ -69,6 +81,14 @@ class JobRequest(UrlRequest):
     thumbnail: str | None = None
 
 
+class BulkJobRequest(BaseModel):
+    items: list[JobRequest] = Field(min_length=1, max_length=50)
+
+
+class UpdateScheduleRequest(BaseModel):
+    hours: int = Field(ge=0, le=168)  # 0=off, up to weekly
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global scheduler_lock
@@ -77,10 +97,12 @@ async def lifespan(_: FastAPI):
     cleanup_expired()
     await schedule_next_jobs()
     cleanup_task = asyncio.create_task(cleanup_loop())
+    ytdlp_task = asyncio.create_task(ytdlp_auto_update_loop())
     try:
         yield
     finally:
         cleanup_task.cancel()
+        ytdlp_task.cancel()
 
 
 app = FastAPI(title="Homelab Downloader", lifespan=lifespan)
@@ -143,11 +165,9 @@ def verify_token(token: str) -> dict[str, Any]:
         body, signature = token.split(".", 1)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail="Invalid token") from exc
-
     expected = b64url(hmac.new(APP_SECRET, body.encode("ascii"), hashlib.sha256).digest())
     if not hmac.compare_digest(signature, expected):
         raise HTTPException(status_code=401, detail="Invalid token")
-
     padded = body + ("=" * (-len(body) % 4))
     payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
     if payload.get("exp", 0) < int(time.time()):
@@ -180,14 +200,23 @@ def validate_url(url: str) -> str:
     allowed_hosts = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
     if host not in allowed_hosts:
         raise HTTPException(status_code=400, detail="Only YouTube URLs are allowed for this private tool")
-    query = parse_qs(parsed.query)
-    if "list" in query or parsed.path.startswith("/playlist"):
-        raise HTTPException(status_code=400, detail="Playlists are disabled. Paste a single video URL")
     return url.strip()
 
 
+def is_playlist_url(url: str) -> bool:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    return "list" in query or parsed.path.startswith("/playlist")
+
+
+def validate_single_video_url(url: str) -> str:
+    url = validate_url(url)
+    if is_playlist_url(url):
+        raise HTTPException(status_code=400, detail="Playlists are disabled on this endpoint. Use /api/playlist")
+    return url
+
+
 def _notify_sse(jobs: list[dict[str, Any]]) -> None:
-    """Push updated job list to all connected SSE clients."""
     if not _sse_clients:
         return
     data = json.dumps(jobs)
@@ -208,7 +237,6 @@ def update_job(job_id: str, **fields: Any) -> None:
         conn.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", values)
         conn.commit()
         rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50").fetchall()
-    # Notify SSE clients after every job update
     jobs = [row_to_job(row) for row in rows]
     try:
         loop = asyncio.get_event_loop()
@@ -249,14 +277,9 @@ def ensure_temp_capacity() -> None:
 
 
 def reset_interrupted_jobs() -> None:
-    """On restart: fail running jobs (can't resume), leave queued jobs alone."""
     with db_lock, open_db() as conn:
         conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'failed', message = 'Server restarted during this job', updated_at = ?
-            WHERE status = 'running'
-            """,
+            "UPDATE jobs SET status = 'failed', message = 'Server restarted during this job', updated_at = ? WHERE status = 'running'",
             (now_iso(),),
         )
         conn.commit()
@@ -275,15 +298,10 @@ def cleanup_expired() -> None:
                 if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
                     path.unlink(missing_ok=True)
             conn.execute(
-                """
-                UPDATE jobs
-                SET file_path = NULL, file_name = NULL, message = 'Expired and deleted', updated_at = ?
-                WHERE id = ?
-                """,
+                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = 'Expired and deleted', updated_at = ? WHERE id = ?",
                 (cutoff, row["id"]),
             )
         conn.commit()
-
     for path in DOWNLOAD_DIR.glob("*"):
         if path.is_file() and path.stat().st_mtime < time.time() - FILE_TTL_SECONDS:
             path.unlink(missing_ok=True)
@@ -294,6 +312,44 @@ async def cleanup_loop() -> None:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
         cleanup_expired()
 
+
+# ── yt-dlp update ─────────────────────────────────────────────────────────────
+
+async def ytdlp_auto_update_loop() -> None:
+    while True:
+        hours = _ytdlp_auto_update_hours
+        if hours <= 0:
+            await asyncio.sleep(3600)
+            continue
+        await asyncio.sleep(hours * 3600)
+        await _do_ytdlp_update()
+
+
+async def _do_ytdlp_update() -> None:
+    global _ytdlp_updating
+    if _ytdlp_updating:
+        return
+    _ytdlp_updating = True
+    _ytdlp_update_log.clear()
+    _ytdlp_update_log.append(f"[{now_iso()}] Starting yt-dlp update…")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "yt-dlp", "-U",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert proc.stdout
+        async for line in proc.stdout:
+            _ytdlp_update_log.append(line.decode("utf-8", errors="replace").strip())
+        await proc.wait()
+        _ytdlp_update_log.append(f"[{now_iso()}] Done (exit {proc.returncode})")
+    except Exception as e:
+        _ytdlp_update_log.append(f"Error: {e}")
+    finally:
+        _ytdlp_updating = False
+
+
+# ── Format helpers ─────────────────────────────────────────────────────────────
 
 def normalized_options(info: dict[str, Any]) -> list[dict[str, Any]]:
     heights = sorted(
@@ -307,75 +363,70 @@ def normalized_options(info: dict[str, Any]) -> list[dict[str, Any]]:
     max_height = heights[0] if heights else 0
     has_audio = any(item.get("acodec") != "none" for item in info.get("formats", []))
     return [
-        {
-            "id": "best",
-            "label": "4K / Best",
-            "description": "Highest available quality with automatic fallback",
-            "available": max_height > 0,
-            "detail": f"Up to {max_height}p" if max_height else "Unavailable",
-        },
-        {
-            "id": "1080p",
-            "label": "1080p",
-            "description": "MP4 video capped at 1080p",
-            "available": max_height >= 1080,
-            "detail": "Available" if max_height >= 1080 else "Falls back lower",
-        },
-        {
-            "id": "720p",
-            "label": "720p",
-            "description": "MP4 video capped at 720p",
-            "available": max_height >= 720,
-            "detail": "Available" if max_height >= 720 else "Falls back lower",
-        },
-        {
-            "id": "audio",
-            "label": "Audio Only",
-            "description": "Best audio stream",
-            "available": has_audio,
-            "detail": "Best audio" if has_audio else "Unavailable",
-        },
+        {"id": "best", "label": "4K / Best", "description": "Highest available quality", "available": max_height > 0, "detail": f"Up to {max_height}p" if max_height else "Unavailable"},
+        {"id": "1080p", "label": "1080p", "description": "MP4 capped at 1080p", "available": max_height >= 1080, "detail": "Available" if max_height >= 1080 else "Falls back lower"},
+        {"id": "720p", "label": "720p", "description": "MP4 capped at 720p", "available": max_height >= 720, "detail": "Available" if max_height >= 720 else "Falls back lower"},
+        {"id": "audio", "label": "Audio Only", "description": "Best audio stream", "available": has_audio, "detail": "Best audio" if has_audio else "Unavailable"},
     ]
 
 
 def run_metadata(url: str) -> dict[str, Any]:
     completed = subprocess.run(
         ["yt-dlp", "--dump-single-json", "--no-playlist", "--no-warnings", url],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=45,
+        check=False, capture_output=True, text=True, timeout=45,
     )
     if completed.returncode != 0:
         raise HTTPException(status_code=400, detail=(completed.stderr or "Metadata lookup failed")[-500:])
     info = json.loads(completed.stdout)
     if info.get("_type") == "playlist" or info.get("entries"):
-        raise HTTPException(status_code=400, detail="Playlists are disabled. Paste a single video URL")
+        raise HTTPException(status_code=400, detail="Use /api/playlist for playlists")
     duration = info.get("duration")
     if isinstance(duration, (int, float)) and duration > MAX_DURATION_SECONDS:
         raise HTTPException(status_code=400, detail=f"Videos must be {MAX_DURATION_SECONDS // 60} minutes or shorter")
     formats = [
-        {
-            "format_id": item.get("format_id"),
-            "ext": item.get("ext"),
-            "resolution": item.get("resolution"),
-            "fps": item.get("fps"),
-            "filesize": item.get("filesize") or item.get("filesize_approx"),
-            "vcodec": item.get("vcodec"),
-            "acodec": item.get("acodec"),
-            "height": item.get("height"),
-        }
-        for item in info.get("formats", [])
-        if item.get("format_id")
+        {"format_id": f.get("format_id"), "ext": f.get("ext"), "resolution": f.get("resolution"),
+         "fps": f.get("fps"), "filesize": f.get("filesize") or f.get("filesize_approx"),
+         "vcodec": f.get("vcodec"), "acodec": f.get("acodec"), "height": f.get("height")}
+        for f in info.get("formats", []) if f.get("format_id")
     ]
+    return {
+        "title": info.get("title"), "thumbnail": info.get("thumbnail"),
+        "duration": duration, "uploader": info.get("uploader"),
+        "webpage_url": info.get("webpage_url") or url,
+        "formats": formats[-12:], "options": normalized_options(info),
+    }
+
+
+def run_playlist_metadata(url: str) -> dict[str, Any]:
+    """Fetch playlist metadata with all video entries (titles + thumbnails only, no format enumeration)."""
+    completed = subprocess.run(
+        [
+            "yt-dlp", "--dump-single-json", "--flat-playlist", "--no-warnings",
+            "--playlist-end", "200",  # cap at 200 videos
+            url,
+        ],
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    if completed.returncode != 0:
+        raise HTTPException(status_code=400, detail=(completed.stderr or "Playlist lookup failed")[-500:])
+    info = json.loads(completed.stdout)
+    entries = info.get("entries") or []
+    videos = []
+    for entry in entries:
+        vid_id = entry.get("id") or entry.get("url", "").split("v=")[-1]
+        videos.append({
+            "id": vid_id,
+            "title": entry.get("title") or entry.get("url"),
+            "thumbnail": entry.get("thumbnail") or (f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg" if vid_id else None),
+            "duration": entry.get("duration"),
+            "url": entry.get("url") if entry.get("url", "").startswith("http") else f"https://www.youtube.com/watch?v={vid_id}",
+        })
     return {
         "title": info.get("title"),
         "thumbnail": info.get("thumbnail"),
-        "duration": duration,
         "uploader": info.get("uploader"),
-        "webpage_url": info.get("webpage_url") or url,
-        "formats": formats[-12:],
-        "options": normalized_options(info),
+        "video_count": len(videos),
+        "videos": videos,
     }
 
 
@@ -384,14 +435,7 @@ def output_template(job_id: str) -> str:
 
 
 def command_for(job_id: str, url: str, selected_format: str) -> list[str]:
-    base = [
-        "yt-dlp",
-        "--newline",
-        "--no-playlist",
-        "--restrict-filenames",
-        "-o",
-        output_template(job_id),
-    ]
+    base = ["yt-dlp", "--newline", "--no-playlist", "--restrict-filenames", "-o", output_template(job_id)]
     if selected_format == "best_video":
         return base + ["-f", "bv*+ba/b", "--merge-output-format", "mp4", url]
     if selected_format == "1080p":
@@ -406,7 +450,7 @@ def command_for(job_id: str, url: str, selected_format: str) -> list[str]:
 
 
 def detect_output_file(job_id: str) -> Path | None:
-    files = sorted(DOWNLOAD_DIR.glob(f"{job_id}.*"), key=lambda path: path.stat().st_mtime, reverse=True)
+    files = sorted(DOWNLOAD_DIR.glob(f"{job_id}.*"), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
 
@@ -433,7 +477,6 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
         if match:
             new_progress = float(match.group(1))
             now = time.monotonic()
-            # Throttle: write only if progress changed ≥2% or ≥3s elapsed
             if abs(new_progress - last_written_progress) >= 2.0 or (now - last_write_time) >= 3.0:
                 update_job(job_id, progress=new_progress, message=last_message)
                 last_written_progress = new_progress
@@ -444,7 +487,6 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
     running_processes.pop(job_id, None)
     return_code = await process.wait()
 
-    # Check if job was cancelled while running
     with db_lock, open_db() as conn:
         row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
     if row and row["status"] == "cancelled":
@@ -463,10 +505,7 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
 
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=FILE_TTL_SECONDS)
     update_job(
-        job_id,
-        status="completed",
-        progress=100,
-        message="Ready",
+        job_id, status="completed", progress=100, message="Ready",
         file_path=str(file_path),
         file_name=file_path.name.removeprefix(f"{job_id}."),
         expires_at=expires_at.isoformat(),
@@ -497,43 +536,143 @@ async def schedule_next_jobs() -> None:
             asyncio.create_task(run_job(row["id"], row["url"], row["format"]))
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
+def _insert_job(url: str, title: str | None, thumbnail: str | None, fmt: str) -> dict[str, Any]:
+    job_id = secrets.token_urlsafe(12)
+    created_at = now_iso()
+    with db_lock, open_db() as conn:
+        conn.execute(
+            "INSERT INTO jobs (id, url, title, thumbnail, format, status, progress, message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'queued', 0, 'Queued', ?, ?)",
+            (job_id, url, title, thumbnail, fmt, created_at, created_at),
+        )
+        conn.commit()
+    return get_job_or_404(job_id)
+
+
+# ── Email ──────────────────────────────────────────────────────────────────────
+
+def send_approval_email(to_email: str, name: str) -> None:
+    if not SMTP_USER or not SMTP_PASS:
+        return
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "You've been approved — HOLEN"
+    msg["From"] = f"HOLEN <{SMTP_USER}>"
+    msg["To"] = to_email
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:'DM Sans',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;padding:40px 0;">
+    <tr><td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" style="background:#111;border:2px solid #222;max-width:480px;width:100%;">
+        <tr><td style="padding:0;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="background:#e63329;width:33.33%;height:6px;"></td>
+            <td style="background:#1d7ce0;width:33.33%;height:6px;"></td>
+            <td style="background:#f0c419;width:33.33%;height:6px;"></td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:32px 40px 0;">
+          <table cellpadding="0" cellspacing="0"><tr>
+            <td style="background:#e63329;width:36px;height:36px;text-align:center;vertical-align:middle;">
+              <span style="color:#fff;font-size:18px;font-weight:900;line-height:36px;">&#9660;</span>
+            </td>
+            <td style="padding-left:12px;">
+              <div style="color:#fff;font-size:18px;font-weight:900;letter-spacing:0.08em;text-transform:uppercase;">HOLEN</div>
+              <div style="color:#666;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;margin-top:1px;">Private Downloader</div>
+            </td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:28px 40px 0;">
+          <table cellpadding="0" cellspacing="0"><tr>
+            <td style="background:#1d7ce0;padding:4px 10px;">
+              <span style="color:#fff;font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">Access Granted</span>
+            </td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:16px 40px 0;">
+          <div style="color:#fff;font-size:22px;font-weight:700;line-height:1.3;">You're in,<br/>{name}.</div>
+        </td></tr>
+        <tr><td style="padding:16px 40px 28px;">
+          <div style="color:#888;font-size:14px;line-height:1.7;">
+            An admin has approved your access to <strong style="color:#ccc;">HOLEN</strong>.<br/>
+            You can now sign in and start downloading.
+          </div>
+          <table cellpadding="0" cellspacing="0" style="margin-top:24px;"><tr>
+            <td style="background:#f0c419;width:32px;height:3px;"></td>
+            <td style="background:#e63329;width:16px;height:3px;"></td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:0;">
+          <table width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td style="background:#f0c419;height:3px;"></td>
+          </tr></table>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
+
+
+class NotifyApprovedRequest(BaseModel):
+    email: str
+    name: str | None = None
+
+
+@app.post("/api/notify/approved", dependencies=[Depends(require_auth)])
+def notify_approved(payload: NotifyApprovedRequest) -> dict[str, str]:
+    try:
+        name = payload.name or payload.email.split("@")[0]
+        send_approval_email(payload.email, name)
+        return {"detail": "sent"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ── Health ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     try:
-        result = subprocess.run(
-            ["yt-dlp", "--version"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
+        result = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=5, check=False)
         ytdlp_version = result.stdout.strip() if result.returncode == 0 else "unknown"
     except Exception:
         ytdlp_version = "unknown"
     return {"status": "ok", "yt_dlp_version": ytdlp_version}
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
+# ── Auth ───────────────────────────────────────────────────────────────────────
 
 @app.post("/api/auth/login")
+@app.post("/api/session/login")
 def login(payload: LoginRequest) -> dict[str, str]:
-    expected_pw = os.getenv("APP_PASSWORD", "dev")
-    if not secrets.compare_digest(payload.password.strip(), expected_pw):
-        raise HTTPException(status_code=401, detail="Wrong password")
+    """
+    If APP_PASSWORD is set, validate it. Otherwise auto-issue a token
+    (access is already gated by Convex auth + admin approval).
+    """
+    if APP_PASSWORD:
+        if not secrets.compare_digest(payload.password.strip(), APP_PASSWORD):
+            raise HTTPException(status_code=401, detail="Wrong password")
     token = sign({"sub": "shared", "exp": int(time.time()) + TOKEN_TTL_SECONDS})
     return {"token": token}
 
 
-@app.post("/api/session/login")
-def session_login(payload: LoginRequest) -> dict[str, str]:
-    return login(payload)
+@app.post("/api/token/auto")
+def auto_token() -> dict[str, str]:
+    """Issue a token without any password — used when APP_PASSWORD is not set."""
+    token = sign({"sub": "shared", "exp": int(time.time()) + TOKEN_TTL_SECONDS})
+    return {"token": token}
 
 
-# ── Analyze ───────────────────────────────────────────────────────────────────
+# ── Analyze ────────────────────────────────────────────────────────────────────
 
-@app.post("/api/metadata", dependencies=[Depends(require_auth)])
-@app.post("/api/analyze", dependencies=[Depends(require_auth)])
+@app.post("/api/metadata")
+@app.post("/api/analyze")
 def metadata(payload: UrlRequest, auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
-    # Rate limit: 10 calls per minute per token subject
     subject = auth.get("sub", "unknown")
     now = time.time()
     calls = _analyze_calls.setdefault(subject, [])
@@ -541,21 +680,42 @@ def metadata(payload: UrlRequest, auth: dict[str, Any] = Depends(require_auth)) 
     if len(_analyze_calls[subject]) >= 10:
         raise HTTPException(status_code=429, detail="Rate limit: 10 analyzes per minute")
     _analyze_calls[subject].append(now)
-    return run_metadata(validate_url(payload.url))
+    return run_metadata(validate_single_video_url(payload.url))
 
 
-# ── Jobs ──────────────────────────────────────────────────────────────────────
+@app.post("/api/playlist")
+def playlist_metadata(payload: UrlRequest, _auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    url = validate_url(payload.url)
+    if not is_playlist_url(url):
+        # single video — just return its metadata as a 1-item playlist
+        meta = run_metadata(url)
+        return {
+            "title": meta.get("title"),
+            "thumbnail": meta.get("thumbnail"),
+            "uploader": meta.get("uploader"),
+            "video_count": 1,
+            "videos": [{
+                "id": "",
+                "title": meta.get("title"),
+                "thumbnail": meta.get("thumbnail"),
+                "duration": meta.get("duration"),
+                "url": meta.get("webpage_url") or url,
+            }],
+        }
+    return run_playlist_metadata(url)
 
-@app.post("/api/jobs", dependencies=[Depends(require_auth)])
-async def create_job(payload: JobRequest) -> dict[str, Any]:
+
+# ── Jobs ───────────────────────────────────────────────────────────────────────
+
+@app.post("/api/jobs")
+async def create_job(payload: JobRequest, _auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     url = validate_url(payload.url)
     ensure_temp_capacity()
     with db_lock, open_db() as conn:
         queued_count = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").fetchone()[0]
     if queued_count >= MAX_QUEUED_JOBS:
-        raise HTTPException(status_code=429, detail=f"Queue is full. Try again after one of the {MAX_QUEUED_JOBS} queued jobs starts")
+        raise HTTPException(status_code=429, detail=f"Queue is full ({MAX_QUEUED_JOBS} max)")
 
-    # Use client-supplied title/thumbnail if provided; skip metadata fetch
     title = payload.title
     thumbnail = payload.thumbnail
     if not title or not thumbnail:
@@ -566,35 +726,45 @@ async def create_job(payload: JobRequest) -> dict[str, Any]:
         except Exception:
             pass
 
-    job_id = secrets.token_urlsafe(12)
-    created_at = now_iso()
-    with db_lock, open_db() as conn:
-        conn.execute(
-            """
-            INSERT INTO jobs (id, url, title, thumbnail, format, status, progress, message, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'queued', 0, 'Queued', ?, ?)
-            """,
-            (job_id, url, title, thumbnail, payload.format, created_at, created_at),
-        )
-        conn.commit()
+    job = _insert_job(url, title, thumbnail, payload.format)
     await schedule_next_jobs()
-    return get_job_or_404(job_id)
+    return job
 
 
-@app.get("/api/jobs", dependencies=[Depends(require_auth)])
-def list_jobs() -> list[dict[str, Any]]:
+@app.post("/api/jobs/bulk")
+async def create_bulk_jobs(payload: BulkJobRequest, _auth: dict[str, Any] = Depends(require_auth)) -> list[dict[str, Any]]:
+    """Create multiple jobs at once (for playlist bulk download)."""
+    ensure_temp_capacity()
+    with db_lock, open_db() as conn:
+        queued_count = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").fetchone()[0]
+    available_slots = MAX_QUEUED_JOBS - queued_count
+    if available_slots <= 0:
+        raise HTTPException(status_code=429, detail=f"Queue is full ({MAX_QUEUED_JOBS} max)")
+
+    items = payload.items[:available_slots]
+    created = []
+    for item in items:
+        url = validate_url(item.url)
+        job = _insert_job(url, item.title, item.thumbnail, item.format)
+        created.append(job)
+
+    await schedule_next_jobs()
+    return created
+
+
+@app.get("/api/jobs")
+def list_jobs(_auth: dict[str, Any] = Depends(require_auth)) -> list[dict[str, Any]]:
     with db_lock, open_db() as conn:
         rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50").fetchall()
     return [row_to_job(row) for row in rows]
 
 
-@app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_auth)])
-async def cancel_job(job_id: str) -> dict[str, str]:
+@app.delete("/api/jobs/{job_id}")
+async def cancel_job(job_id: str, _auth: dict[str, Any] = Depends(require_auth)) -> dict[str, str]:
     job = get_job_or_404(job_id)
-    status = job["status"]
-    if status in ("completed", "failed", "cancelled"):
-        raise HTTPException(status_code=409, detail=f"Job is already {status}")
-    if status == "running":
+    if job["status"] in ("completed", "failed", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Job is already {job['status']}")
+    if job["status"] == "running":
         proc = running_processes.get(job_id)
         if proc:
             try:
@@ -605,8 +775,8 @@ async def cancel_job(job_id: str) -> dict[str, str]:
     return {"detail": "Cancelled"}
 
 
-@app.get("/api/admin/jobs", dependencies=[Depends(require_auth)])
-def admin_jobs() -> dict[str, Any]:
+@app.get("/api/admin/jobs")
+def admin_jobs(_auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     with db_lock, open_db() as conn:
         rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100").fetchall()
         total_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -617,63 +787,64 @@ def admin_jobs() -> dict[str, Any]:
     usage = shutil.disk_usage(DOWNLOAD_DIR)
     return {
         "jobs": [row_to_job(row) for row in rows],
-        "temp": {
-            "used_bytes": directory_size_bytes(DOWNLOAD_DIR),
-            "limit_bytes": int(MAX_TEMP_GB * 1024 * 1024 * 1024),
-            "free_bytes": usage.free,
-        },
-        "limits": {
-            "max_duration_seconds": MAX_DURATION_SECONDS,
-            "max_active_jobs": MAX_ACTIVE_JOBS,
-            "max_queued_jobs": MAX_QUEUED_JOBS,
-            "file_ttl_seconds": FILE_TTL_SECONDS,
-        },
-        "system": {
-            "platform": platform.system(),
-            "python": platform.python_version(),
-            "uptime_seconds": round(time.time() - SERVER_START_TIME, 1),
-            "pid": os.getpid(),
-        },
-        "disk": {
-            "total_bytes": usage.total,
-            "used_bytes": usage.used,
-            "free_bytes": usage.free,
-            "percent_used": round(usage.used / usage.total * 100, 1),
-        },
-        "job_stats": {
-            "total": total_count,
-            "running": running_count,
-            "queued": queued_count,
-            "completed": completed_count,
-            "failed": failed_count,
-        },
+        "temp": {"used_bytes": directory_size_bytes(DOWNLOAD_DIR), "limit_bytes": int(MAX_TEMP_GB * 1024 * 1024 * 1024), "free_bytes": usage.free},
+        "limits": {"max_duration_seconds": MAX_DURATION_SECONDS, "max_active_jobs": MAX_ACTIVE_JOBS, "max_queued_jobs": MAX_QUEUED_JOBS, "file_ttl_seconds": FILE_TTL_SECONDS},
+        "system": {"platform": platform.system(), "python": platform.python_version(), "uptime_seconds": round(time.time() - SERVER_START_TIME, 1), "pid": os.getpid()},
+        "disk": {"total_bytes": usage.total, "used_bytes": usage.used, "free_bytes": usage.free, "percent_used": round(usage.used / usage.total * 100, 1)},
+        "job_stats": {"total": total_count, "running": running_count, "queued": queued_count, "completed": completed_count, "failed": failed_count},
     }
 
 
+# ── yt-dlp admin endpoints ─────────────────────────────────────────────────────
+
+@app.post("/api/admin/ytdlp/update")
+async def trigger_ytdlp_update(_auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    asyncio.create_task(_do_ytdlp_update())
+    return {"detail": "Update started"}
+
+
+@app.get("/api/admin/ytdlp/status")
+def ytdlp_status(_auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        result = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=5, check=False)
+        version = result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        version = "unknown"
+    return {
+        "version": version,
+        "updating": _ytdlp_updating,
+        "log": _ytdlp_update_log[-50:],
+        "auto_update_hours": _ytdlp_auto_update_hours,
+    }
+
+
+@app.post("/api/admin/ytdlp/schedule")
+def set_ytdlp_schedule(payload: UpdateScheduleRequest, _auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    global _ytdlp_auto_update_hours
+    _ytdlp_auto_update_hours = payload.hours
+    return {"auto_update_hours": _ytdlp_auto_update_hours}
+
+
+# ── SSE ────────────────────────────────────────────────────────────────────────
+
 @app.get("/api/jobs/stream")
 async def jobs_stream(token: str | None = Query(default=None)) -> StreamingResponse:
-    """SSE endpoint — streams job list updates to connected clients."""
     if not token:
         raise HTTPException(status_code=401, detail="Missing token")
     verify_token(token)
-
     queue: asyncio.Queue = asyncio.Queue(maxsize=20)
     _sse_clients.add(queue)
 
     async def event_generator():
         try:
-            # Send current state immediately on connect
             with db_lock, open_db() as conn:
                 rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50").fetchall()
-            initial = json.dumps([row_to_job(row) for row in rows])
-            yield f"data: {initial}\n\n"
-
+            yield f"data: {json.dumps([row_to_job(r) for r in rows])}\n\n"
             while True:
                 try:
                     data = await asyncio.wait_for(queue.get(), timeout=25.0)
                     yield f"data: {data}\n\n"
                 except asyncio.TimeoutError:
-                    # Keepalive ping
                     yield ": ping\n\n"
         except asyncio.CancelledError:
             pass
@@ -683,19 +854,16 @@ async def jobs_stream(token: str | None = Query(default=None)) -> StreamingRespo
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable nginx buffering
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-@app.get("/api/jobs/{job_id}", dependencies=[Depends(require_auth)])
-def get_job(job_id: str) -> dict[str, Any]:
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str, _auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     return get_job_or_404(job_id)
 
 
-# ── File download ─────────────────────────────────────────────────────────────
+# ── File download ──────────────────────────────────────────────────────────────
 
 @app.get("/api/files/{job_id}")
 @app.get("/api/jobs/{job_id}/download")
