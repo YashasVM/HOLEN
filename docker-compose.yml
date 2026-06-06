@@ -15,8 +15,6 @@ services:
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
       DOWNLOAD_DIR: /downloads
       SQLITE_PATH: /data/app.db
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
     volumes:
       - ${DOWNLOAD_DIR:-./downloads}:/downloads
       - ./data:/data
