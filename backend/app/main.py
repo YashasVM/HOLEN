@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -33,10 +33,12 @@ SQLITE_PATH = Path(os.environ.get("SQLITE_PATH", "./data/app.db")).resolve()
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 MAX_DURATION_SECONDS = int(os.environ.get("MAX_DURATION_SECONDS", str(2 * 60 * 60)))
 MAX_ACTIVE_JOBS = int(os.environ.get("MAX_ACTIVE_JOBS", "1"))
-MAX_QUEUED_JOBS = int(os.environ.get("MAX_QUEUED_JOBS", "5"))
+MAX_QUEUED_JOBS = int(os.environ.get("MAX_QUEUED_JOBS", "25"))
 MAX_TEMP_GB = float(os.environ.get("MAX_TEMP_GB", "20"))
+PLEX_THRESHOLD_GB = 15.0
 FILE_TTL_SECONDS = int(os.environ.get("FILE_TTL_SECONDS", str(60 * 60)))
 CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", str(15 * 60)))
+YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")  # e.g. /cookies/cookies.txt
 SERVER_START_TIME = time.time()
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -180,9 +182,6 @@ def validate_url(url: str) -> str:
     allowed_hosts = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
     if host not in allowed_hosts:
         raise HTTPException(status_code=400, detail="Only YouTube URLs are allowed for this private tool")
-    query = parse_qs(parsed.query)
-    if "list" in query or parsed.path.startswith("/playlist"):
-        raise HTTPException(status_code=400, detail="Playlists are disabled. Paste a single video URL")
     return url.strip()
 
 
@@ -263,11 +262,13 @@ def reset_interrupted_jobs() -> None:
 
 
 def cleanup_expired() -> None:
-    cutoff = now_iso()
+    """Delete all cached files when storage hits 15 GB."""
+    threshold = int(PLEX_THRESHOLD_GB * 1024 * 1024 * 1024)
+    if directory_size_bytes(DOWNLOAD_DIR) < threshold:
+        return
     with db_lock, open_db() as conn:
         rows = conn.execute(
-            "SELECT id, file_path FROM jobs WHERE expires_at IS NOT NULL AND expires_at < ?",
-            (cutoff,),
+            "SELECT id, file_path FROM jobs WHERE file_path IS NOT NULL AND status = 'completed'"
         ).fetchall()
         for row in rows:
             if row["file_path"]:
@@ -275,17 +276,14 @@ def cleanup_expired() -> None:
                 if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
                     path.unlink(missing_ok=True)
             conn.execute(
-                """
-                UPDATE jobs
-                SET file_path = NULL, file_name = NULL, message = 'Expired and deleted', updated_at = ?
-                WHERE id = ?
-                """,
-                (cutoff, row["id"]),
+                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = 'Auto-deleted: storage limit reached', updated_at = ? WHERE id = ?",
+                (now_iso(), row["id"]),
             )
         conn.commit()
 
+    # Also remove any orphan files in the download dir
     for path in DOWNLOAD_DIR.glob("*"):
-        if path.is_file() and path.stat().st_mtime < time.time() - FILE_TTL_SECONDS:
+        if path.is_file():
             path.unlink(missing_ok=True)
 
 
@@ -338,9 +336,18 @@ def normalized_options(info: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def cookies_args() -> list[str]:
+    """Return yt-dlp cookie flags if YTDLP_COOKIES_FILE is set and non-empty."""
+    if YTDLP_COOKIES_FILE:
+        p = Path(YTDLP_COOKIES_FILE)
+        if p.is_file() and p.stat().st_size > 0:
+            return ["--cookies", YTDLP_COOKIES_FILE]
+    return []
+
+
 def run_metadata(url: str) -> dict[str, Any]:
     completed = subprocess.run(
-        ["yt-dlp", "--dump-single-json", "--no-playlist", "--no-warnings", url],
+        ["yt-dlp", "--dump-single-json", "--no-playlist", "--no-warnings"] + cookies_args() + [url],
         check=False,
         capture_output=True,
         text=True,
@@ -349,8 +356,6 @@ def run_metadata(url: str) -> dict[str, Any]:
     if completed.returncode != 0:
         raise HTTPException(status_code=400, detail=(completed.stderr or "Metadata lookup failed")[-500:])
     info = json.loads(completed.stdout)
-    if info.get("_type") == "playlist" or info.get("entries"):
-        raise HTTPException(status_code=400, detail="Playlists are disabled. Paste a single video URL")
     duration = info.get("duration")
     if isinstance(duration, (int, float)) and duration > MAX_DURATION_SECONDS:
         raise HTTPException(status_code=400, detail=f"Videos must be {MAX_DURATION_SECONDS // 60} minutes or shorter")
@@ -391,17 +396,17 @@ def command_for(job_id: str, url: str, selected_format: str) -> list[str]:
         "--restrict-filenames",
         "-o",
         output_template(job_id),
-    ]
+    ] + cookies_args()
     if selected_format == "best_video":
         return base + ["-f", "bv*+ba/b", "--merge-output-format", "mp4", url]
     if selected_format == "1080p":
-        return base + ["-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", url]
+        return base + ["-f", "bv*[height<=1080]+ba/b[height<=1080]/b/bv*+ba/b", "--merge-output-format", "mp4", url]
     if selected_format == "720p":
-        return base + ["-f", "bv*[height<=720]+ba/b[height<=720]/b", "--merge-output-format", "mp4", url]
+        return base + ["-f", "bv*[height<=720]+ba/b[height<=720]/b/bv*+ba/b", "--merge-output-format", "mp4", url]
     if selected_format == "audio":
-        return base + ["-f", "ba/b", url]
+        return base + ["-f", "ba/b", "-x", "--audio-format", "m4a", "--embed-thumbnail", "--embed-metadata", url]
     if selected_format == "mp3":
-        return base + ["-x", "--audio-format", "mp3", "--audio-quality", "0", url]
+        return base + ["-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-thumbnail", "--embed-metadata", url]
     return base + ["-f", "bv*+ba/b", "--merge-output-format", "mp4", url]
 
 
@@ -461,7 +466,6 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
         await schedule_next_jobs()
         return
 
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=FILE_TTL_SECONDS)
     update_job(
         job_id,
         status="completed",
@@ -469,7 +473,6 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
         message="Ready",
         file_path=str(file_path),
         file_name=file_path.name.removeprefix(f"{job_id}."),
-        expires_at=expires_at.isoformat(),
     )
     await schedule_next_jobs()
 
@@ -544,6 +547,36 @@ def metadata(payload: UrlRequest, auth: dict[str, Any] = Depends(require_auth)) 
     return run_metadata(validate_url(payload.url))
 
 
+@app.post("/api/playlist", dependencies=[Depends(require_auth)])
+def get_playlist(payload: UrlRequest) -> dict[str, Any]:
+    url = validate_url(payload.url)
+    completed = subprocess.run(
+        ["yt-dlp", "--dump-single-json", "--flat-playlist", "--no-warnings"] + cookies_args() + [url],
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    if completed.returncode != 0:
+        raise HTTPException(status_code=400, detail=(completed.stderr or "Playlist lookup failed")[-500:])
+    info = json.loads(completed.stdout)
+    # Single video masquerading as playlist
+    if info.get("_type") not in ("playlist", "multi_video") or not info.get("entries"):
+        raise HTTPException(status_code=400, detail="Not a playlist URL")
+    entries = []
+    for e in info.get("entries", []):
+        vid_id = e.get("id") or e.get("url", "").split("=")[-1]
+        entries.append({
+            "id": vid_id,
+            "title": e.get("title") or e.get("url") or vid_id,
+            "url": e.get("url") if e.get("url", "").startswith("http") else f"https://www.youtube.com/watch?v={vid_id}",
+            "thumbnail": e.get("thumbnails", [{}])[-1].get("url") if e.get("thumbnails") else f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg",
+            "duration": e.get("duration"),
+        })
+    return {
+        "title": info.get("title"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "entries": entries,
+    }
+
+
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 
 @app.post("/api/jobs", dependencies=[Depends(require_auth)])
@@ -588,6 +621,28 @@ def list_jobs() -> list[dict[str, Any]]:
     return [row_to_job(row) for row in rows]
 
 
+class BulkDeleteRequest(BaseModel):
+    ids: list[str]
+
+@app.delete("/api/jobs", dependencies=[Depends(require_auth)])
+def bulk_delete_jobs(req: BulkDeleteRequest) -> dict[str, int]:
+    """Remove completed/failed/cancelled job records (does not affect running/queued)."""
+    deleted = 0
+    with db_lock, open_db() as conn:
+        for job_id in req.ids:
+            row = conn.execute("SELECT status, file_path FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if not row or row["status"] in ("running", "queued"):
+                continue
+            if row["file_path"]:
+                path = Path(row["file_path"]).resolve()
+                if path.exists() and DOWNLOAD_DIR in path.parents:
+                    path.unlink(missing_ok=True)
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            deleted += 1
+        conn.commit()
+    return {"deleted": deleted}
+
+
 @app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_auth)])
 async def cancel_job(job_id: str) -> dict[str, str]:
     job = get_job_or_404(job_id)
@@ -603,6 +658,25 @@ async def cancel_job(job_id: str) -> dict[str, str]:
                 pass
     update_job(job_id, status="cancelled", message="Cancelled by user", progress=0)
     return {"detail": "Cancelled"}
+
+
+@app.delete("/api/admin/jobs/clear", dependencies=[Depends(require_auth)])
+def clear_jobs() -> dict[str, Any]:
+    """Delete all non-running/queued job records (and their files)."""
+    with db_lock, open_db() as conn:
+        rows = conn.execute(
+            "SELECT id, file_path FROM jobs WHERE status NOT IN ('running', 'queued')"
+        ).fetchall()
+        deleted = 0
+        for row in rows:
+            if row["file_path"]:
+                path = Path(row["file_path"]).resolve()
+                if path.exists() and DOWNLOAD_DIR in path.parents:
+                    path.unlink(missing_ok=True)
+            conn.execute("DELETE FROM jobs WHERE id = ?", (row["id"],))
+            deleted += 1
+        conn.commit()
+    return {"deleted": deleted}
 
 
 @app.get("/api/admin/jobs", dependencies=[Depends(require_auth)])
@@ -647,6 +721,91 @@ def admin_jobs() -> dict[str, Any]:
             "completed": completed_count,
             "failed": failed_count,
         },
+    }
+
+
+@app.get("/api/admin/files", dependencies=[Depends(require_auth)])
+def list_cached_files() -> list[dict[str, Any]]:
+    """List all completed jobs that still have a file on disk."""
+    with db_lock, open_db() as conn:
+        rows = conn.execute(
+            "SELECT id, title, file_name, file_path, format, created_at, expires_at FROM jobs WHERE file_path IS NOT NULL AND status = 'completed' ORDER BY created_at DESC"
+        ).fetchall()
+    result = []
+    for row in rows:
+        path = Path(row["file_path"]).resolve() if row["file_path"] else None
+        size = path.stat().st_size if path and path.exists() else 0
+        result.append({
+            "id": row["id"],
+            "title": row["title"],
+            "file_name": row["file_name"],
+            "format": row["format"],
+            "created_at": row["created_at"],
+            "expires_at": row["expires_at"],
+            "size_bytes": size,
+        })
+    return result
+
+
+@app.delete("/api/admin/files", dependencies=[Depends(require_auth)])
+def delete_cached_files(job_ids: list[str]) -> dict[str, Any]:
+    """Delete files for the given job IDs. Job records are kept."""
+    deleted = 0
+    freed = 0
+    for job_id in job_ids:
+        with db_lock, open_db() as conn:
+            row = conn.execute("SELECT file_path FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row or not row["file_path"]:
+            continue
+        path = Path(row["file_path"]).resolve()
+        if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
+            freed += path.stat().st_size
+            path.unlink(missing_ok=True)
+            deleted += 1
+        with db_lock, open_db() as conn:
+            conn.execute(
+                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = 'File deleted by admin', updated_at = ? WHERE id = ?",
+                (now_iso(), job_id),
+            )
+            conn.commit()
+    return {"deleted": deleted, "freed_bytes": freed}
+
+
+@app.delete("/api/admin/cache", dependencies=[Depends(require_auth)])
+def purge_cache() -> dict[str, Any]:
+    """Delete completed job files until storage is under 15 GB. Job records are kept."""
+    target_bytes = int(15 * 1024 * 1024 * 1024)
+    deleted_files = 0
+    freed_bytes = 0
+
+    with db_lock, open_db() as conn:
+        rows = conn.execute(
+            "SELECT id, file_path FROM jobs WHERE file_path IS NOT NULL AND status = 'completed' ORDER BY created_at ASC"
+        ).fetchall()
+
+    for row in rows:
+        if directory_size_bytes(DOWNLOAD_DIR) <= target_bytes:
+            break
+        file_path = row["file_path"]
+        if not file_path:
+            continue
+        path = Path(file_path).resolve()
+        if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+            freed_bytes += size
+            deleted_files += 1
+        with db_lock, open_db() as conn:
+            conn.execute(
+                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = 'File deleted by admin', updated_at = ? WHERE id = ?",
+                (now_iso(), row["id"]),
+            )
+            conn.commit()
+
+    return {
+        "deleted_files": deleted_files,
+        "freed_bytes": freed_bytes,
+        "used_bytes": directory_size_bytes(DOWNLOAD_DIR),
     }
 
 
@@ -696,6 +855,35 @@ def get_job(job_id: str) -> dict[str, Any]:
 
 
 # ── File download ─────────────────────────────────────────────────────────────
+
+PLEX_MUSIC_DIR = Path("/mnt/BackupDrive/Media/Audio")
+
+
+def clean_filename(title: str, ext: str) -> str:
+    """Turn a raw title into a clean filename with no underscores or junk."""
+    name = re.sub(r'[<>:"/\\|?*]', "", title)  # strip illegal chars
+    name = name.strip(". ")
+    return f"{name}{ext}" if name else f"audio{ext}"
+
+
+@app.post("/api/admin/files/{job_id}/send-to-plex", dependencies=[Depends(require_auth)])
+def send_to_plex(job_id: str) -> dict[str, Any]:
+    job = get_job_or_404(job_id)
+    if job["status"] != "completed" or not job.get("file_path"):
+        raise HTTPException(status_code=404, detail="File not ready")
+    src = Path(job["file_path"]).resolve()
+    if src != DOWNLOAD_DIR and DOWNLOAD_DIR not in src.parents:
+        raise HTTPException(status_code=403, detail="Invalid file path")
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="File missing")
+    if not PLEX_MUSIC_DIR.exists():
+        raise HTTPException(status_code=503, detail="Plex Audio directory not mounted or unavailable")
+    title = job.get("title") or src.stem
+    dest_name = clean_filename(title, src.suffix)
+    dest = PLEX_MUSIC_DIR / dest_name
+    shutil.copy2(src, dest)
+    return {"detail": "Copied to Plex", "destination": str(dest)}
+
 
 @app.get("/api/files/{job_id}")
 @app.get("/api/jobs/{job_id}/download")
