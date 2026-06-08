@@ -198,7 +198,7 @@ docker compose --profile tunnel up -d --build
 | `DOWNLOAD_DIR` | `./downloads` | Host temp download folder |
 | `MAX_DURATION_SECONDS` | `7200` | Reject videos longer than this |
 | `MAX_ACTIVE_JOBS` | `1` | Concurrent download limit |
-| `MAX_QUEUED_JOBS` | `5` | Max queued jobs |
+| `MAX_QUEUED_JOBS` | `25` | Max queued jobs |
 | `MAX_TEMP_GB` | `20` | Temp storage limit |
 | `FILE_TTL_SECONDS` | `3600` | File expiry time |
 | `CLEANUP_INTERVAL_SECONDS` | `900` | Cleanup cadence |

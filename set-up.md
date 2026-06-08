@@ -87,7 +87,7 @@ All other `.env` values have sensible defaults. Only change if needed:
 PUBLIC_ORIGIN=http://localhost:8888      # Change to your domain if using Cloudflare
 MAX_DURATION_SECONDS=7200               # 2 hours max video length
 MAX_ACTIVE_JOBS=1                       # Concurrent downloads
-MAX_QUEUED_JOBS=5                       # Queue capacity
+MAX_QUEUED_JOBS=25                       # Queue capacity
 MAX_TEMP_GB=20                          # Temp storage limit
 FILE_TTL_SECONDS=3600                   # Files auto-delete after 1 hour
 ```
@@ -358,7 +358,7 @@ That's it. 5 steps.
 | `SQLITE_PATH` | No | `./data/app.db` | SQLite database location |
 | `MAX_DURATION_SECONDS` | No | `7200` | Max video length (seconds) |
 | `MAX_ACTIVE_JOBS` | No | `1` | Simultaneous downloads |
-| `MAX_QUEUED_JOBS` | No | `5` | Max jobs waiting in queue |
+| `MAX_QUEUED_JOBS` | No | `25` | Max jobs waiting in queue |
 | `MAX_TEMP_GB` | No | `20` | Reject new jobs above this storage use |
 | `FILE_TTL_SECONDS` | No | `3600` | Auto-delete completed files after this time |
 | `CLEANUP_INTERVAL_SECONDS` | No | `900` | How often cleanup runs |
