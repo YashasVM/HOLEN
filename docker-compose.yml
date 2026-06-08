@@ -2,6 +2,8 @@ services:
   backend:
     build:
       context: ./backend
+      cache_from:
+        - type=local,src=/tmp/docker-cache/backend
     restart: unless-stopped
     environment:
       APP_PASSWORD: ${APP_PASSWORD}
@@ -9,15 +11,18 @@ services:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
       MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
-      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-5}
+      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-25}
       MAX_TEMP_GB: ${MAX_TEMP_GB:-20}
       FILE_TTL_SECONDS: ${FILE_TTL_SECONDS:-3600}
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
       DOWNLOAD_DIR: /downloads
       SQLITE_PATH: /data/app.db
+      YTDLP_COOKIES_FILE: /cookies/cookies.txt
     volumes:
       - ${DOWNLOAD_DIR:-./downloads}:/downloads
       - ./data:/data
+      - /mnt/BackupDrive/Media/Audio:/mnt/BackupDrive/Media/Audio
+      - ${YTDLP_COOKIES_PATH:-/dev/null}:/cookies/cookies.txt
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
       interval: 30s
@@ -27,6 +32,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      cache_from:
+        - type=local,src=/tmp/docker-cache/frontend
     restart: unless-stopped
     depends_on:
       backend:

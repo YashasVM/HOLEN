@@ -1,21 +1,24 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV DENO_DIR=/tmp/deno
 
-# Install ffmpeg, ca-certificates, curl, unzip for Deno install
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Deno (required by yt-dlp to solve YouTube JS challenges)
-RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
-ENV DENO_DIR=/tmp/deno
+RUN --mount=type=cache,target=/root/.deno \
+    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 COPY app ./app
 
