@@ -2,15 +2,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, FormEvent } f
 import { UserButton } from "@clerk/react";
 import {
   CheckSquare,
-  ChevronDown,
   Copy,
+  Clock3,
   Download,
   Film,
+  Gauge,
   Link2,
   List,
   Loader2,
   Music,
   Settings,
+  SlidersHorizontal,
   Square,
   Trash2,
   X,
@@ -38,7 +40,7 @@ type PlaylistInfo = { title?: string; uploader?: string; entries: PlaylistEntry[
 type Job = {
   id: string; url: string; title?: string; thumbnail?: string; format: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
-  progress: number; message?: string; file_name?: string; download_url?: string; created_at: string;
+  progress: number; message?: string; file_name?: string; download_url?: string; expires_at?: string; created_at: string;
 };
 
 const FORMAT_OPTIONS = [
@@ -63,6 +65,35 @@ function fmtBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** unit).toFixed(unit < 2 ? 0 : 1)} ${units[unit]}`;
+}
+
+function estimateBytes(metadata: Metadata, format: string): number | null {
+  const candidates = metadata.formats.filter((item) => {
+    if (!item.filesize) return false;
+    if (format === "audio" || format === "mp3") return item.acodec !== "none" && item.vcodec === "none";
+    if (format === "720p") return (item.height || 0) <= 720 && item.vcodec !== "none";
+    if (format === "1080p") return (item.height || 0) <= 1080 && item.vcodec !== "none";
+    return item.vcodec !== "none";
+  });
+  const sizes = candidates.map((item) => item.filesize || 0).filter(Boolean);
+  return sizes.length ? Math.max(...sizes) : null;
+}
+
+function transferDetails(message?: string): string | null {
+  if (!message) return null;
+  const speed = message.match(/\bat\s+([^\s]+\/s)/i)?.[1];
+  const eta = message.match(/ETA\s+([0-9:]+)/i)?.[1];
+  if (!speed && !eta) return null;
+  return [speed && `${speed}`, eta && `${eta} left`].filter(Boolean).join(" · ");
+}
+
+function expiresIn(value?: string): string | null {
+  if (!value) return null;
+  const ms = new Date(value).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return "expired";
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.ceil(minutes / 60)}h`;
 }
 
 function extractVideoId(url: string): string | null {
@@ -112,17 +143,38 @@ interface DownloaderPageProps {
 
 /* ── Toast ───────────────────────────────────────────────── */
 
-type Toast = { id: number; msg: string; ok: boolean };
+type Toast = { id: number; msg: string; ok: boolean; action?: { label: string; onClick: () => void } };
 let _toastId = 0;
 
 function useToast() {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const show = useCallback((msg: string, ok = true) => {
+  const show = useCallback((msg: string, ok = true, action?: Toast["action"]) => {
     const id = ++_toastId;
-    setToasts((t) => [...t, { id, msg, ok }]);
+    setToasts((t) => [...t, { id, msg, ok, action }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
   }, []);
   return { toasts, show };
+}
+
+function FormatPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [advanced, setAdvanced] = useState(false);
+  const primary = FORMAT_OPTIONS.filter((option) => option.id === "best" || option.id === "audio");
+  const secondary = FORMAT_OPTIONS.filter((option) => option.id !== "best" && option.id !== "audio");
+  const options = advanced ? [...primary, ...secondary] : primary;
+  return (
+    <div className="format-picker" aria-label="Download format">
+      <div className="format-picker-options">
+        {options.map((option) => (
+          <button className={`format-choice ${value === option.id ? "is-active" : ""}`} type="button" key={option.id} onClick={() => onChange(option.id)} aria-pressed={value === option.id}>
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <button className="format-advanced" type="button" onClick={() => setAdvanced((current) => !current)} aria-expanded={advanced}>
+        <SlidersHorizontal size={14} /> {advanced ? "Less" : "More formats"}
+      </button>
+    </div>
+  );
 }
 
 /* ── Component ───────────────────────────────────────────── */
@@ -142,6 +194,7 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
   const { toasts, show: showToast } = useToast();
   const sseRef = useRef<EventSource | null>(null);
   const completedJobIdsRef = useRef<Set<string>>(new Set());
+  const pendingClearRef = useRef<{ timer: number; restore: Job[] } | null>(null);
 
   const headers = useMemo(() => ({
     Authorization: `Bearer ${token}`,
@@ -238,27 +291,34 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
     catch { /* SSE corrects */ }
   }
 
-  async function deleteSelectedJobs() {
-    const ids = [...selectedJobs];
-    setJobs((cur) => cur.filter((j) => !selectedJobs.has(j.id) || j.status === "running" || j.status === "queued"));
-    setSelectedJobs(new Set());
-    try {
-      const result = await apiFetch<{ deleted: number }>("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) });
-      showToast(`Cleared ${result.deleted} job(s)`);
-    } catch { /* SSE corrects */ }
+  function undoClear() {
+    const pending = pendingClearRef.current;
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    setJobs((current) => [...current, ...pending.restore.filter((job) => !current.some((item) => item.id === job.id))].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+    pendingClearRef.current = null;
+    showToast("Clear undone");
   }
 
-  async function clearAllCompleted() {
-    const clearable = jobs.filter((j) => j.status !== "running" && j.status !== "queued");
-    if (clearable.length === 0) return;
-    const ids = clearable.map((j) => j.id);
-    setJobs((cur) => cur.filter((j) => j.status === "running" || j.status === "queued"));
+  function stageClear(ids: string[]) {
+    const restore = jobs.filter((job) => ids.includes(job.id) && job.status !== "running" && job.status !== "queued");
+    if (!restore.length) return;
+    if (pendingClearRef.current) undoClear();
+    setJobs((current) => current.filter((job) => !ids.includes(job.id) || job.status === "running" || job.status === "queued"));
     setSelectedJobs(new Set());
-    try {
-      const result = await apiFetch<{ deleted: number }>("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) });
-      showToast(`Cleared ${result.deleted} job(s)`);
-    } catch { /* SSE corrects */ }
+    const timer = window.setTimeout(() => {
+      void apiFetch<{ deleted: number }>("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids: restore.map((job) => job.id) }) })
+        .then((result) => showToast(`Cleared ${result.deleted} job(s)`))
+        .catch(() => setJobs((current) => [...current, ...restore.filter((job) => !current.some((item) => item.id === job.id))].sort((a, b) => b.created_at.localeCompare(a.created_at))))
+        .finally(() => { pendingClearRef.current = null; });
+    }, 5000);
+    pendingClearRef.current = { timer, restore };
+    showToast(`${restore.length} job(s) will be cleared`, true, { label: "Undo", onClick: undoClear });
   }
+
+  function deleteSelectedJobs() { stageClear([...selectedJobs]); }
+
+  function clearAllCompleted() { stageClear(jobs.filter((job) => job.status !== "running" && job.status !== "queued").map((job) => job.id)); }
 
   function toggleJobSelection(jobId: string) {
     setSelectedJobs((prev) => { const n = new Set(prev); n.has(jobId) ? n.delete(jobId) : n.add(jobId); return n; });
@@ -310,6 +370,10 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
     return () => { es.close(); sseRef.current = null; };
   }, [apiFetch, refreshUsage, token]);
 
+  useEffect(() => () => {
+    if (pendingClearRef.current) window.clearTimeout(pendingClearRef.current.timer);
+  }, []);
+
   function toggleEntry(id: string) {
     setSelectedIds((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
@@ -327,6 +391,10 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
   const allIds = playlist ? new Set(playlist.entries.map((e) => e.id)) : new Set<string>();
   const allSelected = playlist ? allIds.size === selectedIds.size : false;
   const clearableCount = doneJobs.length;
+  const queuedPositions = new Map(
+    jobs.filter((job) => job.status === "queued").sort((a, b) => a.created_at.localeCompare(b.created_at)).map((job, index) => [job.id, index + 1]),
+  );
+  const usagePercent = Math.min(100, Math.round((usage.used_bytes / Math.max(1, usage.usage_limit_bytes)) * 100));
 
   /* ── Main Downloader UI ─────────────────────────────────── */
 
@@ -335,7 +403,10 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
       {/* Toasts */}
       <div className="toast-container" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.ok ? "toast-ok" : "toast-err"} slide-up`}>{t.msg}</div>
+          <div key={t.id} className={`toast ${t.ok ? "toast-ok" : "toast-err"} slide-up`}>
+            <span>{t.msg}</span>
+            {t.action && <button type="button" onClick={t.action.onClick}>{t.action.label}</button>}
+          </div>
         ))}
       </div>
 
@@ -357,6 +428,8 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
           <div className="usage-chip" title="Downloads into the server and downloads to your device both count">
             <span>Bandwidth</span>
             <strong>{fmtBytes(usage.used_bytes)} / {fmtBytes(usage.usage_limit_bytes)}</strong>
+            <div className="usage-meter" aria-label={`${usagePercent}% of bandwidth used`}><i style={{ transform: `scaleX(${usagePercent / 100})` }} /></div>
+            <small>{fmtBytes(usage.remaining_bytes)} remaining · {usagePercent}% used</small>
           </div>
           {user.is_admin && (
             <button className="btn btn-outline" type="button" onClick={onAdminClick}>
@@ -409,14 +482,12 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
                 {metadata.duration ? <span className="meta-chip">{fmtDuration(metadata.duration)}</span> : null}
                 <span className="meta-chip">{metadata.formats.length} formats</span>
               </div>
+              <div className="download-preflight">
+                <FormatPicker value={selectedFormat} onChange={setSelectedFormat} />
+                {estimateBytes(metadata, selectedFormat) ? <p className="transfer-estimate">Est. file {fmtBytes(estimateBytes(metadata, selectedFormat) || 0)} · up to {fmtBytes((estimateBytes(metadata, selectedFormat) || 0) * 2)} total transfer</p> : <p className="transfer-estimate">File size unavailable · transfer use is charged after download</p>}
+              </div>
               <div className="format-row">
-                <div className="select-wrapper">
-                  <select className="format-select" value={selectedFormat} onChange={(e) => setSelectedFormat(e.target.value)}>
-                    {FORMAT_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                  </select>
-                  <ChevronDown size={14} className="select-chevron" />
-                </div>
-                <button className="btn btn-primary" type="button" onClick={handleDownload} disabled={busy}>
+                <button className="btn btn-primary mobile-download-action" type="button" onClick={handleDownload} disabled={busy}>
                   {busy ? <Loader2 className="spin" size={14} /> : <Download size={14} />} Download
                 </button>
               </div>
@@ -435,12 +506,7 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
                 <span className="meta-chip">{playlist.entries.length} videos</span>
               </div>
               <div className="format-row">
-                <div className="select-wrapper">
-                  <select className="format-select" value={selectedFormat} onChange={(e) => setSelectedFormat(e.target.value)}>
-                    {FORMAT_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                  </select>
-                  <ChevronDown size={14} className="select-chevron" />
-                </div>
+                <FormatPicker value={selectedFormat} onChange={setSelectedFormat} />
                 <button className="btn btn-primary" type="button" onClick={handlePlaylistDownload} disabled={busy || selectedIds.size === 0}>
                   {busy ? <Loader2 className="spin" size={14} /> : <Download size={14} />}
                   {selectedIds.size > 0 ? `Queue ${selectedIds.size}` : "Queue"}
@@ -509,6 +575,8 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
             const canSelect = !canCancel;
             const isAudio = job.format === "audio" || job.format === "mp3";
             const isChecked = selectedJobs.has(job.id);
+            const transfer = transferDetails(job.message);
+            const queuePosition = queuedPositions.get(job.id);
             return (
               <article className={`job-card${isChecked ? " job-card-selected" : ""}`} key={job.id}>
                 <div className="job-card-inner">
@@ -542,19 +610,23 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
                       </div>
                     )}
                     <div className="job-bottom">
-                      <span className="job-msg">{job.status === "failed" ? `✗ ${job.message || "Failed"}` : job.message || job.format}</span>
+                      <span className="job-msg">{job.status === "failed" ? `✗ ${job.message || "Failed"}` : job.status === "queued" ? `Queue position ${queuePosition || 1}` : job.status === "running" ? "Downloading" : job.message || job.format}</span>
+                      {job.status === "running" && transfer && <span className="job-transfer"><Gauge size={13} /> {transfer}</span>}
                     </div>
                   </div>
                 </div>
                 {job.download_url && (
-                  <div className="job-download-row">
-                    <button className="download-btn" type="button" onClick={() => downloadFile(job)}>
-                      <Download size={16} /><span>Download</span>
-                    </button>
-                    <button className="copy-link-btn" type="button" title="Copy download link" onClick={() => copyJobLink(job)}>
-                      <Copy size={14} />
-                    </button>
-                  </div>
+                  <>
+                    <div className="job-download-row">
+                      <button className="download-btn" type="button" onClick={() => downloadFile(job)}>
+                        <Download size={16} /><span>Download</span>
+                      </button>
+                      <button className="copy-link-btn" type="button" title="Copy expiring download link" onClick={() => copyJobLink(job)}>
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                    <p className="link-expiry"><Clock3 size={13} /> Link {expiresIn(job.expires_at) === "expired" ? "expired" : `expires in ${expiresIn(job.expires_at) || "soon"}`}</p>
+                  </>
                 )}
               </article>
             );
@@ -562,7 +634,9 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
           {!jobs.length && (
             <div className="empty-state">
               <Download size={32} className="empty-icon" />
-              <p>No jobs yet — paste a YouTube URL above to start.</p>
+              <p>No jobs yet. Paste a YouTube video or playlist URL to start.</p>
+              <code>youtube.com/watch?v=…</code>
+              <small>Video up to 4K, audio, and MP3 are supported.</small>
             </div>
           )}
         </div>

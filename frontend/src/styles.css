@@ -577,6 +577,23 @@ img { display: block; max-width: 100%; }
   margin-bottom: 8px;
 }
 
+.download-preflight { display: grid; gap: 8px; margin-top: 14px; }
+.format-picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.format-picker-options { display: flex; gap: 6px; flex-wrap: wrap; }
+.format-choice, .format-advanced {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 2px solid var(--border);
+  background: #fff;
+  color: var(--ink);
+  font: 800 .68rem/1 var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: .035em;
+}
+.format-choice.is-active { background: var(--blue); color: #fff; box-shadow: 3px 3px 0 var(--ink); }
+.format-advanced { display: inline-flex; align-items: center; gap: 6px; background: var(--surface); color: var(--muted); font-family: var(--font-body); }
+.transfer-estimate { color: var(--muted); font-size: .74rem; line-height: 1.45; }
+
 .meta-chips {
   display: flex;
   flex-wrap: wrap;
@@ -878,6 +895,7 @@ img { display: block; max-width: 100%; }
   white-space: nowrap;
   min-width: 0;
 }
+.job-transfer { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 /* ─── Download Button (replaces old save-link) ─────────── */
 
@@ -940,6 +958,7 @@ img { display: block; max-width: 100%; }
   flex-shrink: 0;
 }
 .copy-link-btn:hover { background: var(--blue); color: #fff; }
+.link-expiry { display: flex; align-items: center; gap: 5px; padding: 7px 12px; border-top: 2px solid var(--surface-2); color: var(--muted); font-size: .7rem; font-weight: 700; }
 
 /* ─── Job count badge in header ────────────────────────── */
 
@@ -1026,6 +1045,9 @@ img { display: block; max-width: 100%; }
   position: static;
   pointer-events: auto;
 }
+.toast { display: flex; align-items: center; gap: 12px; }
+.toast button { min-height: 30px; padding: 0 9px; border: 2px solid currentColor; background: transparent; color: inherit; font-weight: 800; }
+.toast button:hover { background: rgba(255, 255, 255, .16); }
 
 /* ─── Empty state ───────────────────────────────────────── */
 
@@ -1041,6 +1063,8 @@ img { display: block; max-width: 100%; }
 }
 
 .empty-icon { opacity: 0.3; }
+.empty-state code { padding: 5px 8px; border: 2px solid var(--border); background: #fff; color: var(--ink); font-size: .78rem; }
+.empty-state small { max-width: 38ch; text-align: center; font-size: .75rem; }
 
 .empty-msg {
   color: var(--muted);
@@ -2008,6 +2032,9 @@ p, h1, h2, h3, span, strong, small, label { overflow-wrap: anywhere; }
 }
 .usage-chip span { color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }
 .usage-chip strong { font-variant-numeric: tabular-nums; }
+.usage-chip small { color: var(--muted); font-size: .6rem; font-variant-numeric: tabular-nums; }
+.usage-meter { height: 6px; overflow: hidden; border: 1px solid var(--ink); background: var(--surface-2); }
+.usage-meter i { display: block; width: 100%; height: 100%; transform-origin: left; background: var(--blue); }
 
 .admin-shell { max-width: 1180px; }
 .icon-button, .check-button {
@@ -2129,6 +2156,16 @@ p, h1, h2, h3, span, strong, small, label { overflow-wrap: anywhere; }
   .header-left { flex: 1 1 100%; }
   .header-actions { width: 100%; justify-content: flex-start; }
   .usage-chip { order: 5; }
+  .preview-card .format-row { position: sticky; bottom: 10px; z-index: 4; margin-inline: -4px; padding: 8px 4px 4px; background: var(--surface-2); }
+  .preview-card .mobile-download-action { width: 100%; justify-content: center; box-shadow: var(--shadow-sm); }
+  .format-picker { align-items: stretch; }
+  .format-picker-options { width: 100%; }
+  .format-choice { flex: 1; }
+  .format-advanced { width: 100%; justify-content: center; }
+  .playlist-header .format-row { width: 100%; }
+  .playlist-header .format-picker { flex: 1 1 100%; }
+  .job-card-inner { gap: 10px; padding: 12px; }
+  .job-transfer { display: none; }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
   .section-heading > p { text-align: left; }
   .section-actions { width: 100%; justify-content: flex-start; }
