@@ -1174,6 +1174,8 @@ def download_file(job_id: str, user: dict[str, Any] = Depends(require_user_or_qu
         raise HTTPException(status_code=404, detail="File not found")
     if job["status"] != "completed" or not job.get("file_path"):
         raise HTTPException(status_code=404, detail="File not ready")
+    if job.get("expires_at") and job["expires_at"] <= now_iso():
+        raise HTTPException(status_code=404, detail="This download link has expired")
     path = Path(job["file_path"]).resolve()
     if path != DOWNLOAD_DIR and DOWNLOAD_DIR not in path.parents:
         raise HTTPException(status_code=403, detail="Invalid file path")
