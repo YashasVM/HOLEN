@@ -415,8 +415,8 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
         <div className="header-left">
           <div className="header-badge">Y</div>
           <div className="header-text">
-            <span className="header-tag">Private node</span>
-            <h1>Downloader</h1>
+            <span className="header-tag">Media cache</span>
+            <h1>HOLEN</h1>
           </div>
           {activeJobs.length > 0 && (
             <span className="job-count-badge" title={`${activeJobs.length} active job(s)`}>
@@ -621,8 +621,9 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
                       <button className="download-btn" type="button" onClick={() => downloadFile(job)}>
                         <Download size={16} /><span>Download</span>
                       </button>
-                      <button className="copy-link-btn" type="button" title="Copy expiring download link" onClick={() => copyJobLink(job)}>
+                      <button className="copy-link-btn" type="button" aria-label="Copy expiring download link" title="Copy expiring download link" onClick={() => copyJobLink(job)}>
                         <Copy size={14} />
+                        <span>Copy link</span>
                       </button>
                     </div>
                     <p className="link-expiry"><Clock3 size={13} /> Link {expiresIn(job.expires_at) === "expired" ? "expired" : `expires in ${expiresIn(job.expires_at) || "soon"}`}</p>
