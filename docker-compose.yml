@@ -5,13 +5,20 @@ services:
       cache_from:
         - type=local,src=/tmp/docker-cache/backend
     restart: unless-stopped
+    env_file:
+      - ./frontend/.env.local
     environment:
       APP_PASSWORD: ${APP_PASSWORD}
       APP_SECRET: ${APP_SECRET}
+      CLERK_FRONTEND_API_URL: ${CLERK_FRONTEND_API_URL:-}
+      # CLERK_SECRET_KEY is loaded from frontend/.env.local by env_file.
+      OWNER_GITHUB_USERNAME: ${OWNER_GITHUB_USERNAME:-YashasVM}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
       MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
       MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-25}
+      MAX_JOBS_PER_USER: ${MAX_JOBS_PER_USER:-5}
+      DEFAULT_USAGE_LIMIT_GB: ${DEFAULT_USAGE_LIMIT_GB:-5}
       MAX_TEMP_GB: ${MAX_TEMP_GB:-20}
       FILE_TTL_SECONDS: ${FILE_TTL_SECONDS:-3600}
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
@@ -23,6 +30,13 @@ services:
       - ./data:/data
       - /mnt/BackupDrive/Media/Audio:/mnt/BackupDrive/Media/Audio
       - ${YTDLP_COOKIES_PATH:-/dev/null}:/cookies/cookies.txt
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 256M
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
       interval: 30s
@@ -40,6 +54,11 @@ services:
         condition: service_healthy
     ports:
       - "8888:80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -50,3 +69,8 @@ services:
       frontend:
         condition: service_started
     command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M

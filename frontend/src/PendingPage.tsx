@@ -1,5 +1,5 @@
 import React from "react";
-import { useAuthActions } from "@convex-dev/auth/react";
+import { useClerk } from "@clerk/react";
 import { Clock, LogOut } from "lucide-react";
 
 interface PendingPageProps {
@@ -7,7 +7,7 @@ interface PendingPageProps {
 }
 
 export function PendingPage({ userName }: PendingPageProps) {
-  const { signOut } = useAuthActions();
+  const { signOut } = useClerk();
 
   return (
     <main className="auth-shell">
@@ -42,7 +42,7 @@ export function PendingPage({ userName }: PendingPageProps) {
         <button
           className="btn btn-dark"
           type="button"
-          onClick={() => signOut()}
+          onClick={() => void signOut()}
         >
           <LogOut size={14} /> Sign Out
         </button>

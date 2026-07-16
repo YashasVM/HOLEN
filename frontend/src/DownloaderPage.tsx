@@ -1,21 +1,21 @@
-import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useAuthActions } from "@convex-dev/auth/react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, FormEvent } from "react";
+import { UserButton } from "@clerk/react";
 import {
   CheckSquare,
   ChevronDown,
+  Copy,
   Download,
   Film,
   Link2,
   List,
   Loader2,
-  Lock,
-  LogOut,
   Music,
   Settings,
-  ShieldCheck,
   Square,
+  Trash2,
   X,
 } from "lucide-react";
+import type { AppUser } from "./types";
 
 /* ── Types ───────────────────────────────────────────────── */
 
@@ -26,50 +26,19 @@ type Metadata = {
   uploader?: string;
   webpage_url: string;
   formats: Array<{
-    format_id: string;
-    ext?: string;
-    resolution?: string;
-    fps?: number;
-    filesize?: number;
-    vcodec?: string;
-    acodec?: string;
-    height?: number;
+    format_id: string; ext?: string; resolution?: string; fps?: number;
+    filesize?: number; vcodec?: string; acodec?: string; height?: number;
   }>;
-  options: Array<{
-    id: string;
-    label: string;
-    description: string;
-    available: boolean;
-    detail: string;
-  }>;
+  options: Array<{ id: string; label: string; description: string; available: boolean; detail: string }>;
 };
 
-type PlaylistEntry = {
-  id: string;
-  title: string;
-  url: string;
-  thumbnail?: string;
-  duration?: number;
-};
-
-type PlaylistInfo = {
-  title?: string;
-  uploader?: string;
-  entries: PlaylistEntry[];
-};
+type PlaylistEntry = { id: string; title: string; url: string; thumbnail?: string; duration?: number };
+type PlaylistInfo = { title?: string; uploader?: string; entries: PlaylistEntry[] };
 
 type Job = {
-  id: string;
-  url: string;
-  title?: string;
-  thumbnail?: string;
-  format: string;
+  id: string; url: string; title?: string; thumbnail?: string; format: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
-  progress: number;
-  message?: string;
-  file_name?: string;
-  download_url?: string;
-  created_at: string;
+  progress: number; message?: string; file_name?: string; download_url?: string; created_at: string;
 };
 
 const FORMAT_OPTIONS = [
@@ -84,10 +53,16 @@ const FORMAT_OPTIONS = [
 
 function fmtDuration(s?: number): string {
   if (!s) return "";
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   const sec = String(Math.floor(s % 60)).padStart(2, "0");
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** unit).toFixed(unit < 2 ? 0 : 1)} ${units[unit]}`;
 }
 
 function extractVideoId(url: string): string | null {
@@ -112,20 +87,48 @@ function isPlaylistUrl(url: string): boolean {
   } catch { return false; }
 }
 
+// Human-readable error messages for common API errors
+function friendlyError(msg: string): string {
+  if (msg.includes("Rate limit")) return "Slow down — too many requests. Try again in a moment.";
+  if (msg.includes("Queue is full")) return "The queue is full. Wait for a job to finish, then try again.";
+  if (msg.includes("already have")) return msg; // per-user limit message is already friendly
+  if (msg.includes("Wrong password")) return "Incorrect password. Try again.";
+  if (msg.includes("Token expired")) return "Session expired — please re-enter the app password.";
+  if (msg.includes("storage is full")) return "Server storage is full. Ask an admin to clear some files.";
+  if (msg.includes("minutes or shorter")) return msg;
+  if (msg.includes("Only YouTube")) return "Only YouTube URLs are supported.";
+  if (msg.includes("valid http")) return "Please enter a valid URL (https://youtube.com/...).";
+  if (msg.includes("Metadata lookup failed") || msg.includes("Preview failed")) return "Couldn't fetch video info. Check the URL or try again.";
+  return msg || "Something went wrong. Please try again.";
+}
+
 /* ── Props ───────────────────────────────────────────────── */
 
 interface DownloaderPageProps {
-  user: { name?: string; email?: string; isAdmin: boolean };
+  user: AppUser;
+  token: string;
   onAdminClick: () => void;
+}
+
+/* ── Toast ───────────────────────────────────────────────── */
+
+type Toast = { id: number; msg: string; ok: boolean };
+let _toastId = 0;
+
+function useToast() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const show = useCallback((msg: string, ok = true) => {
+    const id = ++_toastId;
+    setToasts((t) => [...t, { id, msg, ok }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
+  }, []);
+  return { toasts, show };
 }
 
 /* ── Component ───────────────────────────────────────────── */
 
-export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
-  const { signOut } = useAuthActions();
-  const [token, setToken] = useState(() => localStorage.getItem("downloader_token") || "");
-  const [password, setPassword] = useState("");
-  const [authError, setAuthError] = useState("");
+export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProps) {
+  // Use sessionStorage so the token is cleared when the tab closes (XSS mitigation)
   const [url, setUrl] = useState("");
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [playlist, setPlaylist] = useState<PlaylistInfo | null>(null);
@@ -135,34 +138,34 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
+  const [usage, setUsage] = useState(user);
+  const { toasts, show: showToast } = useToast();
   const sseRef = useRef<EventSource | null>(null);
+  const completedJobIdsRef = useRef<Set<string>>(new Set());
 
   const headers = useMemo(() => ({
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   }), [token]);
 
-  async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const apiFetch = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const r = await fetch(path, { ...init, headers: { ...headers, ...(init?.headers || {}) } });
-    if (r.status === 401) { localStorage.removeItem("downloader_token"); setToken(""); }
-    if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || "Request failed"); }
-    return r.json();
-  }
-
-  async function backendLogin(e: FormEvent) {
-    e.preventDefault();
-    setAuthError("");
-    try {
-      const r = await fetch("/api/session/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
-      if (!r.ok) throw new Error("Wrong password");
-      const { token: t } = (await r.json()) as { token: string };
-      localStorage.setItem("downloader_token", t);
-      setToken(t);
-      setPassword("");
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : "Login failed");
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      throw new Error(b.detail || "Request failed");
     }
-  }
+    return r.json();
+  }, [headers]);
+
+  const refreshUsage = useCallback(async () => {
+    try {
+      setUsage(await apiFetch<AppUser>("/api/me"));
+    } catch {
+      // The next regular profile refresh will retry if this transient request fails.
+    }
+  }, [apiFetch]);
+
+  useEffect(() => { setUsage(user); }, [user]);
 
   async function analyze(e: FormEvent) {
     e.preventDefault();
@@ -180,7 +183,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
         setMetadata(await apiFetch<Metadata>("/api/analyze", { method: "POST", body: JSON.stringify({ url }) }));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Preview failed");
+      setError(friendlyError(err instanceof Error ? err.message : "Preview failed"));
     } finally {
       setBusy(false);
     }
@@ -200,8 +203,11 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     try {
       const job = await createJob(metadata.webpage_url, selectedFormat, metadata.title, metadata.thumbnail);
       setJobs((cur) => [job, ...cur.filter((j) => j.id !== job.id)]);
+      showToast("Added to queue");
+      setMetadata(null);
+      setUrl("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Download failed");
+      setError(friendlyError(err instanceof Error ? err.message : "Download failed"));
     } finally {
       setBusy(false);
     }
@@ -212,29 +218,46 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     setBusy(true);
     setError("");
     const selected = playlist.entries.filter((e) => selectedIds.has(e.id));
-    let lastErr = "";
+    let failed = 0;
     for (const entry of selected) {
       try {
         const job = await createJob(entry.url, selectedFormat, entry.title, entry.thumbnail);
         setJobs((cur) => [job, ...cur.filter((j) => j.id !== job.id)]);
-      } catch (err) {
-        lastErr = err instanceof Error ? err.message : "Failed";
+      } catch {
+        failed++;
       }
     }
-    if (lastErr) setError(lastErr);
+    if (failed > 0) setError(`${failed} video(s) failed to queue. Check limits and try again.`);
+    else { showToast(`Queued ${selected.length} video(s)`); setPlaylist(null); setUrl(""); }
     setBusy(false);
   }
 
   async function cancelJob(jobId: string) {
     setJobs((cur) => cur.map((j) => j.id === jobId ? { ...j, status: "cancelled" as const } : j));
-    try { await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" }); } catch { /* SSE corrects */ }
+    try { await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" }); showToast("Job cancelled"); }
+    catch { /* SSE corrects */ }
   }
 
   async function deleteSelectedJobs() {
     const ids = [...selectedJobs];
     setJobs((cur) => cur.filter((j) => !selectedJobs.has(j.id) || j.status === "running" || j.status === "queued"));
     setSelectedJobs(new Set());
-    try { await apiFetch("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) }); } catch { /* SSE corrects */ }
+    try {
+      const result = await apiFetch<{ deleted: number }>("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) });
+      showToast(`Cleared ${result.deleted} job(s)`);
+    } catch { /* SSE corrects */ }
+  }
+
+  async function clearAllCompleted() {
+    const clearable = jobs.filter((j) => j.status !== "running" && j.status !== "queued");
+    if (clearable.length === 0) return;
+    const ids = clearable.map((j) => j.id);
+    setJobs((cur) => cur.filter((j) => j.status === "running" || j.status === "queued"));
+    setSelectedJobs(new Set());
+    try {
+      const result = await apiFetch<{ deleted: number }>("/api/jobs", { method: "DELETE", body: JSON.stringify({ ids }) });
+      showToast(`Cleared ${result.deleted} job(s)`);
+    } catch { /* SSE corrects */ }
   }
 
   function toggleJobSelection(jobId: string) {
@@ -243,31 +266,52 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
 
   async function downloadFile(job: Job) {
     if (!job.download_url) return;
-    const url = `${job.download_url}?token=${encodeURIComponent(token)}`;
+    const dlUrl = `${job.download_url}?token=${encodeURIComponent(token)}`;
     const a = document.createElement("a");
-    a.href = url;
+    a.href = dlUrl;
     a.download = job.file_name || "download";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    window.setTimeout(() => void refreshUsage(), 750);
+  }
+
+  async function copyJobLink(job: Job) {
+    if (!job.download_url) return;
+    const fullUrl = `${window.location.origin}${job.download_url}?token=${encodeURIComponent(token)}`;
+    try {
+      await navigator.clipboard.writeText(fullUrl);
+      showToast("Download link copied!");
+    } catch {
+      showToast("Couldn't copy link", false);
+    }
   }
 
   useEffect(() => {
     if (!token) return;
     apiFetch<Job[]>("/api/jobs").then(setJobs).catch(() => setJobs([]));
+    void refreshUsage();
     const es = new EventSource(`/api/jobs/stream?token=${encodeURIComponent(token)}`);
     sseRef.current = es;
-    es.onmessage = (e) => { try { setJobs(JSON.parse(e.data) as Job[]); } catch { /* ignore */ } };
+    es.onmessage = (e) => {
+      try {
+        const nextJobs = JSON.parse(e.data) as Job[];
+        setJobs(nextJobs);
+        const justCompleted = nextJobs.some((job) => job.status === "completed" && !completedJobIdsRef.current.has(job.id));
+        nextJobs.filter((job) => job.status === "completed").forEach((job) => completedJobIdsRef.current.add(job.id));
+        if (justCompleted) void refreshUsage();
+      } catch { /* ignore malformed stream messages */ }
+    };
+    es.onerror = () => {
+      // SSE disconnect — quietly reconnect on next render cycle
+      es.close();
+      sseRef.current = null;
+    };
     return () => { es.close(); sseRef.current = null; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [apiFetch, refreshUsage, token]);
 
   function toggleEntry(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
+    setSelectedIds((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
 
   function toggleAll() {
@@ -276,47 +320,25 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
     setSelectedIds(allIds.size === selectedIds.size ? new Set() : allIds);
   }
 
-  /* ── App Password Gate ──────────────────────────────────── */
-
-  if (!token) {
-    return (
-      <main className="auth-shell">
-        <div className="bauhaus-deco bauhaus-circle" aria-hidden="true" />
-        <div className="bauhaus-deco bauhaus-rect" aria-hidden="true" />
-        <div className="bauhaus-deco bauhaus-triangle" aria-hidden="true" />
-        <div className="bauhaus-deco bauhaus-line" aria-hidden="true" />
-        <form className="auth-card slide-up" onSubmit={backendLogin}>
-          <div className="auth-corner" aria-hidden="true" />
-          <div className="logo-row">
-            <div className="logo-circle logo-circle-green"><ShieldCheck size={20} /></div>
-            <div>
-              <span className="header-tag header-tag-green">Final step</span>
-              <h1>App Password</h1>
-            </div>
-          </div>
-          <p className="auth-subtitle">Enter the shared application password to unlock the downloader.</p>
-          <div className="field">
-            <label className="field-label" htmlFor="app-pw">Password</label>
-            <div className="input-box">
-              <Lock size={16} />
-              <input id="app-pw" value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="off" placeholder="Enter app password" required />
-            </div>
-          </div>
-          {authError && <p className="error-msg fade-in" role="alert">{authError}</p>}
-          <button className="btn btn-primary" type="submit" disabled={!password}><ShieldCheck size={16} /> Unlock</button>
-          <button className="btn btn-dark" type="button" onClick={() => signOut()} style={{ marginTop: 10 }}><LogOut size={14} /> Sign Out</button>
-        </form>
-      </main>
-    );
-  }
+  /* ── Derived state ──────────────────────────────────────── */
+  const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "queued");
+  const completedJobs = jobs.filter((j) => j.status === "completed");
+  const doneJobs = jobs.filter((j) => j.status !== "running" && j.status !== "queued");
+  const allIds = playlist ? new Set(playlist.entries.map((e) => e.id)) : new Set<string>();
+  const allSelected = playlist ? allIds.size === selectedIds.size : false;
+  const clearableCount = doneJobs.length;
 
   /* ── Main Downloader UI ─────────────────────────────────── */
 
-  const allIds = playlist ? new Set(playlist.entries.map((e) => e.id)) : new Set<string>();
-  const allSelected = playlist ? allIds.size === selectedIds.size : false;
-
   return (
     <main className="app-shell fade-in">
+      {/* Toasts */}
+      <div className="toast-container" aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast ${t.ok ? "toast-ok" : "toast-err"} slide-up`}>{t.msg}</div>
+        ))}
+      </div>
+
       {/* Header */}
       <header className="header">
         <div className="header-left">
@@ -325,16 +347,23 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
             <span className="header-tag">Private node</span>
             <h1>Downloader</h1>
           </div>
+          {activeJobs.length > 0 && (
+            <span className="job-count-badge" title={`${activeJobs.length} active job(s)`}>
+              {activeJobs.length}
+            </span>
+          )}
         </div>
         <div className="header-actions">
-          {user.isAdmin && (
+          <div className="usage-chip" title="Downloads into the server and downloads to your device both count">
+            <span>Bandwidth</span>
+            <strong>{fmtBytes(usage.used_bytes)} / {fmtBytes(usage.usage_limit_bytes)}</strong>
+          </div>
+          {user.is_admin && (
             <button className="btn btn-outline" type="button" onClick={onAdminClick}>
               <Settings size={14} /> Admin
             </button>
           )}
-          <button className="btn btn-dark" type="button" onClick={() => { localStorage.removeItem("downloader_token"); setToken(""); }}>
-            <Lock size={14} /> Lock
-          </button>
+          <UserButton appearance={{ elements: { avatarBox: "clerk-avatar", avatarImage: "clerk-avatar-image" } }} />
         </div>
       </header>
 
@@ -345,7 +374,17 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
             <label className="field-label" htmlFor="src-url">Paste URL</label>
             <div className="input-box">
               <Link2 size={16} />
-              <input id="src-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://youtube.com/watch?v=... or playlist" type="url" autoComplete="off" spellCheck={false} />
+              <input
+                id="src-url" value={url}
+                onChange={(e) => { setUrl(e.target.value); setError(""); setMetadata(null); setPlaylist(null); }}
+                placeholder="https://youtube.com/watch?v=... or playlist"
+                type="url" autoComplete="off" spellCheck={false}
+              />
+              {url && (
+                <button type="button" className="input-clear" aria-label="Clear URL" onClick={() => { setUrl(""); setMetadata(null); setPlaylist(null); setError(""); }}>
+                  <X size={14} />
+                </button>
+              )}
             </div>
           </div>
           <button className="btn btn-primary" type="submit" disabled={busy || !url} style={{ width: "auto", minWidth: 130 }}>
@@ -353,7 +392,11 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
           </button>
         </form>
 
-        {error && <p className="error-msg fade-in" role="alert">{error}</p>}
+        {error && (
+          <p className="error-msg fade-in" role="alert">
+            {error}
+          </p>
+        )}
 
         {/* Single Video Preview */}
         {metadata && (
@@ -404,12 +447,10 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
                 </button>
               </div>
             </div>
-
             <button className="playlist-select-all" type="button" onClick={toggleAll}>
               {allSelected ? <CheckSquare size={15} /> : <Square size={15} />}
               {allSelected ? "Deselect all" : "Select all"}
             </button>
-
             <div className="playlist-entries">
               {playlist.entries.map((entry) => {
                 const checked = selectedIds.has(entry.id);
@@ -433,27 +474,34 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
       <section className="queue-section">
         <div className="queue-header">
           <span className="header-tag">Queue</span>
-          <h2>{jobs.length} {jobs.length === 1 ? "Job" : "Jobs"}</h2>
-          {jobs.some((j) => j.status !== "running" && j.status !== "queued") && (
-            <div className="queue-actions">
-              <button className="btn btn-outline" type="button" onClick={() => {
-                const clearable = jobs.filter((j) => j.status !== "running" && j.status !== "queued").map((j) => j.id);
-                setSelectedJobs((prev) => prev.size === clearable.length && clearable.every((id) => prev.has(id)) ? new Set() : new Set(clearable));
-              }}>
-                {(() => {
-                  const clearable = jobs.filter((j) => j.status !== "running" && j.status !== "queued");
-                  const allSel = clearable.length > 0 && clearable.every((j) => selectedJobs.has(j.id));
-                  return allSel ? <><CheckSquare size={14} /> Deselect All</> : <><Square size={14} /> Select All</>;
-                })()}
+          <h2>
+            {jobs.length} {jobs.length === 1 ? "Job" : "Jobs"}
+            {completedJobs.length > 0 && <span className="queue-ready-badge">{completedJobs.length} ready</span>}
+          </h2>
+          <div className="queue-actions">
+            {clearableCount > 0 && selectedJobs.size === 0 && (
+              <button className="btn btn-outline" type="button" onClick={clearAllCompleted} title="Clear all finished jobs">
+                <Trash2 size={14} /> Clear {clearableCount}
               </button>
-              {selectedJobs.size > 0 && (
-                <button className="btn btn-danger" type="button" onClick={deleteSelectedJobs}>
-                  <X size={14} /> Clear {selectedJobs.size}
-                </button>
-              )}
-            </div>
-          )}
+            )}
+            {clearableCount > 0 && (
+              <button className="btn btn-outline" type="button" onClick={() => {
+                const ids = new Set(doneJobs.map((j) => j.id));
+                setSelectedJobs((prev) => prev.size === ids.size && [...ids].every((id) => prev.has(id)) ? new Set() : ids);
+              }}>
+                {doneJobs.every((j) => selectedJobs.has(j.id)) && doneJobs.length > 0
+                  ? <><CheckSquare size={14} /> Deselect</>
+                  : <><Square size={14} /> Select</>}
+              </button>
+            )}
+            {selectedJobs.size > 0 && (
+              <button className="btn btn-danger" type="button" onClick={deleteSelectedJobs}>
+                <X size={14} /> Clear {selectedJobs.size}
+              </button>
+            )}
+          </div>
         </div>
+
         <div className="job-list">
           {jobs.map((job) => {
             const thumb = getJobThumbnail(job);
@@ -475,31 +523,48 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
                   <div className="job-content">
                     <div className="job-top">
                       <span className={`badge ${job.status}`}>{job.status}</span>
-                      <strong>{job.title || job.file_name || job.url}</strong>
+                      <strong className="job-title" title={job.title || job.url}>{job.title || job.file_name || job.url}</strong>
                       {canCancel && (
                         <button className="btn btn-dark" type="button" title="Cancel" onClick={() => cancelJob(job.id)} style={{ marginLeft: "auto", padding: "2px 6px", minWidth: 0 }}>
                           <X size={12} />
                         </button>
                       )}
                     </div>
-                    <div className="progress-bar">
-                      <div className="progress-fill" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.max(0, Math.min(100, job.progress)))} style={{ width: `${Math.max(0, Math.min(100, job.progress))}%` }} />
-                    </div>
+                    {(job.status === "running" || job.status === "queued") && (
+                      <div className="progress-bar">
+                        <div
+                          className="progress-fill"
+                          role="progressbar"
+                          aria-valuemin={0} aria-valuemax={100}
+                          aria-valuenow={Math.round(Math.max(0, Math.min(100, job.progress)))}
+                          style={{ transform: `scaleX(${Math.max(0, Math.min(100, job.progress)) / 100})` }}
+                        />
+                      </div>
+                    )}
                     <div className="job-bottom">
-                      <span>{job.message || job.format}</span>
+                      <span className="job-msg">{job.status === "failed" ? `✗ ${job.message || "Failed"}` : job.message || job.format}</span>
                     </div>
                   </div>
                 </div>
                 {job.download_url && (
-                  <button className="download-btn" type="button" onClick={() => downloadFile(job)}>
-                    <Download size={16} />
-                    <span>Download</span>
-                  </button>
+                  <div className="job-download-row">
+                    <button className="download-btn" type="button" onClick={() => downloadFile(job)}>
+                      <Download size={16} /><span>Download</span>
+                    </button>
+                    <button className="copy-link-btn" type="button" title="Copy download link" onClick={() => copyJobLink(job)}>
+                      <Copy size={14} />
+                    </button>
+                  </div>
                 )}
               </article>
             );
           })}
-          {!jobs.length && <p className="empty-msg">No jobs yet — paste a URL above to start.</p>}
+          {!jobs.length && (
+            <div className="empty-state">
+              <Download size={32} className="empty-icon" />
+              <p>No jobs yet — paste a YouTube URL above to start.</p>
+            </div>
+          )}
         </div>
       </section>
 

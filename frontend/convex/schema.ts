@@ -12,9 +12,11 @@ export default defineSchema({
     phone: v.optional(v.string()),
     phoneNumberVerificationTime: v.optional(v.float64()),
     isAnonymous: v.optional(v.boolean()),
+    clerkId: v.optional(v.string()),
     isApproved: v.optional(v.boolean()),
     isAdmin: v.optional(v.boolean()),
   })
     .index("email", ["email"])
+    .index("clerkId", ["clerkId"])
     .index("phone", ["phone"]),
 });
