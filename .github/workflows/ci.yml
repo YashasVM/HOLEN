@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
       - run: python -m compileall -q app
         working-directory: backend
-      - run: docker compose config --quiet
+      - run: node --check bin/holen.js
       - name: Reject credential files
         run: |
           ! find . -type f \( -name '.env' -o -name 'cookies.txt' -o -name '*.pem' -o -name '*.key' \) -print -quit | grep -q .

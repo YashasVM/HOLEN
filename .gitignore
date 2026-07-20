@@ -5,7 +5,11 @@ downloads/
 node_modules/
 dist/
 __pycache__/
+.venv/
 *.py[cod]
 .pytest_cache/
 .DS_Store
 cookies.txt
+holen.log
+holen.pid
+*.tgz

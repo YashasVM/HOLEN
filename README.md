@@ -8,7 +8,7 @@ Only download media you have the right to save and use. You are responsible for 
 
 - React + Vite single-page UI
 - FastAPI queue backed by a local SQLite database
-- `yt-dlp` and `ffmpeg` in the backend image
+- Native Python backend with `yt-dlp` and host-provided `ffmpeg`
 - MP4 video, M4A audio, and MP3 output options
 - Two concurrent jobs by default, resumable downloads, retry handling, and four concurrent media fragments per job
 - A bounded on-disk cache that removes the oldest completed files when it fills
@@ -16,31 +16,33 @@ Only download media you have the right to save and use. You are responsible for 
 
 ## Quick start
 
-Requirements: Docker Engine with Docker Compose v2.
+Requirements: Node.js 18+, Python 3.10+, and `ffmpeg` installed on the host.
 
 ```bash
 ./run.sh
 ```
 
-That one command creates `.env` from safe defaults when needed, builds the images, and starts the stack. Open [http://localhost:8080](http://localhost:8080). The first image build downloads the frontend and backend dependencies, so it can take a few minutes.
+That one command creates `.env` from safe defaults when needed, installs the isolated Python and frontend dependencies, builds the UI, and starts the local server. Open [http://localhost:8080](http://localhost:8080). The first run can take a few minutes.
 
 To use your own configuration, copy `.env.example` to `.env`, adjust it, then run `./run.sh`.
 
 ### Run without cloning
 
-With Node.js 18+ and Docker installed, run this from any empty working directory:
+With Node.js 18+, Python 3.10+, and `ffmpeg` installed, run this from any empty working directory:
 
 ```bash
 npx github:YashasVM/HOLEN
 ```
 
-The launcher downloads the release package, copies the runnable project to `./holen`, and starts Docker Compose. Use `--dir <directory>` to choose a different destination. This keeps the installation and its persistent `downloads/` and `data/` folders in a normal local directory rather than an npm cache.
+The launcher downloads the release package, copies the runnable project to `./holen`, and starts it directly on the host—Docker is not required. Use `--dir <directory>` to choose a different destination. This keeps the installation and its persistent `downloads/` and `data/` folders in a normal local directory rather than an npm cache.
 
 To stop the stack:
 
 ```bash
-docker compose down
+kill "$(cat holen.pid)"
 ```
+
+Run that command from the installation directory (for the `npx` command, that is `./holen`). Server output is written to `holen.log`.
 
 Completed files and queue data are stored in `downloads/` and `data/`. Both are ignored by Git. Removing either directory removes its local data.
 
@@ -69,7 +71,7 @@ Copy `.env.example` to `.env`; its defaults are safe to use as-is for a personal
 | `JOB_REQUESTS_PER_HOUR` | `12` | New download jobs per IP per hour. |
 | `YTDLP_COOKIES_PATH` | unset | Optional absolute host path to a Netscape `cookies.txt` file. |
 
-Cookies are optional. If you use them, keep the file outside this repository; Compose mounts it read-only and `.gitignore` excludes it.
+Cookies are optional. If you use them, set `YTDLP_COOKIES_FILE` to the absolute path of a local Netscape-format cookies file. Keep it outside this repository; `.gitignore` excludes it.
 
 ## Local development
 
@@ -89,7 +91,7 @@ npm install
 npm run dev
 ```
 
-Vite proxies `/api` to `http://127.0.0.1:8000` while developing. Create `downloads/` and `data/` if necessary, or set `DOWNLOAD_DIR` and `SQLITE_PATH` before starting the backend.
+Vite proxies `/api` to `http://127.0.0.1:8000` while developing. Create `downloads/` and `data/` if necessary, or set `DOWNLOAD_DIR` and `SQLITE_PATH` before starting the backend. For the native launcher, FastAPI serves the built Vite files itself on one port.
 
 ## Reference
 
@@ -102,14 +104,14 @@ Vite proxies `/api` to `http://127.0.0.1:8000` while developing. Create `downloa
 
 This project deliberately has no login system. Do not expose it directly to the public internet: anybody who can reach the page can queue, view, cancel, remove, and download files. Keep it on a trusted network, or put it behind your own VPN, reverse-proxy authentication, firewall rules, and rate limiting.
 
-The backend is not published as a Docker host port; the frontend is the only public container entry point. The application only accepts YouTube URLs, enforces queue/cache limits, and has basic IP throttling, but those safeguards are not a substitute for access control.
+The native server binds to `127.0.0.1` by default. Put it behind your own reverse proxy only if you also add access controls. The application only accepts YouTube URLs, enforces queue/cache limits, and has basic IP throttling, but those safeguards are not a substitute for access control.
 
 ## Checks
 
 ```bash
 cd frontend && npm run build
 cd ../backend && python3 -m compileall -q app
-cd .. && docker compose config --quiet
+cd .. && node --check bin/holen.js
 ```
 
 ## License

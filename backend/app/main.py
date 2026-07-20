@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 
@@ -29,6 +30,8 @@ CLEANUP_INTERVAL_SECONDS = max(60, int(os.environ.get("CLEANUP_INTERVAL_SECONDS"
 ANALYZE_REQUESTS_PER_MINUTE = max(1, int(os.environ.get("ANALYZE_REQUESTS_PER_MINUTE", "8")))
 JOB_REQUESTS_PER_HOUR = max(1, int(os.environ.get("JOB_REQUESTS_PER_HOUR", "12")))
 YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+_frontend_dist = os.environ.get("FRONTEND_DIST", "")
+FRONTEND_DIST = Path(_frontend_dist).resolve() if _frontend_dist else None
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -117,7 +120,7 @@ async def security_headers(request: Request, call_next):
 
 
 def client_key(request: Request) -> str:
-    """Use the proxy's first forwarded address; the API is not Docker-published."""
+    """Use a reverse proxy's first forwarded address when one is configured."""
     forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
     if forwarded:
         return forwarded
@@ -457,3 +460,15 @@ def download_file(job_id: str) -> FileResponse:
     if not path.exists() or not is_download_file(path):
         raise HTTPException(status_code=404, detail="This file is no longer available.")
     return FileResponse(path, filename=job.get("file_name") or path.name)
+
+
+if FRONTEND_DIST and FRONTEND_DIST.is_dir():
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def frontend_app(path: str) -> FileResponse:
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found.")
+        return FileResponse(FRONTEND_DIST / "index.html")

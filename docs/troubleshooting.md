@@ -2,11 +2,11 @@
 
 ## A video cannot be read
 
-Confirm the URL is a YouTube video or Short and update the backend image to pick up the latest compatible `yt-dlp` release:
+Confirm the URL is a YouTube video or Short, then reinstall the launcher environment to pick up the latest compatible `yt-dlp` release:
 
 ```bash
-docker compose build --no-cache backend
-docker compose up -d
+rm -rf backend/.venv
+./run.sh
 ```
 
 Some sources require an authenticated browser session. If you are permitted to use one, set `YTDLP_COOKIES_PATH` to a local Netscape-format cookies file. Never commit that file.
@@ -17,4 +17,4 @@ Wait for a running job to complete, remove completed files, or adjust `MAX_ACTIV
 
 ## The page does not open
 
-Run `docker compose ps`, then inspect `docker compose logs --tail=100`. The frontend health depends on the backend `/api/health` endpoint.
+Inspect `holen.log`, then visit `http://localhost:8080/api/health`. Confirm Python 3.10+, Node.js 18+, and `ffmpeg` are installed and available on your `PATH`.
