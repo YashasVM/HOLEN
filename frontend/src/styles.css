@@ -1,9 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap');
-
 :root {
   color: #1c1b18;
   background: #f4f1e8;
-  font-family: "DM Mono", monospace;
+  font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-synthesis: none;
 }
 
@@ -16,15 +14,15 @@ button { cursor: pointer; }
 .page-shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 26px 0 44px; }
 .site-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #cfc8b9; padding-bottom: 22px; }
 .site-header p { color: #777166; font-size: .76rem; margin: 0; text-transform: uppercase; letter-spacing: .07em; }
-.brand { align-items: center; color: #1c1b18; display: inline-flex; font-family: "Fraunces", serif; font-size: 1.27rem; font-weight: 700; gap: 9px; text-decoration: none; }
-.brand span { align-items: center; background: #e75c35; border-radius: 50%; color: #fffaf0; display: inline-flex; font: 500 1rem "DM Mono", monospace; height: 30px; justify-content: center; width: 30px; }
+.brand { align-items: center; color: #1c1b18; display: inline-flex; font-family: Georgia, serif; font-size: 1.27rem; font-weight: 700; gap: 9px; text-decoration: none; }
+.brand span { align-items: center; background: #e75c35; border-radius: 50%; color: #fffaf0; display: inline-flex; font: 500 1rem ui-monospace, monospace; height: 30px; justify-content: center; width: 30px; }
 
 .hero { display: grid; gap: 64px; grid-template-columns: minmax(300px, .88fr) minmax(390px, 1.12fr); padding: clamp(64px, 10vw, 122px) 5.5% clamp(68px, 10vw, 120px); position: relative; }
 .hero::before { background: #bfd4c6; border-radius: 999px; content: ""; height: 230px; left: 3%; opacity: .7; position: absolute; top: 16%; transform: rotate(-27deg); width: 72px; z-index: -1; }
 .hero-copy { align-self: center; }
 .eyebrow { color: #ad482c; display: block; font-size: .71rem; letter-spacing: .1em; text-transform: uppercase; }
 h1, h2, h3, p { margin-top: 0; }
-h1, h2 { font-family: "Fraunces", serif; }
+h1, h2 { font-family: Georgia, serif; }
 h1 { font-size: clamp(3rem, 5.4vw, 5.25rem); font-weight: 600; letter-spacing: -.065em; line-height: .94; margin: 17px 0 25px; }
 h1 em { color: #e75c35; font-style: italic; }
 .hero-copy p { color: #615d55; font-size: .88rem; line-height: 1.85; max-width: 380px; }
@@ -67,7 +65,7 @@ h2 { font-size: clamp(2rem, 3.5vw, 3rem); letter-spacing: -.05em; line-height: 1
 .status { font-size: .6rem; letter-spacing: .06em; text-transform: uppercase; }
 .status.queued { color: #836114; }.status.running { color: #316144; }.status.completed { color: #22633d; }.status.failed, .status.cancelled { color: #a2402c; }
 time { color: #9a9284; font-size: .61rem; }
-h3 { font-family: "Fraunces", serif; font-size: 1rem; font-weight: 600; letter-spacing: -.02em; margin: 5px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+h3 { font-family: Georgia, serif; font-size: 1rem; font-weight: 600; letter-spacing: -.02em; margin: 5px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-details p { color: #766f65; font-size: .64rem; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress { background: #e3ded3; height: 3px; margin-top: 9px; overflow: hidden; width: min(100%, 280px); }
 .progress i { background: #3f7550; display: block; height: 100%; transform-origin: left; transition: transform .35s ease; width: 100%; }
