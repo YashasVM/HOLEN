@@ -19,12 +19,12 @@ Only download media you have the right to save and use. You are responsible for 
 Requirements: Docker Engine with Docker Compose v2.
 
 ```bash
-cp .env.example .env
-docker compose up --build -d
-curl http://localhost:8080/api/health
+./run.sh
 ```
 
-Open [http://localhost:8080](http://localhost:8080). The first image build downloads the frontend and backend dependencies, so it can take a few minutes.
+That one command creates `.env` from safe defaults when needed, builds the images, and starts the stack. Open [http://localhost:8080](http://localhost:8080). The first image build downloads the frontend and backend dependencies, so it can take a few minutes.
+
+To use your own configuration, copy `.env.example` to `.env`, adjust it, then run `./run.sh`.
 
 To stop the stack:
 
