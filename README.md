@@ -26,6 +26,16 @@ That one command creates `.env` from safe defaults when needed, builds the image
 
 To use your own configuration, copy `.env.example` to `.env`, adjust it, then run `./run.sh`.
 
+### Run without cloning
+
+With Node.js 18+ and Docker installed, run this from any empty working directory:
+
+```bash
+npx github:YashasVM/HOLEN
+```
+
+The launcher downloads the release package, copies the runnable project to `./holen`, and starts Docker Compose. Use `--dir <directory>` to choose a different destination. This keeps the installation and its persistent `downloads/` and `data/` folders in a normal local directory rather than an npm cache.
+
 To stop the stack:
 
 ```bash

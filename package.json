@@ -1,0 +1,34 @@
+{
+  "name": "holen-github-launcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Install and run Holen from GitHub with npx.",
+  "bin": {
+    "holen": "bin/holen.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "backend/.dockerignore",
+    "backend/Dockerfile",
+    "backend/requirements.txt",
+    "backend/app/*.py",
+    "frontend/.dockerignore",
+    "frontend/Dockerfile",
+    "frontend/index.html",
+    "frontend/nginx.conf",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/src",
+    "frontend/tsconfig.json",
+    "frontend/vite.config.ts",
+    "docker-compose.yml",
+    ".env.example",
+    "run.sh",
+    "README.md",
+    "LICENSE"
+  ]
+}
