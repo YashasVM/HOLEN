@@ -77,6 +77,10 @@ h3 { font-family: Georgia, serif; font-size: 1rem; font-weight: 600; letter-spac
 .empty p { margin: 0; }
 footer { border-top: 1px solid #cfc8b9; color: #817a6e; font-size: .63rem; line-height: 1.55; margin-top: 65px; padding: 20px 5.5% 0; }
 
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
 @media (max-width: 760px) {
   .page-shell { width: min(100% - 28px, 620px); }
   .site-header { padding-bottom: 17px; }
