@@ -294,7 +294,7 @@ def command_for(job_id: str, url: str, selected_format: str) -> list[str]:
     if selected_format == "audio":
         return [*base, "-f", "ba/b", "-x", "--audio-format", "m4a", "--embed-metadata", url]
     if selected_format == "mp3":
-        return [*base, "-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-metadata", url]
+        return [*base, "-f", "ba/b", "-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-metadata", url]
     return [*base, "-f", "bv*+ba/b", "--merge-output-format", "mp4", url]
 
 
