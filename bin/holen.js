@@ -24,6 +24,19 @@ function run(command, commandArgs, options = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+function findPython() {
+  const candidates = process.env.PYTHON
+    ? [[process.env.PYTHON, []]]
+    : process.platform === "win32"
+      ? [["python", []], ["py", ["-3"]]]
+      : [["python3", []], ["python", []]];
+  for (const [command, prefix] of candidates) {
+    const check = spawnSync(command, [...prefix, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"], { stdio: "ignore" });
+    if (check.status === 0) return { command, prefix };
+  }
+  fail("Python 3.10+ is required. Set PYTHON if your Python executable has a different name.");
+}
+
 function readEnv(file) {
   if (!existsSync(file)) return {};
   const values = {};
@@ -50,12 +63,12 @@ if (!runInPlace && dirIndex === -1 && args.length) {
 }
 
 const projectDir = runInPlace ? packageRoot : resolve(process.cwd(), dirIndex === -1 ? "holen" : args[dirIndex + 1]);
-if (!runInPlace && existsSync(projectDir) && readdirSync(projectDir).length) {
-  fail(`Refusing to overwrite the existing directory: ${projectDir}\nRun 'cd ${projectDir} && ./run.sh' to start that installation.`);
+const existingProject = !runInPlace && existsSync(projectDir) && readdirSync(projectDir).length > 0;
+if (existingProject && (!existsSync(resolve(projectDir, "backend", "app", "main.py")) || !existsSync(resolve(projectDir, "frontend", "package.json")))) {
+  fail(`Refusing to overwrite a directory that is not a Holen installation: ${projectDir}`);
 }
 
-const python = process.env.PYTHON || "python3";
-if (spawnSync(python, ["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"], { stdio: "ignore" }).status !== 0) fail("Python 3.10+ is required. Set PYTHON if your Python executable has a different name.");
+const python = findPython();
 if (spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0) fail("ffmpeg is required. Install it with your operating system's package manager.");
 if (spawnSync("npm", ["--version"], { stdio: "ignore" }).status !== 0) fail("npm is required (Node.js 18+).");
 
@@ -63,9 +76,9 @@ if (!runInPlace) {
   mkdirSync(projectDir, { recursive: true });
   for (const entry of ["backend", "frontend", "bin", ".env.example", ".gitignore", "run.sh", "README.md", "LICENSE", "package.json"]) {
     const source = resolve(packageRoot, entry);
-    if (existsSync(source)) cpSync(source, resolve(projectDir, entry), { recursive: true });
+    if (existsSync(source)) cpSync(source, resolve(projectDir, entry), { recursive: true, force: true });
   }
-  console.log(`Installed Holen in ${projectDir}`);
+  console.log(`${existingProject ? "Updated" : "Installed"} Holen in ${projectDir}`);
 }
 
 const envFile = resolve(projectDir, ".env");
@@ -93,7 +106,7 @@ const virtualPython = process.platform === "win32"
   ? resolve(virtualEnv, "Scripts", "python.exe")
   : resolve(virtualEnv, "bin", "python");
 
-if (!existsSync(virtualPython)) run(python, ["-m", "venv", virtualEnv]);
+if (!existsSync(virtualPython)) run(python.command, [...python.prefix, "-m", "venv", virtualEnv]);
 run(virtualPython, ["-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", "requirements.txt"], { cwd: backendDir });
 run("npm", ["ci", "--no-audit", "--no-fund"], { cwd: frontendDir });
 run("npm", ["run", "build"], { cwd: frontendDir });
@@ -117,4 +130,7 @@ server.unref();
 writeFileSync(pidFile, `${server.pid}\n`);
 
 console.log(`\nHolen is starting at http://localhost:${appPort}`);
-console.log(`Stop it with: kill $(cat ${resolve(projectDir, "holen.pid")})`);
+const stopCommand = process.platform === "win32"
+  ? `Stop-Process -Id (Get-Content '${pidFile}')`
+  : `kill $(cat ${pidFile})`;
+console.log(`Stop it with: ${stopCommand}`);

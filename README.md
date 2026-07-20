@@ -34,13 +34,11 @@ With Node.js 18+, Python 3.10+, and `ffmpeg` installed, run this from any empty 
 npx github:YashasVM/HOLEN
 ```
 
-The launcher downloads the release package, copies the runnable project to `./holen`, and starts it directly on the host—Docker is not required. Use `--dir <directory>` to choose a different destination. This keeps the installation and its persistent `downloads/` and `data/` folders in a normal local directory rather than an npm cache.
+The launcher downloads the release package, copies the runnable project to `./holen`, and starts it directly on the host—Docker is not required. Use `--dir <directory>` to choose a different destination. Running the command again updates an existing Holen installation while preserving its `.env`, downloads, and queue data.
 
 To stop the stack:
 
-```bash
-kill "$(cat holen.pid)"
-```
+On macOS or Linux, run `kill "$(cat holen.pid)"`. In PowerShell, run `Stop-Process -Id (Get-Content holen.pid)`.
 
 Run that command from the installation directory (for the `npx` command, that is `./holen`). Server output is written to `holen.log`.
 
