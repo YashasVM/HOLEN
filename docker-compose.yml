@@ -1,6 +1,7 @@
 services:
   backend:
     build: ./backend
+    init: true
     restart: unless-stopped
     environment:
       DOWNLOAD_DIR: /downloads
