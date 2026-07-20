@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DOWNLOAD_DIR: /downloads
+      SQLITE_PATH: /data/app.db
+      MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-2}
+      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-20}
+      MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
+      CACHE_LIMIT_GB: ${CACHE_LIMIT_GB:-20}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
+      ANALYZE_REQUESTS_PER_MINUTE: ${ANALYZE_REQUESTS_PER_MINUTE:-8}
+      JOB_REQUESTS_PER_HOUR: ${JOB_REQUESTS_PER_HOUR:-12}
+      YTDLP_COOKIES_FILE: /cookies/cookies.txt
+    volumes:
+      - ./downloads:/downloads
+      - ./data:/data
+      - ${YTDLP_COOKIES_PATH:-/dev/null}:/cookies/cookies.txt:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:80"
