@@ -81,6 +81,13 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8000` while developing. Create `downloads/` and `data/` if necessary, or set `DOWNLOAD_DIR` and `SQLITE_PATH` before starting the backend.
 
+## Reference
+
+- [Architecture](docs/architecture.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+
 ## Public deployment note
 
 This project deliberately has no login system. Do not expose it directly to the public internet: anybody who can reach the page can queue, view, cancel, remove, and download files. Keep it on a trusted network, or put it behind your own VPN, reverse-proxy authentication, firewall rules, and rate limiting.
