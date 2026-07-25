@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import hmac
 import json
 import os
 import platform
@@ -17,21 +16,17 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import jwt
 from jwt import InvalidTokenError, PyJWKClient
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-
-
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "")  # optional — only used by legacy /api/session/login
-APP_SECRET = os.environ["APP_SECRET"].encode("utf-8")
 
 
 def clerk_frontend_api_from_publishable_key(value: str) -> str:
@@ -60,14 +55,23 @@ TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 MAX_DURATION_SECONDS = int(os.environ.get("MAX_DURATION_SECONDS", str(2 * 60 * 60)))
 MAX_ACTIVE_JOBS = int(os.environ.get("MAX_ACTIVE_JOBS", "1"))
 MAX_QUEUED_JOBS = int(os.environ.get("MAX_QUEUED_JOBS", "25"))
-MAX_TEMP_GB = float(os.environ.get("MAX_TEMP_GB", "20"))
-PLEX_THRESHOLD_GB = 15.0
-FILE_TTL_SECONDS = int(os.environ.get("FILE_TTL_SECONDS", str(60 * 60)))
+CACHE_LIMIT_GB = float(os.environ.get("CACHE_LIMIT_GB", "45"))
+DOWNLOAD_LINK_TTL_SECONDS = int(os.environ.get("DOWNLOAD_LINK_TTL_SECONDS", os.environ.get("FILE_TTL_SECONDS", str(60 * 60))))
+DOWNLOAD_TICKET_TTL_SECONDS = 60
 CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", str(15 * 60)))
 YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
 # Per-user limits: max queued+running jobs per verified Clerk user ID
 MAX_JOBS_PER_USER = int(os.environ.get("MAX_JOBS_PER_USER", "5"))
 DEFAULT_USAGE_LIMIT_BYTES = int(float(os.environ.get("DEFAULT_USAGE_LIMIT_GB", "5")) * 1024**3)
+RESTRICTED_EMAIL_USAGE_LIMIT_BYTES = int(float(os.environ.get("RESTRICTED_EMAIL_USAGE_LIMIT_GB", "2")) * 1024**3)
+TRUSTED_EMAIL_DOMAINS = frozenset(
+    domain.strip().casefold()
+    for domain in os.environ.get(
+        "TRUSTED_EMAIL_DOMAINS",
+        "gmail.com,duck.com,hotmail.com,outlook.com",
+    ).split(",")
+    if domain.strip()
+)
 SERVER_START_TIME = time.time()
 _clerk_jwks = PyJWKClient(f"{CLERK_FRONTEND_API_URL}/.well-known/jwks.json") if CLERK_FRONTEND_API_URL else None
 
@@ -83,11 +87,6 @@ _clerk_profile_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 # Rate limiting: store as {key: [timestamps]}
 _analyze_calls: dict[str, list[float]] = {}
-_login_calls: dict[str, list[float]] = {}  # IP-based login rate limiting
-
-
-class LoginRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=256)
 
 
 class UrlRequest(BaseModel):
@@ -99,7 +98,6 @@ class JobRequest(UrlRequest):
     # title/thumbnail are optional, capped to prevent DB pollution
     title: str | None = Field(default=None, max_length=512)
     thumbnail: str | None = Field(default=None, max_length=2048)
-
 
 class AccessUpdateRequest(BaseModel):
     is_admin: bool | None = None
@@ -205,6 +203,17 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS download_tickets (
+                token_hash TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         # Admin access is reserved for the verified GitHub owner account.
         # This also removes any legacy elevated roles on startup.
         conn.execute("UPDATE access_users SET is_admin = 0 WHERE is_owner = 0")
@@ -212,16 +221,6 @@ def init_db() -> None:
 
 
 init_db()
-
-
-def b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
-def sign(payload: dict[str, Any]) -> str:
-    body = b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    signature = b64url(hmac.new(APP_SECRET, body.encode("ascii"), hashlib.sha256).digest())
-    return f"{body}.{signature}"
 
 
 def verify_token(token: str) -> dict[str, Any]:
@@ -244,17 +243,6 @@ def require_auth(authorization: str | None = Header(default=None)) -> dict[str, 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     return verify_token(authorization.removeprefix("Bearer ").strip())
-
-
-def require_auth_or_query(
-    authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
-) -> dict[str, Any]:
-    if authorization and authorization.startswith("Bearer "):
-        return verify_token(authorization.removeprefix("Bearer ").strip())
-    if token:
-        return verify_token(token)
-    raise HTTPException(status_code=401, detail="Missing token")
 
 
 def clerk_profile(user_id: str) -> dict[str, Any]:
@@ -298,6 +286,33 @@ def profile_fields(profile: dict[str, Any]) -> tuple[str | None, str | None, str
     return name or profile.get("username"), email, github_username
 
 
+def is_trusted_email(email: str | None) -> bool:
+    """Return whether an email belongs to one of the approved quota domains."""
+    if not email or "@" not in email:
+        return False
+    _, domain = email.rsplit("@", 1)
+    return domain.casefold() in TRUSTED_EMAIL_DOMAINS
+
+
+def usage_limit_for_email(email: str | None) -> int:
+    return DEFAULT_USAGE_LIMIT_BYTES if is_trusted_email(email) else RESTRICTED_EMAIL_USAGE_LIMIT_BYTES
+
+
+def format_quota_gb(quota_bytes: int) -> str:
+    return f"{quota_bytes / 1024**3:g} GB"
+
+
+def email_quota_notice(email: str | None) -> str | None:
+    if is_trusted_email(email):
+        return None
+    return (
+        "Nice try! Using temp mail to get more usage, huh? I like it. "
+        "But unfortunately, I'm tight on inference, so you only get "
+        f"{format_quota_gb(RESTRICTED_EMAIL_USAGE_LIMIT_BYTES)} instead of "
+        f"{format_quota_gb(DEFAULT_USAGE_LIMIT_BYTES)}. Nice try, though :)"
+    )
+
+
 def ensure_access_user(auth: dict[str, Any]) -> dict[str, Any]:
     user_id = str(auth["sub"])
     profile = clerk_profile(user_id)
@@ -314,7 +329,7 @@ def ensure_access_user(auth: dict[str, Any]) -> dict[str, Any]:
         else:
             conn.execute(
                 "INSERT INTO access_users (user_id, name, email, github_username, is_admin, is_owner, usage_limit_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, name, email, github_username, int(is_owner), int(is_owner), DEFAULT_USAGE_LIMIT_BYTES, timestamp, timestamp),
+                (user_id, name, email, github_username, int(is_owner), int(is_owner), usage_limit_for_email(email), timestamp, timestamp),
             )
         conn.commit()
         row = conn.execute("SELECT * FROM access_users WHERE user_id = ?", (user_id,)).fetchone()
@@ -323,13 +338,6 @@ def ensure_access_user(auth: dict[str, Any]) -> dict[str, Any]:
 
 def require_user(auth: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     return ensure_access_user(auth)
-
-
-def require_user_or_query(
-    authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
-) -> dict[str, Any]:
-    return ensure_access_user(require_auth_or_query(authorization, token))
 
 
 def require_admin(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
@@ -359,6 +367,8 @@ def public_user(row: dict[str, Any] | sqlite3.Row) -> dict[str, Any]:
         "egress_bytes": int(data["egress_bytes"]),
         "used_bytes": used,
         "remaining_bytes": max(0, int(data["usage_limit_bytes"]) - used),
+        "is_restricted_email": not is_trusted_email(data["email"]),
+        "quota_notice": email_quota_notice(data["email"]),
         "created_at": data["created_at"],
     }
 
@@ -367,6 +377,31 @@ def assert_quota(user: dict[str, Any], additional_bytes: int = 0) -> None:
     used = int(user["ingress_bytes"]) + int(user["egress_bytes"])
     if used + additional_bytes > int(user["usage_limit_bytes"]):
         raise HTTPException(status_code=429, detail="Your bandwidth allowance is exhausted. Ask an admin to raise it.")
+
+
+def download_ticket_cookie_path(job_id: str) -> str:
+    return f"/api/jobs/{job_id}/download"
+
+
+def consume_download_ticket(job_id: str, token: str | None) -> dict[str, Any]:
+    if not token:
+        raise HTTPException(status_code=401, detail="Download authorization is missing or expired")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with db_lock, open_db() as conn:
+        ticket = conn.execute(
+            "SELECT job_id, user_id, expires_at FROM download_tickets WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        if not ticket or ticket["job_id"] != job_id or ticket["expires_at"] <= now_iso():
+            conn.execute("DELETE FROM download_tickets WHERE token_hash = ?", (token_hash,))
+            conn.commit()
+            raise HTTPException(status_code=401, detail="Download authorization is missing or expired")
+        conn.execute("DELETE FROM download_tickets WHERE token_hash = ?", (token_hash,))
+        user = conn.execute("SELECT * FROM access_users WHERE user_id = ?", (ticket["user_id"],)).fetchone()
+        conn.commit()
+    if not user:
+        raise HTTPException(status_code=401, detail="Download authorization is no longer valid")
+    return dict(user)
 
 
 def add_usage(user_id: str, column: str, amount: int) -> None:
@@ -455,10 +490,11 @@ def directory_size_bytes(path: Path) -> int:
 
 
 def ensure_temp_capacity() -> None:
+    cleanup_expired()
     used = directory_size_bytes(DOWNLOAD_DIR)
-    limit = int(MAX_TEMP_GB * 1024 * 1024 * 1024)
+    limit = int(CACHE_LIMIT_GB * 1024 * 1024 * 1024)
     if used >= limit:
-        raise HTTPException(status_code=507, detail=f"Temporary storage is full. Limit is {MAX_TEMP_GB:g} GB")
+        raise HTTPException(status_code=507, detail=f"Download storage is full. Limit is {CACHE_LIMIT_GB:g} GB")
 
 
 def reset_interrupted_jobs() -> None:
@@ -476,31 +512,14 @@ def reset_interrupted_jobs() -> None:
 
 def cleanup_expired() -> None:
     """
-    Two-pass cleanup:
-    1. Delete individual files whose expires_at has passed.
-    2. If storage still >= PLEX_THRESHOLD_GB, delete oldest completed files.
+    Keep completed files until the cache reaches its configured capacity.
+    When the threshold is reached, remove the oldest completed files first.
+    Expiring download links never trigger file deletion.
     """
-    now = now_iso()
-
-    # Pass 1: TTL-based individual file expiry
+    threshold = int(CACHE_LIMIT_GB * 1024 * 1024 * 1024)
     with db_lock, open_db() as conn:
-        ttl_rows = conn.execute(
-            "SELECT id, file_path FROM jobs WHERE file_path IS NOT NULL AND status = 'completed' AND expires_at IS NOT NULL AND expires_at <= ?",
-            (now,),
-        ).fetchall()
-        for row in ttl_rows:
-            if row["file_path"]:
-                path = Path(row["file_path"]).resolve()
-                if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
-                    path.unlink(missing_ok=True)
-            conn.execute(
-                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = 'File expired (TTL)', updated_at = ? WHERE id = ?",
-                (now_iso(), row["id"]),
-            )
+        conn.execute("DELETE FROM download_tickets WHERE expires_at <= ?", (now_iso(),))
         conn.commit()
-
-    # Pass 2: Storage threshold — clear oldest completed files if over limit
-    threshold = int(PLEX_THRESHOLD_GB * 1024 * 1024 * 1024)
     if directory_size_bytes(DOWNLOAD_DIR) < threshold:
         return
 
@@ -516,13 +535,15 @@ def cleanup_expired() -> None:
                 if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
                     path.unlink(missing_ok=True)
             conn.execute(
-                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = 'Auto-deleted: storage limit reached', updated_at = ? WHERE id = ?",
-                (now_iso(), row["id"]),
+                "UPDATE jobs SET file_path = NULL, file_name = NULL, message = ?, updated_at = ? WHERE id = ?",
+                (f"Auto-deleted: {CACHE_LIMIT_GB:g} GB storage limit reached", now_iso(), row["id"]),
             )
         conn.commit()
 
-    # Remove any orphan files
+    # Orphaned files are only removed if the cache is still over capacity.
     for path in DOWNLOAD_DIR.glob("*"):
+        if directory_size_bytes(DOWNLOAD_DIR) < threshold:
+            break
         if path.is_file():
             path.unlink(missing_ok=True)
 
@@ -704,7 +725,7 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
         return
 
     from datetime import timezone as tz
-    expires_at = datetime.fromtimestamp(time.time() + FILE_TTL_SECONDS, tz=timezone.utc).isoformat()
+    expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_LINK_TTL_SECONDS, tz=timezone.utc).isoformat()
     update_job(
         job_id,
         status="completed",
@@ -716,6 +737,7 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
     )
     if row and row["user_email"]:
         add_usage(str(row["user_email"]), "ingress_bytes", file_path.stat().st_size)
+    cleanup_expired()
     await schedule_next_jobs()
 
 
@@ -795,17 +817,6 @@ def remove_access_user(user_id: str, owner: dict[str, Any] = Depends(require_own
         conn.commit()
     _clerk_profile_cache.pop(user_id, None)
     return {"deleted": True}
-
-
-@app.post("/api/session/auto")
-def session_auto() -> dict[str, str]:
-    raise HTTPException(status_code=410, detail="Use a Clerk session token")
-
-
-@app.post("/api/auth/login")
-@app.post("/api/session/login")
-def session_login(payload: LoginRequest, request: Request) -> dict[str, str]:
-    raise HTTPException(status_code=410, detail="Password login has been replaced by Clerk")
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────
@@ -977,14 +988,15 @@ def admin_jobs(_admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any
         "jobs": [row_to_job(row) for row in rows],
         "temp": {
             "used_bytes": directory_size_bytes(DOWNLOAD_DIR),
-            "limit_bytes": int(MAX_TEMP_GB * 1024 * 1024 * 1024),
+            "limit_bytes": int(CACHE_LIMIT_GB * 1024 * 1024 * 1024),
             "free_bytes": usage.free,
         },
         "limits": {
             "max_duration_seconds": MAX_DURATION_SECONDS,
             "max_active_jobs": MAX_ACTIVE_JOBS,
             "max_queued_jobs": MAX_QUEUED_JOBS,
-            "file_ttl_seconds": FILE_TTL_SECONDS,
+            "download_link_ttl_seconds": DOWNLOAD_LINK_TTL_SECONDS,
+            "cache_limit_gb": CACHE_LIMIT_GB,
         },
         "system": {
             "platform": platform.system(),
@@ -1005,6 +1017,65 @@ def admin_jobs(_admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any
             "completed": completed_count,
             "failed": failed_count,
         },
+    }
+
+
+@app.get("/api/admin/telemetry")
+def admin_telemetry(_admin: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    """Return lightweight live queue and 14-day activity data for the admin desk."""
+    today = datetime.now(timezone.utc).date()
+    days = [today - timedelta(days=offset) for offset in range(13, -1, -1)]
+    buckets = {day.isoformat(): {"downloads": 0, "completed": 0, "failed": 0} for day in days}
+    window_start = datetime.combine(days[0], datetime.min.time(), tzinfo=timezone.utc).isoformat()
+
+    with db_lock, open_db() as conn:
+        recent_rows = conn.execute(
+            "SELECT created_at, status FROM jobs WHERE created_at >= ?",
+            (window_start,),
+        ).fetchall()
+        active_rows = conn.execute(
+            "SELECT id, title, format, status, progress, message, user_email, created_at FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at ASC LIMIT 50"
+        ).fetchall()
+        usage_row = conn.execute(
+            "SELECT COALESCE(SUM(ingress_bytes), 0) AS ingress_bytes, COALESCE(SUM(egress_bytes), 0) AS egress_bytes FROM access_users"
+        ).fetchone()
+
+    for row in recent_rows:
+        try:
+            day_key = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00")).date().isoformat()
+        except (TypeError, ValueError):
+            continue
+        bucket = buckets.get(day_key)
+        if not bucket:
+            continue
+        bucket["downloads"] += 1
+        if row["status"] == "completed":
+            bucket["completed"] += 1
+        elif row["status"] == "failed":
+            bucket["failed"] += 1
+
+    cache_used = directory_size_bytes(DOWNLOAD_DIR)
+    return {
+        "active_jobs": [dict(row) for row in active_rows],
+        "activity": [
+            {
+                "date": day.isoformat(),
+                "label": f"{day.strftime('%b')} {day.day}",
+                **buckets[day.isoformat()],
+            }
+            for day in days
+        ],
+        "bandwidth": {
+            "ingress_bytes": int(usage_row["ingress_bytes"]),
+            "egress_bytes": int(usage_row["egress_bytes"]),
+            "total_bytes": int(usage_row["ingress_bytes"]) + int(usage_row["egress_bytes"]),
+        },
+        "cache": {
+            "used_bytes": cache_used,
+            "limit_bytes": int(CACHE_LIMIT_GB * 1024 * 1024 * 1024),
+            "percent_used": round(cache_used / max(1, CACHE_LIMIT_GB * 1024 * 1024 * 1024) * 100, 1),
+        },
+        "generated_at": now_iso(),
     }
 
 
@@ -1091,10 +1162,7 @@ def purge_cache(_admin: dict[str, Any] = Depends(require_admin)) -> dict[str, An
 
 
 @app.get("/api/jobs/stream")
-async def jobs_stream(token: str | None = Query(default=None)) -> StreamingResponse:
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing token")
-    user = ensure_access_user(verify_token(token))
+async def jobs_stream(user: dict[str, Any] = Depends(require_user)) -> StreamingResponse:
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=20)
     _sse_clients.add(queue)
@@ -1138,6 +1206,40 @@ def get_job(job_id: str, user: dict[str, Any] = Depends(require_user)) -> dict[s
 
 # ── File download ─────────────────────────────────────────────────────────────
 
+@app.post("/api/jobs/{job_id}/download-ticket")
+def issue_download_ticket(job_id: str, user: dict[str, Any] = Depends(require_user)) -> JSONResponse:
+    """Set a single-use, HttpOnly download authorization cookie for one job."""
+    job = get_job_or_404(job_id)
+    if job.get("user_email") != user["user_id"] and not user["is_admin"]:
+        raise HTTPException(status_code=404, detail="File not found")
+    if job["status"] != "completed" or not job.get("file_path"):
+        raise HTTPException(status_code=404, detail="File not ready")
+    if job.get("expires_at") and job["expires_at"] <= now_iso():
+        raise HTTPException(status_code=404, detail="This download link has expired")
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_TICKET_TTL_SECONDS, tz=timezone.utc).isoformat()
+    with db_lock, open_db() as conn:
+        conn.execute("DELETE FROM download_tickets WHERE expires_at <= ?", (now_iso(),))
+        conn.execute(
+            "INSERT INTO download_tickets (token_hash, job_id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+            (token_hash, job_id, user["user_id"], expires_at, now_iso()),
+        )
+        conn.commit()
+
+    response = JSONResponse({"detail": "Download authorized"})
+    response.set_cookie(
+        key="holen_download_ticket",
+        value=token,
+        max_age=DOWNLOAD_TICKET_TTL_SECONDS,
+        httponly=True,
+        secure=PUBLIC_ORIGIN.startswith("https://"),
+        samesite="strict",
+        path=download_ticket_cookie_path(job_id),
+    )
+    return response
+
 PLEX_MUSIC_DIR = Path("/mnt/BackupDrive/Media/Audio")
 
 
@@ -1166,9 +1268,9 @@ def send_to_plex(job_id: str, _admin: dict[str, Any] = Depends(require_admin)) -
     return {"detail": "Copied to Plex", "destination": str(dest)}
 
 
-@app.get("/api/files/{job_id}")
 @app.get("/api/jobs/{job_id}/download")
-def download_file(job_id: str, user: dict[str, Any] = Depends(require_user_or_query)) -> FileResponse:
+def download_file(job_id: str, holen_download_ticket: str | None = Cookie(default=None)) -> FileResponse:
+    user = consume_download_ticket(job_id, holen_download_ticket)
     job = get_job_or_404(job_id)
     if job.get("user_email") != user["user_id"] and not user["is_admin"]:
         raise HTTPException(status_code=404, detail="File not found")

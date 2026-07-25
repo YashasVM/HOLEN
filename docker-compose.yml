@@ -5,13 +5,13 @@ services:
       cache_from:
         - type=local,src=/tmp/docker-cache/backend
     restart: unless-stopped
+    # The public Clerk key lets the API derive its issuer when a dedicated
+    # CLERK_FRONTEND_API_URL is not set in the root environment.
     env_file:
       - ./frontend/.env.local
     environment:
-      APP_PASSWORD: ${APP_PASSWORD}
-      APP_SECRET: ${APP_SECRET}
       CLERK_FRONTEND_API_URL: ${CLERK_FRONTEND_API_URL:-}
-      # CLERK_SECRET_KEY is loaded from frontend/.env.local by env_file.
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
       OWNER_GITHUB_USERNAME: ${OWNER_GITHUB_USERNAME:-YashasVM}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
       MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
@@ -19,8 +19,10 @@ services:
       MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-25}
       MAX_JOBS_PER_USER: ${MAX_JOBS_PER_USER:-5}
       DEFAULT_USAGE_LIMIT_GB: ${DEFAULT_USAGE_LIMIT_GB:-5}
-      MAX_TEMP_GB: ${MAX_TEMP_GB:-20}
-      FILE_TTL_SECONDS: ${FILE_TTL_SECONDS:-3600}
+      RESTRICTED_EMAIL_USAGE_LIMIT_GB: ${RESTRICTED_EMAIL_USAGE_LIMIT_GB:-2}
+      TRUSTED_EMAIL_DOMAINS: ${TRUSTED_EMAIL_DOMAINS:-gmail.com,duck.com,hotmail.com,outlook.com}
+      CACHE_LIMIT_GB: ${CACHE_LIMIT_GB:-45}
+      DOWNLOAD_LINK_TTL_SECONDS: ${DOWNLOAD_LINK_TTL_SECONDS:-3600}
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
       DOWNLOAD_DIR: /downloads
       SQLITE_PATH: /data/app.db
@@ -46,6 +48,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
       cache_from:
         - type=local,src=/tmp/docker-cache/frontend
     restart: unless-stopped

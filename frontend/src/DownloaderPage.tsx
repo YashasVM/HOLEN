@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, FormEvent } f
 import { UserButton } from "@clerk/react";
 import {
   CheckSquare,
-  Copy,
   Clock3,
   Download,
+  AlertTriangle,
   Film,
   Gauge,
   Link2,
@@ -192,7 +192,6 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
   const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
   const [usage, setUsage] = useState(user);
   const { toasts, show: showToast } = useToast();
-  const sseRef = useRef<EventSource | null>(null);
   const completedJobIdsRef = useRef<Set<string>>(new Set());
   const pendingClearRef = useRef<{ timer: number; restore: Job[] } | null>(null);
 
@@ -219,6 +218,10 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
   }, [apiFetch]);
 
   useEffect(() => { setUsage(user); }, [user]);
+
+  useEffect(() => {
+    if (user.is_restricted_email && user.quota_notice) showToast(user.quota_notice, false);
+  }, [showToast, user.is_restricted_email, user.quota_notice]);
 
   async function analyze(e: FormEvent) {
     e.preventDefault();
@@ -326,49 +329,60 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
 
   async function downloadFile(job: Job) {
     if (!job.download_url) return;
-    const dlUrl = `${job.download_url}?token=${encodeURIComponent(token)}`;
-    const a = document.createElement("a");
-    a.href = dlUrl;
-    a.download = job.file_name || "download";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.setTimeout(() => void refreshUsage(), 750);
-  }
-
-  async function copyJobLink(job: Job) {
-    if (!job.download_url) return;
-    const fullUrl = `${window.location.origin}${job.download_url}?token=${encodeURIComponent(token)}`;
     try {
-      await navigator.clipboard.writeText(fullUrl);
-      showToast("Download link copied!");
-    } catch {
-      showToast("Couldn't copy link", false);
+      await apiFetch(`/api/jobs/${job.id}/download-ticket`, { method: "POST" });
+      const a = document.createElement("a");
+      a.href = job.download_url;
+      a.download = job.file_name || "download";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.setTimeout(() => void refreshUsage(), 750);
+    } catch (err) {
+      showToast(friendlyError(err instanceof Error ? err.message : "Couldn't start download"), false);
     }
   }
 
   useEffect(() => {
     if (!token) return;
+    const controller = new AbortController();
     apiFetch<Job[]>("/api/jobs").then(setJobs).catch(() => setJobs([]));
     void refreshUsage();
-    const es = new EventSource(`/api/jobs/stream?token=${encodeURIComponent(token)}`);
-    sseRef.current = es;
-    es.onmessage = (e) => {
+
+    const applyJobs = (data: string) => {
       try {
-        const nextJobs = JSON.parse(e.data) as Job[];
+        const nextJobs = JSON.parse(data) as Job[];
         setJobs(nextJobs);
         const justCompleted = nextJobs.some((job) => job.status === "completed" && !completedJobIdsRef.current.has(job.id));
         nextJobs.filter((job) => job.status === "completed").forEach((job) => completedJobIdsRef.current.add(job.id));
         if (justCompleted) void refreshUsage();
       } catch { /* ignore malformed stream messages */ }
     };
-    es.onerror = () => {
-      // SSE disconnect — quietly reconnect on next render cycle
-      es.close();
-      sseRef.current = null;
+
+    const streamJobs = async () => {
+      const response = await fetch("/api/jobs/stream", { headers, signal: controller.signal });
+      if (!response.ok || !response.body) throw new Error("Job updates are unavailable");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+        for (const event of events) {
+          const data = event.split("\n")
+            .filter((line) => line.startsWith("data: "))
+            .map((line) => line.slice(6))
+            .join("\n");
+          if (data) applyJobs(data);
+        }
+      }
     };
-    return () => { es.close(); sseRef.current = null; };
-  }, [apiFetch, refreshUsage, token]);
+    void streamJobs().catch(() => undefined);
+    return () => controller.abort();
+  }, [apiFetch, headers, refreshUsage, token]);
 
   useEffect(() => () => {
     if (pendingClearRef.current) window.clearTimeout(pendingClearRef.current.timer);
@@ -386,7 +400,6 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
 
   /* ── Derived state ──────────────────────────────────────── */
   const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "queued");
-  const completedJobs = jobs.filter((j) => j.status === "completed");
   const doneJobs = jobs.filter((j) => j.status !== "running" && j.status !== "queued");
   const allIds = playlist ? new Set(playlist.entries.map((e) => e.id)) : new Set<string>();
   const allSelected = playlist ? allIds.size === selectedIds.size : false;
@@ -426,10 +439,12 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
         </div>
         <div className="header-actions">
           <div className="usage-chip" title="Downloads into the server and downloads to your device both count">
-            <span>Bandwidth</span>
-            <strong>{fmtBytes(usage.used_bytes)} / {fmtBytes(usage.usage_limit_bytes)}</strong>
-            <div className="usage-meter" aria-label={`${usagePercent}% of bandwidth used`}><i style={{ transform: `scaleX(${usagePercent / 100})` }} /></div>
-            <small>{fmtBytes(usage.remaining_bytes)} remaining · {usagePercent}% used</small>
+            <span className="usage-label">Bandwidth</span>
+            <strong className="usage-value">{fmtBytes(usage.used_bytes)} / {fmtBytes(usage.usage_limit_bytes)}</strong>
+            <div className="usage-meter" aria-label={`${usagePercent}% of bandwidth used`}>
+              <i style={{ "--usage-progress": usagePercent / 100 } as React.CSSProperties} />
+            </div>
+            <small className="usage-detail">{fmtBytes(usage.remaining_bytes)} remaining · {usagePercent}% used</small>
           </div>
           {user.is_admin && (
             <button className="btn btn-outline" type="button" onClick={onAdminClick}>
@@ -439,6 +454,13 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
           <UserButton appearance={{ elements: { avatarBox: "clerk-avatar", avatarImage: "clerk-avatar-image" } }} />
         </div>
       </header>
+
+      {usage.is_restricted_email && usage.quota_notice && (
+        <aside className="email-quota-notice" role="status">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <p>{usage.quota_notice}</p>
+        </aside>
+      )}
 
       {/* URL Input */}
       <section className="url-card">
@@ -542,7 +564,6 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
           <span className="header-tag">Queue</span>
           <h2>
             {jobs.length} {jobs.length === 1 ? "Job" : "Jobs"}
-            {completedJobs.length > 0 && <span className="queue-ready-badge">{completedJobs.length} ready</span>}
           </h2>
           <div className="queue-actions">
             {clearableCount > 0 && selectedJobs.size === 0 && (
@@ -577,6 +598,11 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
             const isChecked = selectedJobs.has(job.id);
             const transfer = transferDetails(job.message);
             const queuePosition = queuedPositions.get(job.id);
+            const jobDetail = job.status === "failed"
+              ? `✗ ${job.message || "Failed"}`
+              : job.status === "queued"
+                ? `Queue position ${queuePosition || 1}`
+                : null;
             return (
               <article className={`job-card${isChecked ? " job-card-selected" : ""}`} key={job.id}>
                 <div className="job-card-inner">
@@ -609,10 +635,12 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
                         />
                       </div>
                     )}
-                    <div className="job-bottom">
-                      <span className="job-msg">{job.status === "failed" ? `✗ ${job.message || "Failed"}` : job.status === "queued" ? `Queue position ${queuePosition || 1}` : job.status === "running" ? "Downloading" : job.message || job.format}</span>
-                      {job.status === "running" && transfer && <span className="job-transfer"><Gauge size={13} /> {transfer}</span>}
-                    </div>
+                    {(jobDetail || (job.status === "running" && transfer)) && (
+                      <div className="job-bottom">
+                        {jobDetail && <span className="job-msg">{jobDetail}</span>}
+                        {job.status === "running" && transfer && <span className="job-transfer"><Gauge size={13} /> {transfer}</span>}
+                      </div>
+                    )}
                   </div>
                 </div>
                 {job.download_url && (
@@ -621,11 +649,8 @@ export function DownloaderPage({ user, token, onAdminClick }: DownloaderPageProp
                       <button className="download-btn" type="button" onClick={() => downloadFile(job)}>
                         <Download size={16} /><span>Download</span>
                       </button>
-                      <button className="copy-link-btn" type="button" title="Copy expiring download link" onClick={() => copyJobLink(job)}>
-                        <Copy size={14} />
-                      </button>
                     </div>
-                    <p className="link-expiry"><Clock3 size={13} /> Link {expiresIn(job.expires_at) === "expired" ? "expired" : `expires in ${expiresIn(job.expires_at) || "soon"}`}</p>
+                    <p className="link-expiry"><Clock3 size={13} /> File {expiresIn(job.expires_at) === "expired" ? "expired" : `expires in ${expiresIn(job.expires_at) || "soon"}`}</p>
                   </>
                 )}
               </article>

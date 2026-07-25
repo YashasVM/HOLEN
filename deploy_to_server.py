@@ -1,12 +1,17 @@
-"""Deploy yt-yvmx to the Linux homelab server via SSH/SFTP."""
+"""Deploy Holen to a server via SSH/SFTP using local SSH credentials and .env."""
 import os
-import secrets
 import paramiko
 
-HOST = "192.168.1.8"
-USER = "yvm"
-PASSWORD = "890"
-REMOTE_BASE = "/home/yvm/yt-yvmx"
+HOST = os.environ.get("HOLEN_DEPLOY_HOST", "")
+USER = os.environ.get("HOLEN_DEPLOY_USER", "")
+PASSWORD = os.environ.get("HOLEN_DEPLOY_PASSWORD")
+REMOTE_BASE = os.environ.get("HOLEN_DEPLOY_PATH", "")
+
+if not all((HOST, USER, REMOTE_BASE)):
+    raise RuntimeError(
+        "Set HOLEN_DEPLOY_HOST, HOLEN_DEPLOY_USER, and HOLEN_DEPLOY_PATH. "
+        "Use an SSH key; HOLEN_DEPLOY_PASSWORD is only an optional fallback."
+    )
 
 # All files to upload (relative path -> content)
 FILES = {}
@@ -16,6 +21,8 @@ def read_local(path):
         return f.read()
 
 LOCAL_ROOT = os.path.dirname(os.path.abspath(__file__))
+if not os.path.isfile(os.path.join(LOCAL_ROOT, ".env")):
+    raise RuntimeError("Create a local .env from .env.example before deploying.")
 
 # Collect all project files (excluding node_modules, dist, .git, __pycache__, data, downloads)
 SKIP_DIRS = {"node_modules", "dist", ".git", "__pycache__", "data", "downloads", ".gemini"}
@@ -33,28 +40,14 @@ for root, dirs, files in os.walk(LOCAL_ROOT):
         except (UnicodeDecodeError, PermissionError):
             print(f"  Skipping binary/unreadable: {rel_path}")
 
-# Generate a production .env
-APP_SECRET = secrets.token_hex(32)
-PROD_ENV = f"""APP_PASSWORD=yvmx-dl-2026
-APP_SECRET={APP_SECRET}
-PUBLIC_ORIGIN=http://192.168.1.8:8080
-DOWNLOAD_DIR=./downloads
-SQLITE_PATH=./data/app.db
-MAX_DURATION_SECONDS=7200
-MAX_ACTIVE_JOBS=1
-MAX_QUEUED_JOBS=25
-MAX_TEMP_GB=20
-FILE_TTL_SECONDS=3600
-CLEANUP_INTERVAL_SECONDS=900
-CLOUDFLARED_TOKEN=
-"""
-
-FILES[".env"] = PROD_ENV
-
 print(f"Connecting to {USER}@{HOST}...")
 client = paramiko.SSHClient()
-client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(HOST, username=USER, password=PASSWORD, timeout=15)
+client.load_system_host_keys()
+client.set_missing_host_key_policy(paramiko.RejectPolicy())
+connect_kwargs = {"hostname": HOST, "username": USER, "timeout": 15}
+if PASSWORD:
+    connect_kwargs["password"] = PASSWORD
+client.connect(**connect_kwargs)
 sftp = client.open_sftp()
 
 def ssh_exec(cmd, check=True):
@@ -106,8 +99,8 @@ sftp.close()
 
 # Build and start with Docker Compose
 print("\n--- Building and starting with Docker Compose ---")
-ssh_exec(f"cd {REMOTE_BASE} && cat .env | head -3")
-ssh_exec(f"cd {REMOTE_BASE} && docker compose down --remove-orphans 2>/dev/null; true", check=False)
+ssh_exec(f"cd {REMOTE_BASE} && docker compose config --quiet")
+ssh_exec(f"cd {REMOTE_BASE} && docker compose down --remove-orphans 2>/dev/null || true", check=False)
 print("\nBuilding images (this may take a few minutes)...")
 out, err, code = ssh_exec(f"cd {REMOTE_BASE} && docker compose build --no-cache 2>&1")
 if code != 0:
@@ -127,5 +120,4 @@ else:
 
 client.close()
 print("\n=== Deployment complete ===")
-print(f"App should be accessible at: http://192.168.1.8:8080")
-print(f"Password: yvmx-dl-2026")
+print(f"App deployment completed for {HOST}.")

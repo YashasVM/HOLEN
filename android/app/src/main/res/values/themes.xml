@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.Holen" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">@font/dm_sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/holen_background</item>
+        <item name="android:statusBarColor">@color/holen_background</item>
+        <item name="android:navigationBarColor">@color/holen_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">@color/holen_red</item>
+    </style>
+</resources>

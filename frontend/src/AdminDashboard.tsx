@@ -1,9 +1,12 @@
 import { UserButton, useClerk } from "@clerk/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   ArrowLeft,
+  BarChart3,
   CheckSquare,
   Database,
+  Download,
   HardDrive,
   Loader2,
   RefreshCw,
@@ -26,6 +29,17 @@ type CachedFile = {
 
 type Notice = { text: string; kind: "success" | "error" };
 
+type AdminTelemetry = {
+  active_jobs: Array<{
+    id: string; title?: string; format: string; status: "queued" | "running";
+    progress: number; message?: string; user_email?: string; created_at: string;
+  }>;
+  activity: Array<{ date: string; label: string; downloads: number; completed: number; failed: number }>;
+  bandwidth: { ingress_bytes: number; egress_bytes: number; total_bytes: number };
+  cache: { used_bytes: number; limit_bytes: number; percent_used: number };
+  generated_at: string;
+};
+
 interface AdminDashboardProps {
   user: AppUser;
   token: string;
@@ -47,6 +61,7 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
   const { signOut } = useClerk();
   const [files, setFiles] = useState<CachedFile[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
+  const [telemetry, setTelemetry] = useState<AdminTelemetry | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState("");
@@ -66,12 +81,14 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
     if (!token) return;
     setLoading(true);
     try {
-      const [fileRows, userRows] = await Promise.all([
+      const [fileRows, userRows, telemetryData] = await Promise.all([
         request<CachedFile[]>("/api/admin/files"),
         request<AppUser[]>("/api/admin/users"),
+        request<AdminTelemetry>("/api/admin/telemetry"),
       ]);
       setFiles(fileRows);
       setUsers(userRows);
+      setTelemetry(telemetryData);
       setSelected((current) => new Set([...current].filter((id) => fileRows.some((file) => file.id === id))));
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : "Could not load the dashboard", kind: "error" });
@@ -81,6 +98,10 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
   }, [request, token]);
 
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    const timer = window.setInterval(() => void reload(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [reload]);
 
   const totalCache = useMemo(() => files.reduce((sum, file) => sum + file.size_bytes, 0), [files]);
   const selectedSize = useMemo(
@@ -88,6 +109,14 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
     [files, selected],
   );
   const allSelected = files.length > 0 && selected.size === files.length;
+  const activityMax = useMemo(
+    () => Math.max(1, ...(telemetry?.activity.map((point) => point.downloads) || [])),
+    [telemetry],
+  );
+  const activityTotal = useMemo(
+    () => telemetry?.activity.reduce((sum, point) => sum + point.downloads, 0) || 0,
+    [telemetry],
+  );
 
   function toggle(id: string) {
     setSelected((current) => {
@@ -153,9 +182,54 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
       {notice && <div className={`notice notice-${notice.kind}`} role="status"><span>{notice.text}</span><button onClick={() => setNotice(null)} aria-label="Dismiss">×</button></div>}
 
       <section className="admin-summary" aria-label="Dashboard summary">
-        <article><Database size={22} /><span>Cache</span><strong>{fmtBytes(totalCache)}</strong><small>{files.length} file(s)</small></article>
+        <article><Database size={22} /><span>Cache</span><strong>{fmtBytes(telemetry?.cache.used_bytes ?? totalCache)}</strong><small>{telemetry ? `${telemetry.cache.percent_used}% of ${fmtBytes(telemetry.cache.limit_bytes)}` : `${files.length} file(s)`}</small></article>
+        <article><Activity size={22} /><span>Bandwidth</span><strong>{fmtBytes(telemetry?.bandwidth.total_bytes ?? 0)}</strong><small>In {fmtBytes(telemetry?.bandwidth.ingress_bytes ?? 0)} · Out {fmtBytes(telemetry?.bandwidth.egress_bytes ?? 0)}</small></article>
         <article><Users size={22} /><span>Accounts</span><strong>{users.length}</strong><small>{users.filter((item) => item.is_admin).length} admin(s)</small></article>
         <article><ShieldCheck size={22} /><span>Owner</span><strong>@{user.github_username || "YashasVM"}</strong><small>GitHub verified</small></article>
+      </section>
+
+      <section className="admin-section telemetry-section" aria-labelledby="activity-heading">
+        <div className="section-heading">
+          <div><span className="header-tag header-tag-red">Live monitor</span><h2 id="activity-heading">Download activity</h2></div>
+          <p>Fourteen-day history and the current download queue. Refreshes every 15 seconds.</p>
+        </div>
+
+        <div className="telemetry-grid">
+          <article className="activity-chart-card">
+            <div className="telemetry-card-heading">
+              <div><BarChart3 size={18} /><h3>Downloads started</h3></div>
+              <strong>{activityTotal}<small>14 days</small></strong>
+            </div>
+            <div className="download-chart" role="img" aria-label={`${activityTotal} downloads started over the last 14 days`}>
+              {(telemetry?.activity || []).map((point) => (
+                <div className="download-bar-slot" key={point.date} title={`${point.label}: ${point.downloads} started, ${point.completed} completed, ${point.failed} failed`}>
+                  <span>{point.downloads || ""}</span>
+                  <i style={{ height: `${Math.round((point.downloads / activityMax) * 100)}%` }} />
+                  <small>{point.label.split(" ")[1]}</small>
+                </div>
+              ))}
+              {!telemetry && <div className="chart-empty"><Loader2 className="spin" size={20} /> Loading activity…</div>}
+            </div>
+          </article>
+
+          <article className="live-downloads-card">
+            <div className="telemetry-card-heading">
+              <div><Download size={18} /><h3>Live queue</h3></div>
+              <strong>{telemetry?.active_jobs.length ?? 0}<small>active</small></strong>
+            </div>
+            <div className="live-download-list">
+              {(telemetry?.active_jobs || []).map((job) => {
+                const progress = Math.max(0, Math.min(100, job.progress));
+                return <article className="live-download-row" key={job.id}>
+                  <div className="live-download-copy"><strong title={job.title}>{job.title || "Untitled download"}</strong><small>{job.status === "queued" ? "Waiting in queue" : `${Math.round(progress)}% downloading`} · {job.format.toUpperCase()}</small></div>
+                  <div className="live-download-progress" aria-label={`${Math.round(progress)}% complete`}><i style={{ transform: `scaleX(${progress / 100})` }} /></div>
+                </article>;
+              })}
+              {telemetry && telemetry.active_jobs.length === 0 && <div className="live-download-empty">No downloads are running.</div>}
+              {!telemetry && <div className="live-download-empty"><Loader2 className="spin" size={18} /> Loading queue…</div>}
+            </div>
+          </article>
+        </div>
       </section>
 
       <section className="admin-section" aria-labelledby="cache-heading">

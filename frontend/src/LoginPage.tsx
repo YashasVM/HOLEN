@@ -17,7 +17,7 @@ export function LoginPage() {
             <p className="entry-lede">Keep YouTube video and audio downloads in one private queue, ready when you are.</p>
           </div>
           <div className="entry-facts" aria-label="Service details">
-            <div><HardDrive size={18} /><span><strong>5 GB</strong><small>Included with every account</small></span></div>
+            <div><HardDrive size={18} /><span><strong>Up to 5 GB</strong><small>Allowance depends on email domain</small></span></div>
             <div><ShieldCheck size={18} /><span><strong>Private queue</strong><small>Your downloads stay with your account</small></span></div>
           </div>
         </section>

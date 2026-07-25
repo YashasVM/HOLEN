@@ -10,3 +10,10 @@ __pycache__/
 convex/_generated/
 cookies.txt
 *.txt.bak
+
+# Native Android build output and local signing material
+android/.gradle/
+android/local.properties
+android/**/build/
+android/*.jks
+android/*.keystore

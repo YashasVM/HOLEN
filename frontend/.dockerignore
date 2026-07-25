@@ -1,7 +1,4 @@
 node_modules
 dist
-.env.local.example
-.agents
-skills-lock.json
-AGENTS.md
-CLAUDE.md
+.env
+.env.*

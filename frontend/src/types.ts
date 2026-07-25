@@ -10,5 +10,7 @@ export type AppUser = {
   egress_bytes: number;
   used_bytes: number;
   remaining_bytes: number;
+  is_restricted_email: boolean;
+  quota_notice?: string;
   created_at: string;
 };
