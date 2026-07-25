@@ -1,0 +1,30 @@
+HOLEN ANDROID — LICENSE AND THIRD-PARTY NOTICES
+
+Holen Android is free software under GNU GPL version 3 and comes with
+ABSOLUTELY NO WARRANTY. You may redistribute and modify it under GPL-3.0.
+The complete license and corresponding source are available with the tagged
+GitHub release and in the source repository:
+https://github.com/yashasvm/Holen
+
+Principal bundled components:
+
+* io.github.junkfood02.youtubedl-android 0.18.1 and its FFmpeg artifact:
+  GPL-3.0. Source: https://github.com/JunkFood02/youtubedl-android
+  This artifact is a maintained fork of yausername/youtubedl-android.
+* yt-dlp: the Unlicense/public-domain dedication.
+  Source: https://github.com/yt-dlp/yt-dlp
+* CPython: Python Software Foundation License.
+  Source: https://github.com/python/cpython
+* FFmpeg and configured libraries: the wrapper's GPL-3.0 distribution;
+  individual upstream components retain their compatible licenses.
+  Notices: https://ffmpeg.org/legal.html
+* QuickJS: MIT License. Source: https://bellard.org/quickjs/
+* Kotlin, Kotlin coroutines, AndroidX, Jetpack Compose, Coil, OkHttp, Okio,
+  Jackson, Apache Commons Compress, EventBus, and Android Priority Job Queue:
+  Apache License 2.0.
+* DM Sans and Syne: SIL Open Font License 1.1. Their complete font licenses
+  are also bundled as application resources.
+
+License and notice files supplied by packaged dependencies are retained under
+META-INF inside the APK. See android/THIRD_PARTY_NOTICES.md in the source
+distribution for the maintained inventory.

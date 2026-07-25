@@ -3,12 +3,12 @@ name: Android CI
 on:
   pull_request:
     paths:
-      - "android/**"
+      - "prod/android/**"
       - ".github/workflows/android-*.yml"
   push:
     branches: ["main", "Android-App"]
     paths:
-      - "android/**"
+      - "prod/android/**"
       - ".github/workflows/android-*.yml"
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
       - name: Lint, test, and build
-        working-directory: android
+        working-directory: prod/android
         run: |
           ./gradlew \
             lintEmulatorDebug \

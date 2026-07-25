@@ -21,6 +21,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK
         run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
+      - name: Verify release source
+        working-directory: prod/android
+        run: ./gradlew lintEmulatorDebug testEmulatorDebugUnitTest
       - name: Restore signing key
         env:
           HOLEN_KEYSTORE_BASE64: ${{ secrets.HOLEN_KEYSTORE_BASE64 }}
@@ -28,7 +31,7 @@ jobs:
           test -n "$HOLEN_KEYSTORE_BASE64"
           printf '%s' "$HOLEN_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/holen-release.jks"
       - name: Build signed APKs
-        working-directory: android
+        working-directory: prod/android
         env:
           HOLEN_KEYSTORE_PATH: ${{ runner.temp }}/holen-release.jks
           HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
@@ -43,12 +46,77 @@ jobs:
             assembleArmv7Release \
             assembleUniversalRelease
       - name: Collect artifacts and checksums
+        shell: bash
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           version="${GITHUB_REF_NAME#android-v}"
           mkdir -p release
-          cp android/app/build/outputs/apk/arm64/release/*.apk "release/holen-${version}-arm64-v8a.apk"
-          cp android/app/build/outputs/apk/armv7/release/*.apk "release/holen-${version}-armeabi-v7a.apk"
-          cp android/app/build/outputs/apk/universal/release/*.apk "release/holen-${version}-universal.apk"
+
+          collect_one() {
+            local pattern="$1"
+            local destination="$2"
+            local matches=()
+            mapfile -t matches < <(compgen -G "$pattern")
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "Expected exactly one APK matching $pattern; found ${#matches[@]}" >&2
+              exit 1
+            fi
+            cp -- "${matches[0]}" "$destination"
+          }
+
+          collect_one \
+            "prod/android/app/build/outputs/apk/arm64/release/*.apk" \
+            "release/holen-${version}-arm64-v8a.apk"
+          collect_one \
+            "prod/android/app/build/outputs/apk/armv7/release/*.apk" \
+            "release/holen-${version}-armeabi-v7a.apk"
+          collect_one \
+            "prod/android/app/build/outputs/apk/universal/release/*.apk" \
+            "release/holen-${version}-universal.apk"
+
+      - name: Verify signed APKs, ABIs, sizes, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#android-v}"
+          apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          max_per_abi_size=$((70 * 1024 * 1024))
+
+          verify_apk() {
+            local apk="$1"
+            local expected_abis="$2"
+            local enforce_size="$3"
+            local actual_abis
+            local byte_size
+
+            "$apksigner" verify --verbose --print-certs "$apk"
+            actual_abis="$(
+              unzip -Z1 "$apk" |
+                awk -F/ '$1 == "lib" && $3 ~ /\.so$/ { print $2 }' |
+                sort -u |
+                paste -sd, -
+            )"
+            if [[ "$actual_abis" != "$expected_abis" ]]; then
+              echo "$apk contains ABIs '$actual_abis'; expected '$expected_abis'" >&2
+              exit 1
+            fi
+            if [[ "$enforce_size" == "true" ]]; then
+              byte_size="$(stat -c '%s' "$apk")"
+              if (( byte_size >= max_per_abi_size )); then
+                echo "$apk is $byte_size bytes; per-ABI APKs must be under 70 MiB" >&2
+                exit 1
+              fi
+            fi
+          }
+
+          verify_apk "release/holen-${version}-arm64-v8a.apk" "arm64-v8a" true
+          verify_apk "release/holen-${version}-armeabi-v7a.apk" "armeabi-v7a" true
+          verify_apk \
+            "release/holen-${version}-universal.apk" \
+            "arm64-v8a,armeabi-v7a" \
+            false
+
           cd release
           sha256sum *.apk > SHA256SUMS
       - name: Publish GitHub Release
