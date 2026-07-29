@@ -30,7 +30,13 @@ services:
     volumes:
       - ${DOWNLOAD_DIR:-./downloads}:/downloads
       - ./data:/data
-      - /mnt/BackupDrive/Media/Audio:/mnt/BackupDrive/Media/Audio
+      # Mount only Holen's drop folder, never the entire Plex music library.
+      # Create this directory on the host before starting the stack.
+      - type: bind
+        source: ${PLEX_MUSIC_DROP_DIR:-/mnt/BackupDrive/Media/Audio/Holen}
+        target: /mnt/BackupDrive/Media/Audio
+        bind:
+          create_host_path: false
       - ${YTDLP_COOKIES_PATH:-/dev/null}:/cookies/cookies.txt
     deploy:
       resources:

@@ -114,7 +114,7 @@ jobs:
           verify_apk "release/holen-${version}-armeabi-v7a.apk" "armeabi-v7a" true
           verify_apk \
             "release/holen-${version}-universal.apk" \
-            "arm64-v8a,armeabi-v7a" \
+            "arm64-v8a,armeabi-v7a,x86,x86_64" \
             false
 
           cd release

@@ -63,6 +63,7 @@ Copy `.env.example` to `.env`; its defaults are safe to use as-is for a personal
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `APP_PORT` | `8080` | Host port for the web app. |
+| `APP_BIND_HOST` | `127.0.0.1` | Listening address. Set to `0.0.0.0` or `::` only for a protected private-network deployment. |
 | `MAX_ACTIVE_JOBS` | `2` | Downloads that may run at once. |
 | `MAX_QUEUED_JOBS` | `20` | Maximum waiting downloads. |
 | `MAX_DURATION_SECONDS` | `7200` | Maximum source duration (two hours). |
@@ -105,6 +106,8 @@ Vite proxies `/api` to `http://127.0.0.1:8000` while developing. Create `downloa
 This project deliberately has no login system. Do not expose it directly to the public internet: anybody who can reach the page can queue, view, cancel, remove, and download files. Keep it on a trusted network, or put it behind your own VPN, reverse-proxy authentication, firewall rules, and rate limiting.
 
 The native server binds to `127.0.0.1` by default. Put it behind your own reverse proxy only if you also add access controls. The application only accepts YouTube URLs, enforces queue/cache limits, and has basic IP throttling, but those safeguards are not a substitute for access control.
+
+To intentionally make the launcher reachable from your local network, set `APP_BIND_HOST=0.0.0.0` (or `::` for IPv6) in `.env`. The launcher prints a warning for this opt-in mode. Do this only when a VPN, firewall rule, or authenticated reverse proxy limits access to people you trust.
 
 ## Checks
 

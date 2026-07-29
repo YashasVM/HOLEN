@@ -3,11 +3,11 @@
 Holen is a native, on-device downloader for Android 10 and newer. Direct HTTPS
 files use Android networking; public media pages use the bundled
 `youtubedl-android`, Python, yt-dlp, and FFmpeg runtime. There is no Holen
-server, account, WebView, analytics, or telemetry.
+server, embedded sign-in WebView, analytics, or telemetry.
 
 Only download files you own or are authorized to save. Holen does not bypass
-DRM, logins, age gates, or access controls, and it does not promise that every
-site supported by yt-dlp will continue to work.
+DRM or access controls, and it does not promise that every site supported by
+yt-dlp will continue to work.
 
 ## Build
 
@@ -26,7 +26,8 @@ cd android
 ```
 
 Debug builds contain x86 and x86_64 native libraries for emulators. Public
-release variants contain ARM libraries only:
+releases include smaller ARM-specific APKs plus one universal APK containing
+all four supported Android ABIs:
 
 ```bash
 ./gradlew assembleArm64Release assembleArmv7Release assembleUniversalRelease
@@ -35,12 +36,17 @@ release variants contain ARM libraries only:
 The project pins Gradle 9.5, Android Gradle Plugin 9.3.0, Kotlin 2.3.21, and all
 runtime dependency versions in `gradle/libs.versions.toml`.
 
-## Storage and recovery
+## Onboarding, sharing, and storage
 
-The first launch asks for a destination through Android's system folder picker.
-Holen persists only that read/write tree grant. Active work is staged under the
-app-specific external files directory and then byte-verified while copying to
-the selected folder.
+First launch uses a cinematic welcome, an MIT-accurate introduction to the
+separate HOLEN OSS edition, a five-frame sharing tutorial, a hold-to-sign
+responsible-download acknowledgment, and Android's system folder picker. Holen
+persists only that read/write tree grant. After setup, sharing a text/plain
+HTTPS link to **Download with Holen** opens a compact quality dialog. Queuing
+closes the dialog immediately so the source app stays visible while Holen
+downloads in the background. Active work is staged under the app-specific
+external files directory and then byte-verified while copying to the selected
+folder.
 
 - Network failures preserve `.part` files so Retry can resume.
 - Explicit Cancel removes staging data.
@@ -68,6 +74,13 @@ Back up the signing key outside GitHub and reuse it permanently; Android will
 not accept an upgrade signed by a different key. The workflow publishes
 ARM64, ARMv7, universal APKs, and `SHA256SUMS`.
 
+APK and AAB files are release artifacts and are intentionally ignored by Git.
+Use the GitHub Release assets produced by the workflow rather than adding
+local packages or machine-specific artifact-location notes to the repository.
+
+The universal APK supports arm64-v8a, armeabi-v7a, x86, and x86_64 devices
+running Android 10 or newer.
+
 Before broad distribution, register `com.yashasvm.holen` and the release
 certificate in Android Developer Console. GitHub distribution does not exempt
 the app from Android developer verification.
@@ -80,7 +93,7 @@ lower-midrange ARM phone:
 - Direct PDF, ZIP, and media links
 - A public YouTube video and playlist, plus two other public yt-dlp sites
 - Best MP4, 1080p, 720p, M4A, and MP3
-- Share and view intents, backgrounding, screen lock, network loss, process
+- Share intents, backgrounding, screen lock, network loss, process
   death, reboot, cancellation, low storage, revoked folder access, and
   duplicate names
 - Engine update, failed update fallback, reset, and APK upgrade without losing

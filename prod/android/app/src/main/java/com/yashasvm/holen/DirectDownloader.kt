@@ -13,12 +13,15 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.Call
+import okhttp3.Request
+import okhttp3.Response
 
 class DirectDownloader {
     private val cancelled = AtomicBoolean(false)
 
     @Volatile
-    private var activeConnection: HttpURLConnection? = null
+    private var activeCall: Call? = null
 
     suspend fun download(
         job: DownloadJob,
@@ -32,38 +35,36 @@ class DirectDownloader {
         val part = File(directory, "download.part")
         var existing = part.takeIf(File::exists)?.length() ?: 0L
         var connection = open(job.sourceUrl, existing.takeIf { it > 0 })
-        activeConnection = connection
         if (existing > 0 && !shouldAppend(
                 existing,
-                connection.responseCode,
-                connection.getHeaderField("Content-Range"),
+                connection.code,
+                connection.header("Content-Range"),
             )
         ) {
-            connection.disconnect()
+            connection.close()
             part.delete()
             existing = 0
             connection = open(job.sourceUrl, null)
-            activeConnection = connection
         }
 
         try {
-            val responseCode = connection.responseCode
+            val responseCode = connection.code
             if (responseCode !in setOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
                 throw IOException("Network response $responseCode")
             }
             val total = totalLength(connection, existing)
-            val disposition = connection.getHeaderField("Content-Disposition")
+            val disposition = connection.header("Content-Disposition")
             val suggested = fileNameFromDisposition(disposition)
-                ?: URI(connection.url.toString()).path.substringAfterLast('/').ifBlank { job.title }
+                ?: URI(job.sourceUrl).path.substringAfterLast('/').ifBlank { job.title }
             val fileName = sanitizeFileName(suggested)
-            val mimeType = OutputStore.mimeTypeFor(fileName, connection.contentType?.substringBefore(';'))
+            val mimeType = OutputStore.mimeTypeFor(fileName, connection.header("Content-Type")?.substringBefore(';'))
             var downloaded = existing
             var lastBytes = existing
             var lastWrite = System.currentTimeMillis()
 
-            connection.inputStream.use { input ->
+            requireNotNull(connection.body).byteStream().use { input ->
                 FileOutputStream(part, existing > 0).use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    val buffer = ByteArray(COPY_BUFFER_SIZE)
                     while (true) {
                         currentCoroutineContext().ensureActive()
                         if (cancelled.get() || isCancelled()) {
@@ -107,42 +108,44 @@ class DirectDownloader {
             }
             StagedDownload(completed, fileName, mimeType)
         } finally {
-            activeConnection = null
-            connection.disconnect()
+            activeCall = null
+            connection.close()
         }
     }
 
     fun cancel() {
         cancelled.set(true)
-        activeConnection?.disconnect()
+        activeCall?.cancel()
     }
 
-    private fun open(rawUrl: String, rangeStart: Long?): HttpURLConnection {
-        var url = validateHttpsUrl(rawUrl)
+    private fun open(rawUrl: String, rangeStart: Long?): Response {
+        var endpoint = resolvePublicHttpsEndpoint(rawUrl)
         repeat(MAX_REDIRECTS + 1) { redirect ->
-            val connection = URI(url).toURL().openConnection() as HttpURLConnection
-            connection.instanceFollowRedirects = false
-            connection.requestMethod = "GET"
-            connection.connectTimeout = TIMEOUT_MS
-            connection.readTimeout = TIMEOUT_MS
-            connection.setRequestProperty("User-Agent", USER_AGENT)
-            rangeStart?.let { connection.setRequestProperty("Range", "bytes=$it-") }
-            val code = connection.responseCode
-            if (code !in REDIRECT_CODES) return connection
+            val request = Request.Builder().url(endpoint.url).header("User-Agent", USER_AGENT)
+                .apply { rangeStart?.let { header("Range", "bytes=$it-") } }.build()
+            val call = pinnedPublicHttpsClient(endpoint, TIMEOUT_MS.toLong()).newCall(request)
+            activeCall = call
+            val response = call.execute()
+            if (response.code !in REDIRECT_CODES) return response
             if (redirect == MAX_REDIRECTS) {
-                connection.disconnect()
+                response.close()
                 throw IOException("Too many redirects.")
             }
-            val location = connection.getHeaderField("Location")
-                ?: throw IOException("Redirect response had no destination.")
-            val next = URI(url).resolve(location).toString()
-            connection.disconnect()
-            url = validateHttpsUrl(next)
+            val location = response.header("Location") ?: run {
+                response.close()
+                throw IOException("Redirect response had no destination.")
+            }
+            val next = URI(endpoint.url).resolve(location).toString()
+            response.close()
+            // Resolve, validate, and pin every hop independently. Redirects are
+            // attacker-controlled and must not inherit the previous host's trust.
+            endpoint = resolvePublicHttpsEndpoint(next)
         }
         error("Unreachable")
     }
 
     companion object {
+        private const val COPY_BUFFER_SIZE = 64 * 1024
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 20_000
         private const val USER_AGENT = "Holen Android/1"
@@ -165,17 +168,13 @@ class DirectDownloader {
             return start == existingBytes
         }
 
-        fun totalLength(connection: HttpURLConnection, existingBytes: Long): Long? {
-            val rangeTotal = connection.getHeaderField("Content-Range")
+        fun totalLength(response: Response, existingBytes: Long): Long? {
+            val rangeTotal = response.header("Content-Range")
                 ?.substringAfterLast('/', "")
                 ?.toLongOrNull()
             if (rangeTotal != null) return rangeTotal
-            val length = connection.contentLengthLong.takeIf { it >= 0 } ?: return null
-            return if (connection.responseCode == HttpURLConnection.HTTP_PARTIAL) {
-                existingBytes + length
-            } else {
-                length
-            }
+            val length = response.body?.contentLength()?.takeIf { it >= 0 } ?: return null
+            return if (response.code == HttpURLConnection.HTTP_PARTIAL) existingBytes + length else length
         }
 
         fun fileNameFromDisposition(header: String?): String? {

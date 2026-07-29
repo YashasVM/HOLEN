@@ -1,0 +1,14 @@
+.git/
+.github/
+data/
+downloads/
+node_modules/
+dist/
+**/__pycache__/
+backend/app/__pycache__/
+*.py[cod]
+*.db
+*.pem
+*.key
+cookies.txt
+.env

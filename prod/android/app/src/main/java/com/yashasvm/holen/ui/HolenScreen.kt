@@ -1,9 +1,24 @@
 package com.yashasvm.holen.ui
 
+import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -25,7 +40,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.toggleable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -44,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.rememberScrollState
@@ -51,14 +67,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,10 +90,47 @@ import com.yashasvm.holen.JobStatus
 import com.yashasvm.holen.MainViewModel
 import com.yashasvm.holen.SourceAnalysis
 import com.yashasvm.holen.YtDlpEngine
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HolenScreen(
+    viewModel: MainViewModel,
+    onChooseFolder: () -> Unit,
+    onQueue: () -> Unit,
+    onOpen: (DownloadJob) -> Unit,
+    onShare: (DownloadJob) -> Unit,
+    onOpenCreator: () -> Unit,
+    onOpenSource: () -> Unit,
+) {
+    val onboardingCompleted by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
+    AnimatedContent(
+        targetState = onboardingCompleted,
+        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        label = "Holen app destination",
+    ) { completed ->
+        if (completed) {
+            DownloadHome(
+                viewModel = viewModel,
+                onChooseFolder = onChooseFolder,
+                onQueue = onQueue,
+                onOpen = onOpen,
+                onShare = onShare,
+            )
+        } else {
+            OnboardingFlow(
+                viewModel = viewModel,
+                onChooseFolder = onChooseFolder,
+                onOpenCreator = onOpenCreator,
+                onOpenSource = onOpenSource,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DownloadHome(
     viewModel: MainViewModel,
     onChooseFolder: () -> Unit,
     onQueue: () -> Unit,
@@ -92,10 +148,20 @@ fun HolenScreen(
     val rightsAcknowledged by viewModel.rightsAcknowledged.collectAsStateWithLifecycle()
     val engineVersion by viewModel.engineVersion.collectAsStateWithLifecycle()
     val engineMessage by viewModel.engineMessage.collectAsStateWithLifecycle()
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showSettings by rememberSaveable { mutableStateOf(false) }
-    var selectedJobs by rememberSaveable { mutableStateOf(setOf<String>()) }
     var deleteCandidate by remember { mutableStateOf<DownloadJob?>(null) }
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
 
     val activeCount = jobs.count {
         it.status == JobStatus.QUEUED ||
@@ -103,18 +169,37 @@ fun HolenScreen(
             it.status == JobStatus.FINALIZING
     }
     val finished = jobs.filter { it.status.isTerminal }
-    LaunchedEffect(jobs) {
-        selectedJobs = selectedJobs.intersect(finished.map { it.id }.toSet())
-    }
+    val idle = url.isBlank() &&
+        analysis == null &&
+        jobs.isEmpty() &&
+        !busy &&
+        error == null &&
+        folderGranted
 
-    LazyColumn(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(HolenBackground)
             .windowInsetsPadding(WindowInsets.safeDrawing),
-        contentPadding = PaddingValues(start = 16.dp, top = 20.dp, end = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        val idleTop = ((maxHeight - 520.dp) / 2).coerceAtLeast(20.dp)
+        val topPadding by animateDpAsState(
+            if (idle) idleTop else 20.dp,
+            tween(if (reducedMotion) 0 else 360, easing = FastOutSlowInEasing),
+            label = "Home hero position",
+        )
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics { testTag = if (idle) "home-idle" else "home-active" },
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = topPadding,
+                end = 16.dp,
+                bottom = 20.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         item("header") {
             Header(
                 activeCount = activeCount,
@@ -139,7 +224,7 @@ fun HolenScreen(
             BauhausCard {
                 SectionTag("NEW DOWNLOAD", HolenBlue)
                 Text(
-                    "Paste a public HTTPS file or media page",
+                    "Paste an HTTPS file or media page",
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.semantics { heading() },
                 )
@@ -147,14 +232,15 @@ fun HolenScreen(
                     value = url,
                     onValueChange = viewModel::setUrl,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Source URL") },
-                    placeholder = { Text("https://…") },
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = { Text("Source URL", style = MaterialTheme.typography.bodyMedium) },
+                    placeholder = { Text("https://…", style = MaterialTheme.typography.bodyLarge) },
                     singleLine = false,
                     minLines = 2,
                     maxLines = 4,
                     isError = error != null,
                     supportingText = error?.let { message ->
-                        { Text(message, color = HolenRed) }
+                        { Text(message, color = HolenRed, style = MaterialTheme.typography.bodySmall) }
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     shape = RectangleShape,
@@ -166,13 +252,26 @@ fun HolenScreen(
                     HolenButton(
                         label = "Paste",
                         onClick = {
-                            clipboard.getText()?.text?.takeIf { it.isNotBlank() }
-                                ?.let(viewModel::setUrl)
+                            coroutineScope.launch {
+                                clipboard.getClipEntry()
+                                    ?.clipData
+                                    ?.takeIf { it.itemCount > 0 }
+                                    ?.getItemAt(0)
+                                    ?.coerceToText(context)
+                                    ?.toString()
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let(viewModel::setUrl)
+                            }
                         },
                         background = HolenSurfaceTwo,
                         foreground = HolenInk,
                     )
-                    if (url.isNotEmpty()) {
+                    AnimatedVisibility(
+                        visible = url.isNotEmpty(),
+                        enter = fadeIn(tween(if (reducedMotion) 0 else 150)) +
+                            slideInVertically(tween(if (reducedMotion) 0 else 150)) { it / 4 },
+                        exit = fadeOut(tween(if (reducedMotion) 0 else 100)),
+                    ) {
                         HolenButton(
                             "Clear",
                             viewModel::clearUrl,
@@ -180,63 +279,77 @@ fun HolenScreen(
                             foreground = HolenInk,
                         )
                     }
-                    HolenButton(
-                        label = if (busy) "Analyzing…" else "Analyze",
-                        onClick = viewModel::analyze,
-                        background = HolenBlue,
-                        enabled = url.isNotBlank() && !busy,
-                        loading = busy,
-                    )
+                    AnimatedContent(
+                        targetState = busy,
+                        transitionSpec = {
+                            fadeIn(tween(if (reducedMotion) 0 else 120)) togetherWith
+                                fadeOut(tween(if (reducedMotion) 0 else 100))
+                        },
+                        label = "Analyze state",
+                    ) { analyzing ->
+                        HolenButton(
+                            label = if (analyzing) "Analyzing…" else "Analyze",
+                            onClick = viewModel::analyze,
+                            background = HolenBlue,
+                            enabled = url.isNotBlank() && !analyzing,
+                            loading = analyzing,
+                        )
+                    }
                 }
             }
         }
 
         when (val preview = analysis) {
             is SourceAnalysis.DirectFile -> item("direct-preview") {
-                PreviewCard(
-                    tag = "DIRECT FILE",
-                    title = preview.title,
-                    thumbnailUrl = null,
-                    details = listOfNotNull(
-                        preview.mimeType,
-                        preview.sizeBytes?.let(::formatBytes),
-                        "Original format",
-                    ),
-                ) {
-                    RightsQueueHelper(rightsAcknowledged)
-                    HolenButton(
-                        "Queue original",
-                        onQueue,
-                        HolenGreen,
-                        enabled = !busy && folderGranted && rightsAcknowledged,
-                    )
+                MotionEntrance(reducedMotion, "direct-preview") {
+                    PreviewCard(
+                        tag = "DIRECT FILE",
+                        title = preview.title,
+                        thumbnailUrl = null,
+                        details = listOfNotNull(
+                            preview.mimeType,
+                            preview.sizeBytes?.let(::formatBytes),
+                            "Original format",
+                        ),
+                    ) {
+                        RightsQueueHelper(rightsAcknowledged)
+                        HolenButton(
+                            "Queue original",
+                            onQueue,
+                            HolenGreen,
+                            enabled = !busy && folderGranted && rightsAcknowledged,
+                        )
+                    }
                 }
             }
 
             is SourceAnalysis.Media -> item("media-preview") {
-                PreviewCard(
-                    tag = preview.uploader ?: "MEDIA",
-                    title = preview.title,
-                    thumbnailUrl = preview.thumbnailUrl,
-                    details = listOfNotNull(
-                        preview.durationSeconds?.let(::formatDuration),
-                        preview.estimatedSizes[format]?.let { "Est. ${formatBytes(it)}" },
-                    ),
-                ) {
-                    FormatPicker(format, viewModel::setFormat)
-                    RightsQueueHelper(rightsAcknowledged)
-                    HolenButton(
-                        "Add to queue",
-                        onQueue,
-                        HolenGreen,
-                        enabled = !busy && folderGranted && rightsAcknowledged,
-                    )
+                MotionEntrance(reducedMotion, "media-preview") {
+                    PreviewCard(
+                        tag = preview.uploader ?: "MEDIA",
+                        title = preview.title,
+                        thumbnailUrl = preview.thumbnailUrl,
+                        details = listOfNotNull(
+                            preview.durationSeconds?.let(::formatDuration),
+                            preview.estimatedSizes[format]?.let { "Est. ${formatBytes(it)}" },
+                        ),
+                    ) {
+                        FormatPicker(format, viewModel::setFormat)
+                        RightsQueueHelper(rightsAcknowledged)
+                        HolenButton(
+                            "Add to queue",
+                            onQueue,
+                            HolenGreen,
+                            enabled = !busy && folderGranted && rightsAcknowledged,
+                        )
+                    }
                 }
             }
 
             is SourceAnalysis.Playlist -> {
                 item("playlist-preview") {
-                    BauhausCard(background = HolenSurfaceTwo) {
+                    MotionEntrance(reducedMotion, "playlist-preview") {
+                        BauhausCard(background = HolenSurfaceTwo) {
                         SectionTag("PLAYLIST", HolenRed)
                         Text(
                             preview.title,
@@ -274,7 +387,7 @@ fun HolenScreen(
                                 },
                                 viewModel::toggleAllEntries,
                                 HolenSurface,
-                                HolenInk,
+                                foreground = HolenInk,
                             )
                             HolenButton(
                                 "Queue ${selectedEntries.size}",
@@ -288,6 +401,7 @@ fun HolenScreen(
                             )
                         }
                     }
+                }
                 }
                 items(preview.entries, key = { "playlist-${it.id}" }) { entry ->
                     val selected = entry.id in selectedEntries
@@ -315,8 +429,7 @@ fun HolenScreen(
                         Column(Modifier.weight(1f)) {
                             Text(
                                 entry.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.titleMedium,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -335,8 +448,9 @@ fun HolenScreen(
             null -> Unit
         }
 
-        item("queue-header") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (jobs.isNotEmpty()) item("queue-header") {
+            MotionEntrance(reducedMotion, "queue-header") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider(thickness = 4.dp, color = HolenInk)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -362,89 +476,40 @@ fun HolenScreen(
                     }
                 }
                 if (finished.isNotEmpty()) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        HolenButton(
-                            if (selectedJobs.size == finished.size) "Deselect all" else "Select finished",
-                            onClick = {
-                                selectedJobs = if (selectedJobs.size == finished.size) {
-                                    emptySet()
-                                } else {
-                                    finished.map { it.id }.toSet()
-                                }
-                            },
-                            background = HolenSurfaceTwo,
-                            foreground = HolenInk,
-                        )
-                        HolenButton(
-                            "Clear finished",
-                            onClick = { viewModel.clearFinished() },
-                            background = HolenSurface,
-                            foreground = HolenInk,
-                        )
-                        if (selectedJobs.isNotEmpty()) {
-                            HolenButton(
-                                "Clear ${selectedJobs.size}",
-                                onClick = {
-                                    viewModel.clearFinished(selectedJobs)
-                                    selectedJobs = emptySet()
-                                },
-                                background = HolenRed,
-                            )
-                        }
+                    TextButton(onClick = { viewModel.clearFinished() }) {
+                        Text("Clear finished", color = HolenMuted)
                     }
+                }
                 }
             }
         }
 
         if (jobs.isEmpty()) {
             item("empty") {
-                BauhausCard(background = HolenSurfaceTwo) {
-                    SectionTitle("NO DOWNLOADS YET")
-                    Text(
-                        "Analyze a link above. Downloads and conversions stay on this device.",
-                        color = HolenMuted,
-                    )
-                }
+                Text(
+                    "Paste a link above, or share one to Holen from another app.",
+                    color = HolenMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                )
             }
         } else {
             items(jobs, key = { it.id }) { job ->
-                JobCard(
-                    job = job,
-                    selected = job.id in selectedJobs,
-                    onSelect = {
-                        selectedJobs = if (job.id in selectedJobs) {
-                            selectedJobs - job.id
-                        } else {
-                            selectedJobs + job.id
-                        }
-                    },
-                    onCancel = { viewModel.cancel(job) },
-                    onRetry = { viewModel.retry(job) },
-                    onOpen = { onOpen(job) },
-                    onShare = { onShare(job) },
-                    onDelete = { deleteCandidate = job },
-                )
-            }
-        }
-
-        item("rights") {
-            BauhausCard(background = HolenYellow) {
-                SectionTitle("DOWNLOAD RESPONSIBLY")
-                Text(
-                    "Only download files you own or are authorized to save. Holen does not bypass DRM, accounts, or site restrictions.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (!rightsAcknowledged) {
-                    HolenButton("I understand", viewModel::acknowledgeRights, HolenInk)
-                } else {
-                    SectionTag("ACKNOWLEDGED", HolenGreen)
+                MotionEntrance(reducedMotion, "job-${job.id}", Modifier.animateItem()) {
+                    JobCard(
+                        job = job,
+                        reducedMotion = reducedMotion,
+                        onCancel = { viewModel.cancel(job) },
+                        onRetry = { viewModel.retry(job) },
+                        onOpen = { onOpen(job) },
+                        onShare = { onShare(job) },
+                        onDelete = { deleteCandidate = job },
+                    )
                 }
             }
         }
 
+        }
     }
 
     if (showSettings) {
@@ -455,6 +520,10 @@ fun HolenScreen(
             message = engineMessage,
             busy = busy,
             onChooseFolder = onChooseFolder,
+            onRestartOnboarding = {
+                viewModel.restartOnboarding()
+                showSettings = false
+            },
             onUpdate = viewModel::updateEngine,
             onReset = viewModel::resetEngine,
             onDismiss = { showSettings = false },
@@ -485,6 +554,25 @@ fun HolenScreen(
             },
         )
     }
+}
+
+@Composable
+private fun MotionEntrance(
+    reducedMotion: Boolean,
+    tag: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = true,
+        modifier = modifier.semantics { testTag = tag },
+        enter = fadeIn(tween(if (reducedMotion) 0 else 280)) +
+            slideInVertically(tween(if (reducedMotion) 0 else 320)) { it.coerceAtMost(24) } +
+            scaleIn(
+                initialScale = .98f,
+                animationSpec = tween(if (reducedMotion) 0 else 320),
+            ),
+    ) { content() }
 }
 
 @Composable
@@ -576,7 +664,7 @@ private fun PreviewCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FormatPicker(
+internal fun FormatPicker(
     selected: DownloadFormat,
     onSelected: (DownloadFormat) -> Unit,
 ) {
@@ -603,17 +691,21 @@ private fun FormatPicker(
 @Composable
 private fun JobCard(
     job: DownloadJob,
-    selected: Boolean,
-    onSelect: () -> Unit,
+    reducedMotion: Boolean,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val animatedProgress by animateFloatAsState(
+        job.progress.toFloat(),
+        tween(if (reducedMotion) 0 else 220),
+        label = "Job progress",
+    )
     BauhausCard(
         background = HolenSurface,
-        borderColor = if (selected) HolenBlue else HolenInk,
+        borderColor = HolenInk,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -648,11 +740,19 @@ private fun JobCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    StatusBadge(job.status)
+                    AnimatedContent(
+                        targetState = job.status,
+                        transitionSpec = {
+                            fadeIn(tween(if (reducedMotion) 0 else 140)) togetherWith
+                                fadeOut(tween(if (reducedMotion) 0 else 100))
+                        },
+                        label = "Job status",
+                    ) { status ->
+                        StatusBadge(status)
+                    }
                     Text(
                         job.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.titleMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -660,7 +760,7 @@ private fun JobCard(
                 }
                 if (job.status in ACTIVE_STATUSES) {
                     LinearProgressIndicator(
-                        progress = { job.progress / 100f },
+                        progress = { animatedProgress / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(10.dp)
@@ -680,16 +780,6 @@ private fun JobCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
-            if (job.status.isTerminal) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = { onSelect() },
-                    modifier = Modifier.semantics {
-                        contentDescription = "Select ${job.title} history"
-                    },
-                    colors = CheckboxDefaults.colors(checkedColor = HolenBlue),
-                )
             }
         }
 
@@ -743,6 +833,7 @@ private fun SettingsDialog(
     message: String?,
     busy: Boolean,
     onChooseFolder: () -> Unit,
+    onRestartOnboarding: () -> Unit,
     onUpdate: () -> Unit,
     onReset: () -> Unit,
     onDismiss: () -> Unit,
@@ -765,6 +856,12 @@ private fun SettingsDialog(
                     "Change download folder",
                     onChooseFolder,
                     background = HolenSurfaceTwo,
+                    foreground = HolenInk,
+                )
+                HolenButton(
+                    "View welcome & setup",
+                    onRestartOnboarding,
+                    background = HolenYellow,
                     foreground = HolenInk,
                 )
                 HorizontalDivider(thickness = 2.dp, color = HolenInk)
@@ -821,7 +918,7 @@ private fun RightsQueueHelper(acknowledged: Boolean) {
 }
 
 @Composable
-private fun BauhausCard(
+internal fun BauhausCard(
     modifier: Modifier = Modifier,
     background: Color = HolenSurface,
     borderColor: Color = HolenInk,
@@ -847,19 +944,43 @@ private fun BauhausCard(
 }
 
 @Composable
-private fun HolenButton(
+internal fun HolenButton(
     label: String,
     onClick: () -> Unit,
     background: Color,
-    foreground: Color = Color.White,
     modifier: Modifier = Modifier,
+    foreground: Color = Color.White,
     enabled: Boolean = true,
     loading: Boolean = false,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val context = LocalContext.current
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
+    val pressScale by animateFloatAsState(
+        if (pressed && !reducedMotion) .97f else 1f,
+        tween(if (reducedMotion) 0 else 120),
+        label = "Button press",
+    )
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.heightIn(min = 48.dp),
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+                alpha = if (pressed && !reducedMotion) .88f else 1f
+            },
+        interactionSource = interactionSource,
         shape = RectangleShape,
         border = androidx.compose.foundation.BorderStroke(2.dp, HolenInk),
         colors = ButtonDefaults.buttonColors(
@@ -883,7 +1004,7 @@ private fun HolenButton(
 }
 
 @Composable
-private fun SectionTag(text: String, background: Color) {
+internal fun SectionTag(text: String, background: Color) {
     Text(
         text,
         modifier = Modifier

@@ -203,8 +203,17 @@ run("npm", ["run", "build"], { cwd: frontendDir });
 
 const parsedPort = Number(config.APP_PORT);
 const appPort = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? String(parsedPort) : "8080";
+const appBindHost = config.APP_BIND_HOST || "127.0.0.1";
+const allowedBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0", "::"]);
+if (!allowedBindHosts.has(appBindHost)) {
+  fail("APP_BIND_HOST must be one of: 127.0.0.1, ::1, 0.0.0.0, ::.");
+}
+const externallyReachable = appBindHost === "0.0.0.0" || appBindHost === "::";
+if (externallyReachable) {
+  console.warn("WARNING: Holen will listen on all network interfaces. It has no built-in authentication; use a VPN, firewall, or authenticated reverse proxy.");
+}
 const logs = openSync(resolve(projectDir, "holen.log"), "a");
-const server = spawn(virtualPython, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", appPort], {
+const server = spawn(virtualPython, ["-m", "uvicorn", "app.main:app", "--host", appBindHost, "--port", appPort], {
   cwd: backendDir,
   detached: true,
   env: {

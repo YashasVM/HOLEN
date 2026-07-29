@@ -102,17 +102,48 @@ class HolenStore private constructor(context: Context) :
         ).use { cursor -> if (cursor.moveToFirst()) cursor.toJob() else null }
     }
 
-    suspend fun nextQueued(): DownloadJob? = withContext(Dispatchers.IO) {
-        readableDatabase.query(
-            "jobs",
-            COLUMNS,
-            "status = ?",
+    suspend fun claimNextQueued(): DownloadJob? = write {
+        beginTransaction()
+        try {
+            val job = query(
+                "jobs",
+                COLUMNS,
+                "status = ?",
+                arrayOf(JobStatus.QUEUED.name),
+                null,
+                null,
+                "created_at ASC",
+                "1",
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.toJob() else null }
+                ?: return@write null
+            val now = System.currentTimeMillis()
+            val claimed = update(
+                "jobs",
+                ContentValues().apply {
+                    put("status", JobStatus.RUNNING.name)
+                    putNull("error_message")
+                    put("updated_at", now)
+                },
+                "id = ? AND status = ?",
+                arrayOf(job.id, JobStatus.QUEUED.name),
+            )
+            if (claimed != 1) return@write null
+            setTransactionSuccessful()
+            job.copy(
+                status = JobStatus.RUNNING,
+                errorMessage = null,
+                updatedAt = now,
+            )
+        } finally {
+            endTransaction()
+        }
+    }
+
+    suspend fun hasQueued(): Boolean = withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery(
+            "SELECT 1 FROM jobs WHERE status = ? LIMIT 1",
             arrayOf(JobStatus.QUEUED.name),
-            null,
-            null,
-            "created_at ASC",
-            "1",
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.toJob() else null }
+        ).use(Cursor::moveToFirst)
     }
 
     suspend fun knownJobIds(): Set<String> = withContext(Dispatchers.IO) {
@@ -136,7 +167,7 @@ class HolenStore private constructor(context: Context) :
         status: JobStatus,
         errorMessage: String? = null,
         resetProgress: Boolean = false,
-    ) = write {
+    ): Boolean = write {
         val current = query(
             "jobs",
             arrayOf("status"),
@@ -147,7 +178,7 @@ class HolenStore private constructor(context: Context) :
             null,
         ).use { cursor ->
             if (cursor.moveToFirst()) JobStatus.valueOf(cursor.getString(0)) else null
-        } ?: return@write
+        } ?: return@write false
         require(current == status || current.canTransitionTo(status)) {
             "Invalid job state transition: $current to $status"
         }
@@ -167,10 +198,43 @@ class HolenStore private constructor(context: Context) :
             },
             "id = ? AND status = ?",
             arrayOf(id, current.name),
-        )
+        ) == 1
     }
 
-    suspend fun updateProgress(id: String, progress: TransferProgress) = write {
+    suspend fun cancelIfQueued(id: String): Boolean = write {
+        update(
+            "jobs",
+            ContentValues().apply {
+                put("status", JobStatus.CANCELLED.name)
+                putNull("error_message")
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id = ? AND status = ?",
+            arrayOf(id, JobStatus.QUEUED.name),
+        ) == 1
+    }
+
+    suspend fun cancelActive(id: String): Boolean = write {
+        update(
+            "jobs",
+            ContentValues().apply {
+                put("status", JobStatus.CANCELLED.name)
+                putNull("error_message")
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id = ? AND status IN (?, ?, ?)",
+            arrayOf(
+                id,
+                JobStatus.QUEUED.name,
+                JobStatus.RUNNING.name,
+                JobStatus.FINALIZING.name,
+            ),
+        ) == 1
+    }
+
+    suspend fun updateProgress(id: String, progress: TransferProgress): Boolean {
+        val updatedAt = System.currentTimeMillis()
+        return write(refresh = false) {
         update(
             "jobs",
             ContentValues().apply {
@@ -179,11 +243,25 @@ class HolenStore private constructor(context: Context) :
                 progress.totalBytes.putOrNull(this, "total_bytes")
                 progress.speedBytesPerSecond.putOrNull(this, "speed_bytes_per_second")
                 progress.etaSeconds.putOrNull(this, "eta_seconds")
-                put("updated_at", System.currentTimeMillis())
+                put("updated_at", updatedAt)
             },
-            "id = ?",
-            arrayOf(id),
-        )
+            "id = ? AND status = ?",
+            arrayOf(id, JobStatus.RUNNING.name),
+        ) == 1
+        }.also { updated ->
+            if (updated) {
+                mutableJobs.value = mutableJobs.value.map { job ->
+                    if (job.id == id) job.copy(
+                        progress = progress.percent,
+                        bytesDownloaded = progress.bytesDownloaded,
+                        totalBytes = progress.totalBytes,
+                        speedBytesPerSecond = progress.speedBytesPerSecond,
+                        etaSeconds = progress.etaSeconds,
+                        updatedAt = updatedAt,
+                    ) else job
+                }
+            }
+        }
     }
 
     suspend fun complete(
@@ -269,10 +347,13 @@ class HolenStore private constructor(context: Context) :
         }
     }
 
-    private suspend fun <T> write(block: SQLiteDatabase.() -> T): T =
+    private suspend fun <T> write(
+        refresh: Boolean = true,
+        block: SQLiteDatabase.() -> T,
+    ): T =
         withContext(Dispatchers.IO) {
             writeMutex.withLock {
-                writableDatabase.block().also { refresh() }
+                writableDatabase.block().also { if (refresh) refresh() }
             }
         }
 
@@ -341,6 +422,9 @@ class HolenStore private constructor(context: Context) :
         const val PREF_DOWNLOAD_TREE = "download_tree_uri"
         const val PREF_ENGINE_VERSION = "engine_version"
         const val PREF_RIGHTS_ACKNOWLEDGED = "rights_acknowledged"
+        const val PREF_ONBOARDING_COMPLETED = "onboarding_completed"
+        const val PREF_ONBOARDING_VERSION = "onboarding_version"
+        const val ONBOARDING_VERSION = 5
 
         private val COLUMNS = arrayOf(
             "id",

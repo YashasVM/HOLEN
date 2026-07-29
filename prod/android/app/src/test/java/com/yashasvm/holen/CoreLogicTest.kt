@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.InetAddress
 
 class CoreLogicTest {
     @Test
@@ -26,6 +27,29 @@ class CoreLogicTest {
         assertThrows(IllegalArgumentException::class.java) {
             validateHttpsUrl("https://example.com/" + "a".repeat(4_096))
         }
+        listOf(
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.1.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "2001:db8::1",
+        ).forEach { address ->
+            assertFalse("$address must not be treated as public", isPublicAddress(InetAddress.getByName(address)))
+        }
+        assertTrue(isPublicAddress(InetAddress.getByName("8.8.8.8")))
+        assertTrue(isPublicAddress(InetAddress.getByName("2606:4700:4700::1111")))
+        assertThrows(IllegalArgumentException::class.java) {
+            validatePublicHttpsUrl("https://127.0.0.1/private")
+        }
     }
 
     @Test
@@ -36,6 +60,26 @@ class CoreLogicTest {
         assertFalse(SourceAnalyzer.isDirectFile(null, "text/html; charset=utf-8"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "application/xhtml+xml"))
         assertFalse(SourceAnalyzer.isDirectFile(null, null))
+    }
+
+    @Test
+    fun youtubeHostsSkipTheDirectFileProbe() {
+        listOf(
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtu.be",
+        ).forEach { host ->
+            assertTrue("$host should use the extractor immediately", SourceAnalyzer.isExtractorFirstHost(host))
+        }
+        listOf(
+            null,
+            "example.com",
+            "notyoutube.com",
+            "youtube.com.example.org",
+        ).forEach { host ->
+            assertFalse("$host must still use the safe direct-file probe", SourceAnalyzer.isExtractorFirstHost(host))
+        }
     }
 
     @Test
@@ -123,6 +167,8 @@ class CoreLogicTest {
             "[download]  42.5% of 10.00MiB at 2.50MiB/s ETA 00:03",
         )!!
         assertEquals(42, result.percent)
+        assertEquals(4_404_019L, result.bytesDownloaded)
+        assertEquals(10_485_760L, result.totalBytes)
         assertEquals(2_621_440L, result.speedBytesPerSecond)
         assertEquals(3L, result.etaSeconds)
     }
@@ -143,5 +189,20 @@ class CoreLogicTest {
         assertTrue(friendlyFailure(Exception("login required")).contains("account"))
         assertTrue(friendlyFailure(Exception("permission denied")).contains("folder"))
         assertTrue(friendlyFailure(Exception("engine failed to initialize")).contains("engine"))
+        assertEquals(
+            "extractor engine returned an unexpected response",
+            friendlyFailure(Exception("extractor engine returned an unexpected response")),
+        )
+        assertTrue(friendlyFailure(IOException("Network response 404")).contains("HTTP 404"))
+    }
+
+    @Test
+    fun sharedTextExtractsTheFirstCleanHttpsUrl() {
+        assertEquals(
+            "https://youtu.be/example",
+            extractSharedHttps("Watch this: https://youtu.be/example)."),
+        )
+        assertNull(extractSharedHttps("http://example.com"))
+        assertNull(extractSharedHttps("no link"))
     }
 }

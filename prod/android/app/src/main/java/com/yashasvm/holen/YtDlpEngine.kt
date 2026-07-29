@@ -1,6 +1,7 @@
 package com.yashasvm.holen
 
 import android.content.Context
+import androidx.core.content.edit
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -14,7 +15,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 
-class YtDlpEngine(private val context: Context) {
+class YtDlpEngine private constructor(private val context: Context) {
     private val initMutex = Mutex()
     private val preferences = context.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
@@ -37,6 +38,7 @@ class YtDlpEngine(private val context: Context) {
         engineMutex.withLock {
             ensureInitialized(needsFfmpeg = false)
             val request = YoutubeDLRequest(url).apply {
+                addOption("--ignore-config")
                 addOption("--dump-single-json")
                 addOption("--flat-playlist")
                 addOption("--playlist-end", PLAYLIST_PREVIEW_LIMIT)
@@ -57,6 +59,7 @@ class YtDlpEngine(private val context: Context) {
         onProgress: (TransferProgress) -> Unit,
     ): StagedDownload = withContext(Dispatchers.IO) {
         engineMutex.withLock {
+            validatePublicHttpsUrl(job.sourceUrl)
             ensureInitialized(needsFfmpeg = true)
             if (isCancelled()) throw CancellationException("Download cancelled")
             directory.mkdirs()
@@ -65,6 +68,7 @@ class YtDlpEngine(private val context: Context) {
                 "%(title).180B [%(id)s].%(ext)s",
             ).absolutePath
             val request = YoutubeDLRequest(job.sourceUrl).apply {
+                addOption("--ignore-config")
                 addCommands(downloadArguments(job.format))
                 addCommands(
                     listOf(
@@ -83,24 +87,26 @@ class YtDlpEngine(private val context: Context) {
                 )
             }
             var lastUpdate = 0L
-            YoutubeDL.execute(request, job.id, false) { wrapperPercent, wrapperEta, line ->
-                if (isCancelled()) {
-                    YoutubeDL.destroyProcessById(job.id)
-                } else {
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdate >= 1_000 || wrapperPercent >= 100f) {
-                        val parsed = parseTransferLine(line)
-                        onProgress(
-                            TransferProgress(
-                                percent = parsed?.percent
-                                    ?: wrapperPercent.toInt().coerceIn(0, 100),
-                                bytesDownloaded = null,
-                                totalBytes = null,
-                                speedBytesPerSecond = parsed?.speedBytesPerSecond,
-                                etaSeconds = parsed?.etaSeconds ?: wrapperEta.takeIf { it >= 0 },
-                            ),
-                        )
-                        lastUpdate = now
+            runYoutubeAware {
+                YoutubeDL.execute(request, job.id, false) { wrapperPercent, wrapperEta, line ->
+                    if (isCancelled()) {
+                        YoutubeDL.destroyProcessById(job.id)
+                    } else {
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdate >= 1_000 || wrapperPercent >= 100f) {
+                            val parsed = parseTransferLine(line)
+                            onProgress(
+                                TransferProgress(
+                                    percent = parsed?.percent
+                                        ?: wrapperPercent.toInt().coerceIn(0, 100),
+                                    bytesDownloaded = null,
+                                    totalBytes = null,
+                                    speedBytesPerSecond = parsed?.speedBytesPerSecond,
+                                    etaSeconds = parsed?.etaSeconds ?: wrapperEta.takeIf { it >= 0 },
+                                ),
+                            )
+                            lastUpdate = now
+                        }
                     }
                 }
             }
@@ -132,11 +138,11 @@ class YtDlpEngine(private val context: Context) {
             try {
                 YoutubeDL.updateYoutubeDL(context, YoutubeDL.UpdateChannel.STABLE)
                 val version = validateVersion()
-                preferences.edit().putString(HolenStore.PREF_ENGINE_VERSION, version).apply()
+                preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, version) }
                 version
             } catch (error: Throwable) {
                 resetToBundledLocked()
-                throw IOException("Engine update failed and the bundled engine was restored.", error)
+                throw IOException("Engine update failed. Close and reopen HOLEN to restore the bundled engine.", error)
             }
         }
     }
@@ -148,19 +154,9 @@ class YtDlpEngine(private val context: Context) {
     private suspend fun resetToBundledLocked(): String =
         initMutex.withLock {
             YoutubeDL.destroyProcessById("analysis")
-            val root = File(context.noBackupFilesDir, YoutubeDL.baseName)
-            val engineDirectory = File(root, YoutubeDL.ytdlpDirName)
-            engineDirectory.deleteRecursively()
-            YoutubeDL.init_ytdlp(context, engineDirectory)
-            context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE)
-                .edit()
-                .remove("dlpVersion")
-                .remove("dlpVersionName")
-                .apply()
-            val version = "Bundled ${validateVersion()}"
-            preferences.edit().putString(HolenStore.PREF_ENGINE_VERSION, version).apply()
-            initialized = true
-            version
+            clearRuntimeLocked()
+            preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, "Bundled (restores after restart)") }
+            "Bundled runtime cleared. Close and reopen HOLEN to rebuild it."
         }
 
     private suspend fun ensureInitialized(needsFfmpeg: Boolean) {
@@ -169,30 +165,54 @@ class YtDlpEngine(private val context: Context) {
             if (!initialized) {
                 try {
                     YoutubeDL.init(context)
-                    val version = validateVersion()
-                    preferences.edit().putString(
-                        HolenStore.PREF_ENGINE_VERSION,
-                        YoutubeDL.version(context) ?: "Bundled $version",
-                    ).apply()
+                    preferences.edit {
+                        putString(
+                            HolenStore.PREF_ENGINE_VERSION,
+                            YoutubeDL.version(context) ?: bundledVersion,
+                        )
+                    }
                     initialized = true
-                } catch (error: Throwable) {
-                    val root = File(context.noBackupFilesDir, YoutubeDL.baseName)
-                    val engineDirectory = File(root, YoutubeDL.ytdlpDirName)
-                    engineDirectory.deleteRecursively()
-                    YoutubeDL.init_ytdlp(context, engineDirectory)
-                    val version = validateVersion()
-                    preferences.edit().putString(
-                        HolenStore.PREF_ENGINE_VERSION,
-                        "Bundled $version",
-                    ).apply()
-                    initialized = true
+                } catch (firstError: Throwable) {
+                    try {
+                        clearRuntimeLocked()
+                        YoutubeDL.init(context)
+                        preferences.edit {
+                            putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
+                        }
+                        initialized = true
+                    } catch (fallbackError: Throwable) {
+                        throw IOException(
+                            "Media engine startup failed. The bundled engine could not be restored.",
+                            fallbackError,
+                        ).also { it.addSuppressed(firstError) }
+                    }
                 }
             }
             if (needsFfmpeg && !ffmpegInitialized) {
-                FFmpeg.init(context)
-                ffmpegInitialized = true
+                try {
+                    FFmpeg.init(context)
+                    ffmpegInitialized = true
+                } catch (error: Throwable) {
+                    throw IOException("Media engine startup failed. The media tools could not load.", error)
+                }
             }
         }
+    }
+
+    /**
+     * The wrapper extracts Python, yt-dlp, and FFmpeg into this directory. Clearing only
+     * yt-dlp leaves a broken Python/FFmpeg runtime behind, so recovery must remove all of it.
+     */
+    private fun clearRuntimeLocked() {
+        File(context.noBackupFilesDir, YoutubeDL.baseName).deleteRecursively()
+        context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
+            remove("pythonLibVersion")
+            remove("ffmpegLibVersion")
+            remove("dlpVersion")
+            remove("dlpVersionName")
+        }
+        initialized = false
+        ffmpegInitialized = false
     }
 
     private fun validateVersion(): String {
@@ -204,6 +224,8 @@ class YtDlpEngine(private val context: Context) {
         return response.out.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
             ?: throw IOException("The media engine returned no version.")
     }
+
+    private fun <T> runYoutubeAware(block: () -> T): T = block()
 
     private fun JSONObject.toMedia(fallbackUrl: String): SourceAnalysis.Media {
         val formats = optJSONArray("formats") ?: JSONArray()
@@ -261,17 +283,17 @@ class YtDlpEngine(private val context: Context) {
         fun downloadArguments(format: DownloadFormat): List<String> = when (format) {
             DownloadFormat.ORIGINAL -> error("Original format is handled by the direct downloader.")
             DownloadFormat.BEST_MP4 -> listOf(
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
             )
             DownloadFormat.MP4_1080 -> listOf(
                 "-f",
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]",
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
                 "--merge-output-format", "mp4",
             )
             DownloadFormat.MP4_720 -> listOf(
                 "-f",
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]",
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
                 "--merge-output-format", "mp4",
             )
             DownloadFormat.AUDIO_M4A -> listOf(
@@ -319,6 +341,36 @@ class YtDlpEngine(private val context: Context) {
             return JSONObject(substring(start, end + 1))
         }
 
+        private fun isYoutubeUrl(value: String): Boolean {
+            val host = runCatching { java.net.URI(value).host?.lowercase() }.getOrNull() ?: return false
+            return host == "youtu.be" ||
+                host == "youtube.com" ||
+                host.endsWith(".youtube.com") ||
+                host == "youtube-nocookie.com" ||
+                host.endsWith(".youtube-nocookie.com")
+        }
+
+        private fun isYoutubeAuthenticationError(message: String): Boolean {
+            val normalized = message.lowercase()
+            return listOf(
+                "sign in",
+                "login",
+                "age-restricted",
+                "age restricted",
+                "age verification",
+                "confirm you're not a bot",
+                "confirm you’re not a bot",
+            ).any(normalized::contains)
+        }
+
         private val engineMutex = Mutex()
+
+        @Volatile
+        private var instance: YtDlpEngine? = null
+
+        fun get(context: Context): YtDlpEngine =
+            instance ?: synchronized(this) {
+                instance ?: YtDlpEngine(context.applicationContext).also { instance = it }
+            }
     }
 }

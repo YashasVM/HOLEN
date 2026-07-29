@@ -75,6 +75,7 @@ Open `http://localhost:8888`.
 | `OWNER_GITHUB_USERNAME` | `YashasVM` | GitHub username allowed to administer Holen |
 | `PUBLIC_ORIGIN` | `http://localhost:8080` | Public application origin |
 | `DOWNLOAD_DIR` | `./downloads` | Host download/cache directory |
+| `PLEX_MUSIC_DROP_DIR` | `/mnt/BackupDrive/Media/Audio/Holen` | Pre-created dedicated Plex import/drop folder mounted read/write for the owner-only “send to Plex” action |
 | `MAX_DURATION_SECONDS` | `7200` | Maximum source video duration |
 | `MAX_ACTIVE_JOBS` | `1` | Concurrent downloads |
 | `MAX_QUEUED_JOBS` | `25` | Global queue capacity |
@@ -117,6 +118,9 @@ cd .. && docker compose config --quiet
 - Rotate any credential that was ever committed to version control.
 - Store `cookies.txt` outside the repository and mount it with
   `YTDLP_COOKIES_PATH` only when needed.
+- If you use the Plex copy action, create a dedicated import/drop folder and
+  set `PLEX_MUSIC_DROP_DIR` to it. Do not mount the root of a Plex library;
+  the backend has write access to the mounted folder.
 
 ## Native Android app
 

@@ -33,22 +33,26 @@ class DownloadService : Service() {
     @Volatile
     private var recovered = false
 
+    @Volatile
+    private var stopping = false
+
     override fun onCreate() {
         super.onCreate()
         isRunning = true
         store = HolenStore.get(this)
         outputStore = OutputStore(this)
-        engine = YtDlpEngine(this)
+        engine = YtDlpEngine.get(this)
         createNotificationChannel()
         scope.launch { outputStore.cleanOrphanStaging() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action ?: ACTION_WAKE_QUEUE) {
-            ACTION_CANCEL -> intent?.getStringExtra(EXTRA_JOB_ID)?.let(::cancelJob)
+            ACTION_CANCEL -> intent?.getStringExtra(EXTRA_JOB_ID)?.let { cancelJob(it, startId) }
             ACTION_WAKE_QUEUE -> {
+                if (stopping) return START_NOT_STICKY
                 startTransferForeground(notification("Preparing queue", 0, null, null, null))
-                scope.launch { processQueue() }
+                scope.launch { processQueue(startId) }
             }
         }
         return START_STICKY
@@ -57,6 +61,7 @@ class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopping = true
         isRunning = false
         currentJobId?.let {
             directDownloader.cancel()
@@ -66,77 +71,88 @@ class DownloadService : Service() {
         super.onDestroy()
     }
 
+    override fun onTimeout(startId: Int) {
+        handleTimeout()
+    }
+
     override fun onTimeout(startId: Int, fgsType: Int) {
-        currentJobId?.let { id ->
+        handleTimeout()
+    }
+
+    private fun handleTimeout() {
+        if (stopping) return
+        stopping = true
+        val interruptedId = currentJobId
+        interruptedId?.let { id ->
             timedOutIds += id
             directDownloader.cancel()
             engine.cancel(id)
-            scope.launch {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        scope.launch {
+            interruptedId?.let { id ->
+                runCatching { store.transition(id, JobStatus.QUEUED) }
             }
-        } ?: stopSelf(startId)
+            stopSelf()
+        }
     }
 
-    private fun cancelJob(id: String) {
+    private fun cancelJob(id: String, startId: Int) {
         cancelledIds += id
         if (currentJobId == id) {
             directDownloader.cancel()
             engine.cancel(id)
         }
         scope.launch {
-            store.get(id)?.let { job ->
-                if (job.status == JobStatus.QUEUED ||
-                    job.status == JobStatus.RUNNING ||
-                    job.status == JobStatus.FINALIZING
-                ) {
-                    store.transition(id, JobStatus.CANCELLED)
+            store.cancelActive(id)
+            processorMutex.withLock {
+                if (currentJobId != id) {
+                    outputStore.clearStaging(id)
+                    cancelledIds -= id
                 }
-            }
-            if (currentJobId != id) {
-                outputStore.clearStaging(id)
-                cancelledIds -= id
+                if (currentJobId == null) {
+                    if (stopSelfResult(startId)) stopForeground(STOP_FOREGROUND_REMOVE)
+                }
             }
         }
     }
 
-    private suspend fun processQueue() = processorMutex.withLock {
+    private suspend fun processQueue(startId: Int) = processorMutex.withLock {
         if (!recovered) {
             store.requeueInterrupted()
             recovered = true
         }
-        while (true) {
-            val job = store.nextQueued() ?: break
+        while (!stopping) {
+            val job = store.claimNextQueued() ?: break
             currentJobId = job.id
-            cancelledIds -= job.id
-            timedOutIds -= job.id
+            var publishedOutput: OutputStore.PublishedFile? = null
             try {
-                store.transition(job.id, JobStatus.RUNNING)
                 updateNotification(job, TransferProgress(0, null, null, null, null))
                 val directory = outputStore.stagingDirectory(job.id)
                 val staged = if (job.sourceKind == SourceKind.DIRECT_FILE) {
-                    directDownloader.download(job, directory) { progress ->
-                        if (job.id !in cancelledIds) {
+                    directDownloader.download(job, directory, { shouldAbort(job.id) }) { progress ->
+                        if (!shouldAbort(job.id)) {
                             store.updateProgress(job.id, progress)
                             updateNotification(job, progress)
                         }
                     }
                 } else {
-                    engine.download(job, directory) { progress ->
-                        if (job.id !in cancelledIds) {
+                    engine.download(job, directory, { shouldAbort(job.id) }) { progress ->
+                        if (!shouldAbort(job.id)) {
                             scope.launch { store.updateProgress(job.id, progress) }
                             updateNotification(job, progress)
                         }
                     }
                 }
-                check(job.id !in cancelledIds) { "Download cancelled" }
+                check(!shouldAbort(job.id)) { "Download cancelled" }
                 store.transition(job.id, JobStatus.FINALIZING)
                 updateNotification(
                     job.copy(status = JobStatus.FINALIZING),
                     TransferProgress(99, staged.file.length(), staged.file.length(), null, null),
                 )
-                val published = outputStore.publish(staged) { job.id in cancelledIds }
-                check(job.id !in cancelledIds) { "Download cancelled" }
+                val published = outputStore.publish(staged) { shouldAbort(job.id) }
+                publishedOutput = published
+                check(!shouldAbort(job.id)) { "Download cancelled" }
                 val completionRows = store.complete(
                     job.id,
                     published.uri.toString(),
@@ -148,7 +164,10 @@ class DownloadService : Service() {
                     outputStore.deleteDocument(published.uri)
                     error("Download cancelled")
                 }
+                runCatching { showCompletionNotification(job, published) }
+                publishedOutput = null
             } catch (error: Throwable) {
+                publishedOutput?.let { runCatching { outputStore.deleteDocument(it.uri) } }
                 if (job.id in timedOutIds) {
                     runCatching { store.transition(job.id, JobStatus.QUEUED) }
                 } else if (job.id in cancelledIds) {
@@ -165,9 +184,11 @@ class DownloadService : Service() {
                 currentJobId = null
             }
         }
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        if (stopSelfResult(startId)) stopForeground(STOP_FOREGROUND_REMOVE)
     }
+
+    private fun shouldAbort(jobId: String): Boolean =
+        stopping || jobId in cancelledIds || jobId in timedOutIds
 
     private fun updateNotification(job: DownloadJob, progress: TransferProgress) {
         startTransferForeground(
@@ -202,6 +223,14 @@ class DownloadService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
+        val openPendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val detail = buildList {
             speed?.takeIf { it > 0 }?.let { add("${formatBytes(it)}/s") }
             eta?.takeIf { it >= 0 }?.let { add("${formatDuration(it)} left") }
@@ -210,9 +239,11 @@ class DownloadService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(detail)
+            .setContentIntent(openPendingIntent)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
-            .setProgress(100, progress.coerceIn(0, 100), progress <= 0)
+            .setCategory(Notification.CATEGORY_PROGRESS)
+            .setProgress(100, progress.coerceIn(0, 100), false)
             .apply {
                 if (cancelPendingIntent != null) {
                     addAction(Notification.Action.Builder(null, "Cancel", cancelPendingIntent).build())
@@ -229,8 +260,42 @@ class DownloadService : Service() {
         )
     }
 
+    private fun showCompletionNotification(
+        job: DownloadJob,
+        published: OutputStore.PublishedFile,
+    ) {
+        val openFileIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(published.uri, published.mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val openFilePendingIntent = PendingIntent.getActivity(
+            this,
+            job.id.hashCode(),
+            openFileIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val completed = Notification.Builder(this, COMPLETION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(getString(R.string.download_complete_title))
+            .setContentText(published.fileName)
+            .setStyle(
+                Notification.BigTextStyle().bigText(
+                    getString(R.string.download_complete_detail, published.fileName),
+                ),
+            )
+            .setContentIntent(openFilePendingIntent)
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_STATUS)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(
+            COMPLETION_NOTIFICATION_BASE + Math.floorMod(job.id.hashCode(), 100_000),
+            completed,
+        )
+    }
+
     private fun createNotificationChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.notification_channel_name),
@@ -240,6 +305,16 @@ class DownloadService : Service() {
                 setShowBadge(false)
             },
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                COMPLETION_CHANNEL_ID,
+                getString(R.string.notification_completion_channel_name),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = getString(R.string.notification_completion_channel_description)
+                setShowBadge(true)
+            },
+        )
     }
 
     companion object {
@@ -247,7 +322,9 @@ class DownloadService : Service() {
         const val ACTION_CANCEL = "com.yashasvm.holen.action.CANCEL"
         const val EXTRA_JOB_ID = "job_id"
         private const val CHANNEL_ID = "downloads"
+        private const val COMPLETION_CHANNEL_ID = "download_completions"
         private const val NOTIFICATION_ID = 410
+        private const val COMPLETION_NOTIFICATION_BASE = 10_000
 
         @Volatile
         internal var isRunning = false

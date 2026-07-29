@@ -1,17 +1,23 @@
 package com.yashasvm.holen
 
 import android.app.Application
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val store = HolenStore.get(application)
     private val outputStore = OutputStore(application)
-    private val engine = YtDlpEngine(application)
+    private val engine = YtDlpEngine.get(application)
     private val analyzer = SourceAnalyzer(engine)
     private val preferences = application.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
@@ -38,7 +44,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableError = MutableStateFlow<String?>(null)
     val error = mutableError.asStateFlow()
 
-    private val mutableFolderGranted = MutableStateFlow(outputStore.hasValidTreeGrant())
+    private val mutableFolderGranted = MutableStateFlow(
+        preferences.contains(HolenStore.PREF_DOWNLOAD_TREE),
+    )
     val folderGranted = mutableFolderGranted.asStateFlow()
 
     private val mutableRightsAcknowledged = MutableStateFlow(
@@ -46,17 +54,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     val rightsAcknowledged = mutableRightsAcknowledged.asStateFlow()
 
+    private val mutableOnboardingCompleted = MutableStateFlow(
+        preferences.getBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, false) &&
+            preferences.getInt(HolenStore.PREF_ONBOARDING_VERSION, 0) >=
+            HolenStore.ONBOARDING_VERSION,
+    )
+    val onboardingCompleted = mutableOnboardingCompleted.asStateFlow()
+
     private val mutableEngineVersion = MutableStateFlow(engine.activeVersion)
     val engineVersion = mutableEngineVersion.asStateFlow()
 
     private val mutableEngineMessage = MutableStateFlow<String?>(null)
     val engineMessage = mutableEngineMessage.asStateFlow()
 
+    private val mutableQueueEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val queueEvents = mutableQueueEvents.asSharedFlow()
+
     val bundledEngineVersion: String = engine.bundledVersion
 
     init {
         viewModelScope.launch {
-            if (!DownloadService.isRunning) store.requeueInterrupted()
+            val folderGranted = withContext(Dispatchers.IO) {
+                // Session-file support was removed; clear any credential material left by older builds.
+                File(getApplication<Application>().noBackupFilesDir, "auth").deleteRecursively()
+                outputStore.hasValidTreeGrant()
+            }
+            mutableFolderGranted.value = folderGranted
+        }
+    }
+
+    fun recoverQueue() {
+        viewModelScope.launch {
+            if (!DownloadService.isRunning) {
+                store.requeueInterrupted()
+                if (withContext(Dispatchers.IO) {
+                        outputStore.hasValidTreeGrant() && store.hasQueued()
+                    }
+                ) {
+                    DownloadService.wake(getApplication())
+                }
+            }
             outputStore.cleanOrphanStaging()
         }
     }
@@ -68,6 +105,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearUrl() = setUrl("")
+
+    fun receiveIncomingUrl(value: String) {
+        setUrl(value)
+        if (mutableOnboardingCompleted.value) analyze()
+    }
 
     fun setFormat(format: DownloadFormat) {
         mutableSelectedFormat.value = format
@@ -123,7 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             mutableError.value = "Select no more than 25 playlist items for one queue action."
             return
         }
-        if (!outputStore.hasValidTreeGrant()) {
+        if (!mutableFolderGranted.value) {
             mutableFolderGranted.value = false
             mutableError.value = "Choose a download folder first."
             return
@@ -133,6 +175,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
+            if (!withContext(Dispatchers.IO) { outputStore.hasValidTreeGrant() }) {
+                mutableFolderGranted.value = false
+                mutableError.value = "Choose a download folder first."
+                return@launch
+            }
             mutableBusy.value = true
             val now = System.currentTimeMillis()
             val jobs = when (preview) {
@@ -170,6 +217,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     mutableUrl.value = ""
                     mutableSelectedEntries.value = emptySet()
                     mutableError.value = null
+                    mutableQueueEvents.tryEmit(Unit)
                 }.onFailure {
                     mutableError.value = friendlyFailure(it)
                 }
@@ -195,8 +243,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancel(job: DownloadJob) {
         if (job.status == JobStatus.QUEUED) {
             viewModelScope.launch {
-                store.transition(job.id, JobStatus.CANCELLED)
-                outputStore.clearStaging(job.id)
+                if (store.cancelIfQueued(job.id)) {
+                    outputStore.clearStaging(job.id)
+                } else {
+                    DownloadService.cancel(getApplication(), job.id)
+                }
             }
         } else {
             DownloadService.cancel(getApplication(), job.id)
@@ -221,18 +272,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun acknowledgeRights() {
-        preferences.edit().putBoolean(HolenStore.PREF_RIGHTS_ACKNOWLEDGED, true).apply()
+        preferences.edit { putBoolean(HolenStore.PREF_RIGHTS_ACKNOWLEDGED, true) }
         mutableRightsAcknowledged.value = true
         mutableError.value = null
     }
 
-    fun refreshFolderGrant() {
-        mutableFolderGranted.value = outputStore.hasValidTreeGrant()
+    fun completeOnboarding() {
+        if (!mutableRightsAcknowledged.value) {
+            mutableError.value = "Accept the responsible-download agreement to continue."
+            return
+        }
+        if (!mutableFolderGranted.value) {
+            mutableFolderGranted.value = false
+            mutableError.value = "Choose a download folder to continue."
+            return
+        }
+        viewModelScope.launch {
+            if (!withContext(Dispatchers.IO) { outputStore.hasValidTreeGrant() }) {
+                mutableFolderGranted.value = false
+                mutableError.value = "Choose a download folder to continue."
+                return@launch
+            }
+            preferences.edit {
+                putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, true)
+                putInt(HolenStore.PREF_ONBOARDING_VERSION, HolenStore.ONBOARDING_VERSION)
+            }
+            mutableOnboardingCompleted.value = true
+            mutableError.value = null
+            if (mutableUrl.value.isNotBlank()) analyze()
+        }
+    }
+
+    fun restartOnboarding() {
+        preferences.edit {
+            putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, false)
+            putInt(HolenStore.PREF_ONBOARDING_VERSION, 0)
+        }
+        mutableOnboardingCompleted.value = false
+        mutableError.value = null
+    }
+
+    fun refreshFolderGrant() = viewModelScope.launch {
+        mutableFolderGranted.value = withContext(Dispatchers.IO) { outputStore.hasValidTreeGrant() }
     }
 
     fun folderSelectionSucceeded() {
         refreshFolderGrant()
         mutableError.value = null
+        viewModelScope.launch {
+            if (store.hasQueued()) DownloadService.wake(getApplication())
+        }
     }
 
     fun folderSelectionFailed() {
@@ -266,7 +355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { engine.resetToBundled() }
                 .onSuccess {
                     mutableEngineVersion.value = it
-                    mutableEngineMessage.value = "Bundled engine restored."
+                    mutableEngineMessage.value = "Engine files cleared. Close and reopen HOLEN to rebuild them."
                 }
                 .onFailure { mutableEngineMessage.value = friendlyFailure(it) }
             mutableBusy.value = false
@@ -275,7 +364,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         engine.cancel("analysis")
-        super.onCleared()
     }
 
     private fun SourceAnalysis.DirectFile.toJob(
