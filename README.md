@@ -1,72 +1,97 @@
-# HOLEN
+<h1 align="center">HOLEN</h1>
 
-HOLEN is a free, on-device Android downloader for direct files and supported media pages. Paste a link or share it from another app, choose a format, and let HOLEN download in the background.
+<p align="center">
+  <em>A clean, on-device downloader for Android.</em>
+</p>
 
-## Download HOLEN for Android
+<p align="center">
+  <img src="https://img.shields.io/github/stars/YashasVM/HOLEN?style=flat-square&color=111111&label=stars" alt="Stars">
+  <img src="https://img.shields.io/github/v/release/YashasVM/HOLEN?style=flat-square&color=111111&label=release" alt="Release">
+  <img src="https://img.shields.io/badge/android-native-111111?style=flat-square" alt="Native Android">
+</p>
 
-### [Download HOLEN V3 for Android (ARM64)](https://github.com/YashasVM/HOLEN/releases/download/V3/HOLEN-v3.3.0-arm64-debug.apk)
+<p align="center">
+  <strong>Share a link &middot; choose a format &middot; download on your device</strong><br>
+  <sub>HOLEN is a native Kotlin Android app for direct HTTPS files and supported media pages, with no account, analytics, or hosted download server.</sub>
+</p>
 
-- Requires Android 10 or newer.
-- ARM64 is recommended for modern phones. Galaxy S24 Ultra users should download the ARM64 APK.
-- This V3 asset is for ARM64 phones, including the Galaxy S24 Ultra.
-- Verify the download against the release `SHA256SUMS-V3` file.
+---
 
-## What HOLEN does
+## Description
 
-HOLEN downloads direct HTTPS files and supported public media pages on the device. It offers video and audio format choices, background downloads with notifications, playlist support, resume/retry/cancel controls, and a user-selected output folder. Media-page processing uses the bundled engine; direct files use Android networking.
+HOLEN keeps downloading simple: paste an HTTPS link or share it from another app, choose the format you want, and let Android continue the transfer in the background. Downloads stay on your device and save to the folder you choose.
 
-HOLEN has no Android account requirement, analytics, telemetry, hosted server dependency, or Clerk integration. Some supported pages can require account cookies that you are authorized to use; cookies never bypass DRM or other access controls.
+> [!IMPORTANT]
+> HOLEN V3.3.1 is for Android 10 and newer. Modern Samsung and Pixel phones, including the Galaxy S24 Ultra, should install the ARM64 APK from [HOLEN V3](https://github.com/YashasVM/HOLEN/releases/tag/V3).
 
-## Choose your edition
+## What is HOLEN?
 
-| Edition | Location | Purpose | License |
-| --- | --- | --- | --- |
-| HOLEN Android | [`prod/android/`](prod/android/) | Native, fully on-device Android downloader | GPL-3.0 |
-| HOLEN OSS | [`OSS/`](OSS/) | Local self-hosted downloader without accounts or hosted services | MIT |
-| HOLEN production server | [`prod/backend/`](prod/backend/), [`prod/frontend/`](prod/frontend/) | Private authenticated Clerk/Docker deployment | MIT, subject to dependency licenses |
-| Root self-hosted source | [`backend/`](backend/), [`frontend/`](frontend/), [`bin/`](bin/) | Current root-level self-hosted launcher and development source | MIT |
+HOLEN is an Android-first downloader built with Kotlin and Jetpack Compose. Direct files use Android networking; supported media pages use the bundled yt-dlp and FFmpeg runtime.
 
-These editions do not share runtime state. Android does not require the server or use Clerk. OSS does not provide Android downloads. The production server is intended for private authenticated deployments. Each edition's own README and license file controls that edition.
+```text
+Share or paste a link -> HOLEN -> Android background download -> Your selected folder
+```
 
-## Android quick start
+## Features
 
-1. Download the ARM64 APK for a modern phone, or the universal APK if unsure.
-2. Install it from the release page and complete Android's installer prompts.
-3. On first launch, complete the setup and choose an output folder.
-4. Paste an HTTPS link into HOLEN, or share it from another app and choose **Download with HOLEN**.
+| Feature | Details |
+|---|---|
+| **Native Android App** | Kotlin and Jetpack Compose UI; no WebView or required server. |
+| **Share to HOLEN** | Send a supported HTTPS link from another app straight into the format picker. |
+| **Direct & Media Downloads** | Save direct files and supported public media pages. |
+| **Format Choices** | Best MP4, 1080p MP4, 720p MP4, M4A, MP3, or the original direct file. |
+| **Background Transfers** | Notifications, playlist support, resume, retry, cancel, and safe staging. |
+| **Your Folder** | Android's system folder picker keeps destination access explicit. |
+| **Private by Default** | No analytics or telemetry. Optional `cookies.txt` stays in private app storage. |
 
-See the [Android guide](prod/android/README.md) for storage, cookies, troubleshooting, build, signing, and release verification.
+## APKs
 
-## How sharing to HOLEN works
+| APK | Use on |
+|---|---|
+| [`HOLEN-v3.3.1-arm64-debug.apk`](https://github.com/YashasVM/HOLEN/releases/download/V3/HOLEN-v3.3.1-arm64-debug.apk) | Modern ARM64 phones, including Galaxy S24 Ultra |
 
-From an app that can share text links, choose **Share**, select **Download with HOLEN**, then select a supported format. HOLEN queues the transfer and continues in the background; the source app remains available after you queue it.
+> [!NOTE]
+> This public V3 package is ARM64-only. Verify it against [SHA256SUMS-V3](https://github.com/YashasVM/HOLEN/releases/download/V3/SHA256SUMS-V3) before installing.
 
-Only download files and media you own or are authorized to save. You are responsible for complying with source-platform terms and applicable law.
+## Quick start
 
-## Repository structure
+1. Download and install the ARM64 APK above.
+2. Complete onboarding and select a download folder.
+3. Paste an HTTPS URL, or share one to **Download with HOLEN**.
+4. Choose a format and keep HOLEN running while Android finishes the download.
 
-- [`prod/android/`](prod/android/) — Android app and Android-specific notices.
-- [`OSS/`](OSS/) — account-free local self-hosted server.
-- [`prod/`](prod/) — private Clerk/Docker production deployment.
-- [`backend/`](backend/), [`frontend/`](frontend/), [`bin/`](bin/) — root self-hosted launcher and development source.
-- [`docs/releases/HOLEN-V3.md`](docs/releases/HOLEN-V3.md) — V3 release notes.
+## Build
 
-## Licenses
+Requirements: JDK 17, Android SDK Platform 37.1, and Build Tools 36.0.0.
 
-- HOLEN Android is GPL-3.0 because it includes GPL-licensed media components. See [`prod/android/LICENSE`](prod/android/LICENSE) and [Android third-party notices](prod/android/THIRD_PARTY_NOTICES.md).
-- HOLEN OSS is MIT-licensed; see the repository [`LICENSE`](LICENSE).
-- The root self-hosted source and the private production server are MIT-licensed, subject to their dependency licenses. See [`LICENSE`](LICENSE) and the applicable edition documentation.
+```powershell
+cd prod/android
+.\gradlew.bat testEmulatorDebugUnitTest assembleArm64Debug --no-daemon
+```
 
-## Responsible-use notice
+For installation, signing, and release details, see [the Android guide](prod/android/README.md).
 
-HOLEN is not a tool for bypassing DRM, access controls, or terms of service. Authentication cookies may enable only content your account is already authorized to access; they may expire and are not a universal age-restriction workaround.
+## Repository layout
 
-## Security and privacy
+```text
+.
+|-- prod/android/       # Native HOLEN Android app
+|-- docs/releases/      # Release notes
+|-- OSS/                # Account-free self-hosted edition
+|-- prod/               # Private production deployment
+|-- backend/ frontend/  # Root self-hosted source
+`-- README.md
+```
 
-The Android app processes downloads on the device and has no analytics or telemetry. Optional `cookies.txt` data is stored only in private on-device storage; never commit, share, or report cookies. For supported versions, vulnerability reporting, and secret-reporting guidance, see [SECURITY.md](SECURITY.md).
+## Release notes
 
-## Development and contributing
+Read the current [HOLEN V3 release notes](docs/releases/HOLEN-V3.md).
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Use the edition-specific README for local setup and checks.
+## Responsible use
 
-Useful references: [Android guide](prod/android/README.md), [OSS guide](OSS/README.md), [private production deployment](prod/README.md), [changelog](CHANGELOG.md), [architecture](docs/architecture.md), and [troubleshooting](docs/troubleshooting.md).
+Download only files and media you own or are authorized to save. HOLEN does not bypass DRM, accounts, age gates, access controls, or source-platform terms.
+
+<p align="center">
+  <a href="https://github.com/YashasVM"><strong>Made by @yashas.vm</strong></a><br>
+  <sub>Small, direct, and always getting sharper.</sub>
+</p>
