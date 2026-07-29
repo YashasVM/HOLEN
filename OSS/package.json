@@ -1,0 +1,28 @@
+{
+  "name": "holen-github-launcher",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Install and run Holen from GitHub with npx.",
+  "bin": {
+    "holen": "bin/holen.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "backend/requirements.txt",
+    "backend/app/*.py",
+    "frontend/index.html",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/src",
+    "frontend/tsconfig.json",
+    "frontend/vite.config.ts",
+    ".env.example",
+    "run.sh",
+    "README.md",
+    "LICENSE"
+  ]
+}

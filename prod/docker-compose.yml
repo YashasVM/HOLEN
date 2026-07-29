@@ -1,0 +1,80 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      cache_from:
+        - type=local,src=/tmp/docker-cache/backend
+    restart: unless-stopped
+    # The public Clerk key lets the API derive its issuer when a dedicated
+    # CLERK_FRONTEND_API_URL is not set in the root environment.
+    env_file:
+      - ./frontend/.env.local
+    environment:
+      CLERK_FRONTEND_API_URL: ${CLERK_FRONTEND_API_URL:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      OWNER_GITHUB_USERNAME: ${OWNER_GITHUB_USERNAME:-YashasVM}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-7200}
+      MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
+      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-25}
+      MAX_JOBS_PER_USER: ${MAX_JOBS_PER_USER:-5}
+      DEFAULT_USAGE_LIMIT_GB: ${DEFAULT_USAGE_LIMIT_GB:-5}
+      RESTRICTED_EMAIL_USAGE_LIMIT_GB: ${RESTRICTED_EMAIL_USAGE_LIMIT_GB:-2}
+      TRUSTED_EMAIL_DOMAINS: ${TRUSTED_EMAIL_DOMAINS:-gmail.com,duck.com,hotmail.com,outlook.com}
+      CACHE_LIMIT_GB: ${CACHE_LIMIT_GB:-45}
+      DOWNLOAD_LINK_TTL_SECONDS: ${DOWNLOAD_LINK_TTL_SECONDS:-3600}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
+      DOWNLOAD_DIR: /downloads
+      SQLITE_PATH: /data/app.db
+      YTDLP_COOKIES_FILE: /cookies/cookies.txt
+    volumes:
+      - ${DOWNLOAD_DIR:-./downloads}:/downloads
+      - ./data:/data
+      - /mnt/BackupDrive/Media/Audio:/mnt/BackupDrive/Media/Audio
+      - ${YTDLP_COOKIES_PATH:-/dev/null}:/cookies/cookies.txt
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
+      cache_from:
+        - type=local,src=/tmp/docker-cache/frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8888:80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    depends_on:
+      frontend:
+        condition: service_started
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M

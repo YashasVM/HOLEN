@@ -1,0 +1,3 @@
+-keep class com.yausername.youtubedl_android.mapper.** { *; }
+-keepattributes *Annotation*
+-dontwarn com.fasterxml.jackson.**

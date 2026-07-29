@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Holen</string>
+    <string name="notification_channel_name">Downloads</string>
+    <string name="notification_channel_description">Active Holen downloads</string>
+</resources>
