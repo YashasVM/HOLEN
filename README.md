@@ -5,12 +5,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/stars/YashasVM/HOLEN?style=flat-square&color=111111&label=stars" alt="Stars">
-  <img src="https://img.shields.io/github/v/release/YashasVM/HOLEN?style=flat-square&color=111111&label=release" alt="Release">
-  <img src="https://img.shields.io/badge/android-native-111111?style=flat-square" alt="Native Android">
-</p>
-
-<p align="center">
   <strong>Share a link &middot; choose a format &middot; download on your device</strong><br>
   <sub>HOLEN is a native Kotlin Android app for direct HTTPS files and supported media pages, with no account, analytics, or hosted download server.</sub>
 </p>
