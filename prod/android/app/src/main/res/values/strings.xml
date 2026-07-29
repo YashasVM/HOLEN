@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Holen</string>
+    <string name="app_name">HOLEN v3.2.1</string>
     <string name="share_target_label">Download with Holen</string>
     <string name="notification_channel_name">Downloads</string>
     <string name="notification_channel_description">Active Holen downloads</string>

@@ -12,8 +12,8 @@ android {
         applicationId = "com.yashasvm.holen"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.gradleProperty("holenVersionCode").orElse("2").get().toInt()
-        versionName = providers.gradleProperty("holenVersionName").orElse("0.2.0").get()
+        versionCode = providers.gradleProperty("holenVersionCode").orElse("7").get().toInt()
+        versionName = providers.gradleProperty("holenVersionName").orElse("3.2.1").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -51,15 +51,12 @@ android {
     }
 
     buildTypes {
-        debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
-        }
+        debug {}
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

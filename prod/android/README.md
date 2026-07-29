@@ -38,20 +38,15 @@ runtime dependency versions in `gradle/libs.versions.toml`.
 
 ## Onboarding, sharing, and storage
 
-First launch explains Holen, records the responsible-download agreement, and
-then asks for a destination through Android's system folder picker. Holen
+First launch uses a cinematic welcome, an MIT-accurate introduction to the
+separate HOLEN OSS edition, a five-frame sharing tutorial, a hold-to-sign
+responsible-download acknowledgment, and Android's system folder picker. Holen
 persists only that read/write tree grant. After setup, sharing a text/plain
 HTTPS link to **Download with Holen** opens a compact quality dialog. Queuing
 closes the dialog immediately so the source app stays visible while Holen
 downloads in the background. Active work is staged under the app-specific
 external files directory and then byte-verified while copying to the selected
 folder.
-
-For sources that require the user's own account or age verification, Settings
-can import a Netscape-format `cookies.txt` exported from a browser where the
-user is already signed in. Holen stores this session only in private, no-backup
-app storage, uses it for analysis and downloads, and offers one-tap removal.
-The file is an account secret and must not be shared.
 
 - Network failures preserve `.part` files so Retry can resume.
 - Explicit Cancel removes staging data.
