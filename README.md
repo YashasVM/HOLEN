@@ -4,12 +4,12 @@ HOLEN is a free, on-device Android downloader for direct files and supported med
 
 ## Download HOLEN for Android
 
-### [Download HOLEN V3 for Android](https://github.com/YashasVM/HOLEN/releases/latest)
+### [Download HOLEN V3 for Android (ARM64)](https://github.com/YashasVM/HOLEN/releases/download/V3/HOLEN-v3.3.0-arm64-debug.apk)
 
 - Requires Android 10 or newer.
 - ARM64 is recommended for modern phones. Galaxy S24 Ultra users should download the ARM64 APK.
-- Choose the universal APK when the device ABI is unknown.
-- Verify every download with the release `SHA256SUMS` file.
+- This V3 asset is for ARM64 phones, including the Galaxy S24 Ultra.
+- Verify the download against the release `SHA256SUMS-V3` file.
 
 ## What HOLEN does
 
