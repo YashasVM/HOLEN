@@ -1,4 +1,8 @@
-# Holen
+# HOLEN OSS
+
+HOLEN OSS is the MIT-licensed, local self-hosted edition. It has no accounts,
+hosted services, or Android download delivery. For the fully on-device Android
+app, see the [latest HOLEN Android release](https://github.com/YashasVM/HOLEN/releases/latest).
 
 Holen is a small, self-hosted YouTube downloader. It has no accounts, database users, analytics, third-party authentication, or external services: paste a video or Short URL, choose a format, and save the completed file from the browser.
 
@@ -70,7 +74,7 @@ Copy `.env.example` to `.env`; its defaults are safe to use as-is for a personal
 | `CACHE_LIMIT_GB` | `20` | Cache size before oldest completed files are evicted. |
 | `ANALYZE_REQUESTS_PER_MINUTE` | `8` | Metadata checks per IP per minute. |
 | `JOB_REQUESTS_PER_HOUR` | `12` | New download jobs per IP per hour. |
-| `YTDLP_COOKIES_PATH` | unset | Optional absolute host path to a Netscape `cookies.txt` file. |
+| `YTDLP_COOKIES_FILE` | unset | Optional absolute host path to a Netscape `cookies.txt` file. |
 
 Cookies are optional. If you use them, set `YTDLP_COOKIES_FILE` to the absolute path of a local Netscape-format cookies file. Keep it outside this repository; `.gitignore` excludes it.
 
@@ -96,8 +100,8 @@ Vite proxies `/api` to `http://127.0.0.1:8000` while developing. Create `downloa
 
 ## Reference
 
-- [Architecture](docs/architecture.md)
-- [Troubleshooting](docs/troubleshooting.md)
+- [Architecture](../docs/architecture.md)
+- [Troubleshooting](../docs/troubleshooting.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
@@ -119,4 +123,4 @@ cd .. && node --check bin/holen.js
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See the repository [LICENSE](../LICENSE).

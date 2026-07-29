@@ -9,8 +9,33 @@ import org.junit.Test
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.io.File
 
 class CoreLogicTest {
+    private val validCookies = """
+        # Netscape HTTP Cookie File
+        .example.com	TRUE	/	TRUE	1893456000	session	value
+    """.trimIndent()
+
+    @Test
+    fun netscapeCookiesAreStrictlyValidated() {
+        assertTrue(CookieStore.validateCookieBytes(validCookies.toByteArray()))
+        assertFalse(CookieStore.validateCookieBytes("{}".toByteArray()))
+        assertFalse(
+            CookieStore.validateCookieBytes(
+                "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tmissing".toByteArray(),
+            ),
+        )
+        assertFalse(CookieStore.validateCookieBytes(ByteArray(CookieStore.MAX_BYTES + 1)))
+    }
+
+    @Test
+    fun cookieArgumentsAreAddedOnlyWhenAFileExists() {
+        assertTrue(CookieStore.cookieArguments(null).isEmpty())
+        val file = File("private/cookies.txt")
+        assertEquals(listOf("--cookies", file.absolutePath), CookieStore.cookieArguments(file))
+    }
+
     @Test
     fun httpsValidationAcceptsOnlyPublicHttpsUrls() {
         assertEquals("https://example.com/a?b=1", validateHttpsUrl(" https://example.com/a?b=1 "))

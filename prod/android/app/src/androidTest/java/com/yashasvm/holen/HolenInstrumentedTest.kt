@@ -52,22 +52,22 @@ class HolenInstrumentedTest {
         composeRule.onNodeWithText("Welcome to\nHOLEN.").performClick()
         composeRule.onNodeWithTag("onboarding-about").assertIsDisplayed()
         composeRule.onNodeWithText(
-            "HOLEN downloads almost anything from the internet—free.",
+            "Download anything with HOLEN. Free.",
         ).assertIsDisplayed()
         composeRule.onNodeWithText(
-            "Skip the sketchy websites and unsafe download pages.",
+            "Skip sketchy websites and unsafe download pages.",
         ).assertIsDisplayed()
         composeRule.waitUntil(4_000) {
             composeRule.onAllNodesWithText(
-                "HOLEN OSS is open source under the MIT License.",
+                "HOLEN OSS is MIT-licensed.*",
             ).fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithTag("about-repository-link").assertIsDisplayed()
         composeRule.onNodeWithText(
-            "HOLEN downloads almost anything from the internet—free.",
+            "Download anything with HOLEN. Free.",
         ).assertIsDisplayed()
         composeRule.onNodeWithText(
-            "Skip the sketchy websites and unsafe download pages.",
+            "Skip sketchy websites and unsafe download pages.",
         ).assertIsDisplayed()
 
         composeRule.onNodeWithTag("onboarding-next").performClick()

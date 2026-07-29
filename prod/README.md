@@ -1,6 +1,8 @@
-# Holen — Private YouTube Downloader
+# HOLEN production server — private authenticated deployment
 
-A private homelab downloader built with React, FastAPI, Clerk, and Docker.
+This is the private authenticated deployment built with React, FastAPI, Clerk,
+and Docker. It is not required by the Android app and is not a public hosting
+guide.
 
 ## What it does
 
@@ -125,6 +127,7 @@ cd .. && docker compose config --quiet
 ## Native Android app
 
 The standalone, fully on-device Android app lives in [`android/`](android/).
-It does not use this server, Clerk, or a WebView. See
-[`android/README.md`](android/README.md) for build, signing, storage, and
+It does not use this server, Clerk, or a WebView. Download it from the
+[latest GitHub Release](https://github.com/YashasVM/HOLEN/releases/latest), or
+see [`android/README.md`](android/README.md) for build, signing, storage, and
 release instructions.
