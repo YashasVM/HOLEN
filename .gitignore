@@ -32,3 +32,7 @@ holen.pid
 **/android/*.aab
 # This is a local hand-off note that contains machine-specific absolute paths.
 **/android/ARTIFACT_LOCATIONS.txt
+
+# Release packages are delivered separately and should not bloat source history.
+/deliverables/
+/prod/APKs/
