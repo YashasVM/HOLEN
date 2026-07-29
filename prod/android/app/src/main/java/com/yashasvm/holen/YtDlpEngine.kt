@@ -17,6 +17,7 @@ import java.io.IOException
 
 class YtDlpEngine private constructor(private val context: Context) {
     private val initMutex = Mutex()
+    private val cookieStore = CookieStore(context)
     private val preferences = context.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -39,6 +40,7 @@ class YtDlpEngine private constructor(private val context: Context) {
             ensureInitialized(needsFfmpeg = false)
             val request = YoutubeDLRequest(url).apply {
                 addOption("--ignore-config")
+                addCommands(cookieStore.cookieArguments())
                 addOption("--dump-single-json")
                 addOption("--flat-playlist")
                 addOption("--playlist-end", PLAYLIST_PREVIEW_LIMIT)
@@ -69,6 +71,7 @@ class YtDlpEngine private constructor(private val context: Context) {
             ).absolutePath
             val request = YoutubeDLRequest(job.sourceUrl).apply {
                 addOption("--ignore-config")
+                addCommands(cookieStore.cookieArguments())
                 addCommands(downloadArguments(job.format))
                 addCommands(
                     listOf(

@@ -22,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -73,6 +74,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -87,6 +89,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -290,12 +293,13 @@ private fun AboutStage(
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             BlurRevealText(
-                text = "HOLEN downloads almost anything from the internet—free.",
+                text = "Download anything with HOLEN. Free.",
                 visible = step >= 1,
                 reducedMotion = reducedMotion,
+                singleLine = true,
             )
             BlurRevealText(
-                text = "Skip the sketchy websites and unsafe download pages.",
+                text = "Skip sketchy websites and unsafe download pages.",
                 visible = step >= 2,
                 reducedMotion = reducedMotion,
                 supporting = true,
@@ -307,13 +311,21 @@ private fun AboutStage(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     BlurRevealText(
-                        text = "HOLEN OSS is open source under the MIT License.",
+                        text = "HOLEN OSS is MIT-licensed.*",
                         visible = true,
                         reducedMotion = reducedMotion,
+                        singleLine = true,
+                    )
+                    Text(
+                        "* The Android app is GPL-3.0 because it includes GPL-licensed media components. See Third-Party Notices.",
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = HolenMuted,
                     )
                     AnimatedVisibility(visible = step >= 4, enter = pillEnter(reducedMotion)) {
                         Row(
                             modifier = Modifier
+                                .align(Alignment.Start)
                                 .heightIn(min = 48.dp)
                                 .clip(RoundedCornerShape(24.dp))
                                 .clickable(
@@ -691,14 +703,44 @@ private fun BlurRevealText(
         label = "Reveal blur",
     )
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val headlineSize = when {
+        val preferredSize = when {
             maxWidth < 340.dp -> 19.sp
             maxWidth < 390.dp -> 21.sp
             else -> 23.sp
         }
+        val textMeasurer = rememberTextMeasurer()
+        val density = LocalDensity.current
+        val availableWidth = with(density) { maxWidth.roundToPx() }
+        val headlineStyle = MaterialTheme.typography.headlineSmall
+        val fittingSize = if (supporting || !singleLine) {
+            preferredSize
+        } else {
+            (preferredSize.value.toInt() downTo 14).firstOrNull { candidate ->
+                textMeasurer.measure(
+                    text = text,
+                    style = headlineStyle.copy(fontSize = candidate.sp),
+                    maxLines = 1,
+                    softWrap = false,
+                ).size.width <= availableWidth
+            }?.sp ?: 14.sp
+        }
+        val needsAccessibilityScroll = singleLine && !supporting &&
+            textMeasurer.measure(
+                text = text,
+                style = headlineStyle.copy(fontSize = fittingSize),
+                maxLines = 1,
+                softWrap = false,
+            ).size.width > availableWidth
         Text(
             text,
             modifier = Modifier
+                .then(
+                    if (needsAccessibilityScroll) {
+                        Modifier.horizontalScroll(rememberScrollState())
+                    } else {
+                        Modifier
+                    },
+                )
                 .blur(blur)
                 .graphicsLayer {
                     this.alpha = alpha
@@ -708,10 +750,11 @@ private fun BlurRevealText(
             style = if (supporting) {
                 MaterialTheme.typography.bodyLarge
             } else {
-                MaterialTheme.typography.headlineSmall.copy(fontSize = headlineSize)
+                headlineStyle.copy(fontSize = fittingSize)
             },
             color = if (supporting) HolenMuted else HolenInk,
             maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+            softWrap = !singleLine,
             overflow = TextOverflow.Clip,
         )
     }

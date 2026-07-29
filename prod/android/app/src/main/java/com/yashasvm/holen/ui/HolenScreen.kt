@@ -80,6 +80,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -148,6 +150,8 @@ private fun DownloadHome(
     val rightsAcknowledged by viewModel.rightsAcknowledged.collectAsStateWithLifecycle()
     val engineVersion by viewModel.engineVersion.collectAsStateWithLifecycle()
     val engineMessage by viewModel.engineMessage.collectAsStateWithLifecycle()
+    val cookiesConfigured by viewModel.cookiesConfigured.collectAsStateWithLifecycle()
+    val cookieMessage by viewModel.cookieMessage.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -518,14 +522,14 @@ private fun DownloadHome(
             bundledVersion = viewModel.bundledEngineVersion,
             activeVersion = engineVersion,
             message = engineMessage,
+            cookiesConfigured = cookiesConfigured,
+            cookieMessage = cookieMessage,
             busy = busy,
             onChooseFolder = onChooseFolder,
-            onRestartOnboarding = {
-                viewModel.restartOnboarding()
-                showSettings = false
-            },
             onUpdate = viewModel::updateEngine,
             onReset = viewModel::resetEngine,
+            onSaveCookies = viewModel::saveCookies,
+            onClearCookies = viewModel::clearCookies,
             onDismiss = { showSettings = false },
         )
     }
@@ -831,13 +835,18 @@ private fun SettingsDialog(
     bundledVersion: String,
     activeVersion: String,
     message: String?,
+    cookiesConfigured: Boolean,
+    cookieMessage: String?,
     busy: Boolean,
     onChooseFolder: () -> Unit,
-    onRestartOnboarding: () -> Unit,
     onUpdate: () -> Unit,
     onReset: () -> Unit,
+    onSaveCookies: (String) -> Unit,
+    onClearCookies: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var showCookieDialog by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = RectangleShape,
@@ -856,12 +865,6 @@ private fun SettingsDialog(
                     "Change download folder",
                     onChooseFolder,
                     background = HolenSurfaceTwo,
-                    foreground = HolenInk,
-                )
-                HolenButton(
-                    "View welcome & setup",
-                    onRestartOnboarding,
-                    background = HolenYellow,
                     foreground = HolenInk,
                 )
                 HorizontalDivider(thickness = 2.dp, color = HolenInk)
@@ -891,8 +894,38 @@ private fun SettingsDialog(
                     foreground = HolenInk,
                     enabled = !busy,
                 )
+                HorizontalDivider(thickness = 2.dp, color = HolenInk)
+                Text("ADVANCED", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Holen Android is GPL-3.0. Engine updates are manual and use yt-dlp’s stable upstream release.",
+                    if (cookiesConfigured) "Configured on this device" else "Not configured",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (cookiesConfigured) HolenGreen else HolenMuted,
+                    modifier = Modifier.semantics { testTag = "cookies-status" },
+                )
+                HolenButton(
+                    "Configure cookies.txt",
+                    { showCookieDialog = true },
+                    background = HolenSurfaceTwo,
+                    foreground = HolenInk,
+                    modifier = Modifier.semantics { testTag = "configure-cookies" },
+                )
+                if (cookiesConfigured) {
+                    HolenButton(
+                        "Clear cookies",
+                        { confirmClear = true },
+                        background = HolenRed,
+                        modifier = Modifier.semantics { testTag = "clear-cookies" },
+                    )
+                }
+                cookieMessage?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (it.contains("saved") || it.contains("cleared")) HolenGreen else HolenRed,
+                    )
+                }
+                Text(
+                    "HOLEN Android is GPL-3.0. Android runtime components are covered by the bundled third-party notices. Engine updates are manual and use yt-dlp’s stable upstream release.",
                     style = MaterialTheme.typography.bodySmall,
                     color = HolenMuted,
                 )
@@ -902,6 +935,96 @@ private fun SettingsDialog(
             TextButton(onClick = onDismiss) {
                 Text("Done", color = HolenBlue, fontWeight = FontWeight.Bold)
             }
+        },
+    )
+    if (showCookieDialog) {
+        CookieDialog(
+            onSave = {
+                onSaveCookies(it)
+                showCookieDialog = false
+            },
+            onDismiss = { showCookieDialog = false },
+        )
+    }
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            shape = RectangleShape,
+            containerColor = HolenSurface,
+            title = { Text("Clear cookies?") },
+            text = { Text("This removes the private cookies.txt file from this device.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onClearCookies()
+                    confirmClear = false
+                }) { Text("Clear", color = HolenRed, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CookieDialog(
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
+    fun dismiss() {
+        text = ""
+        onDismiss()
+    }
+    AlertDialog(
+        onDismissRequest = ::dismiss,
+        shape = RectangleShape,
+        containerColor = HolenSurface,
+        title = { Text("Configure cookies.txt") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Authentication cookies are sensitive and may grant access to your account. Paste only a Netscape-format cookies.txt file exported from an account you own or are authorized to use. HOLEN stores it only in private on-device storage. Cookies may expire, and they cannot bypass DRM or other access controls.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { candidate ->
+                        if (candidate.toByteArray(Charsets.UTF_8).size <= 1024 * 1024) text = candidate
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp)
+                        .semantics { testTag = "cookies-input" },
+                    label = { Text("Netscape cookies.txt") },
+                    minLines = 7,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        autoCorrectEnabled = false,
+                    ),
+                    visualTransformation =
+                        if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { visible = !visible }) {
+                            Text(if (visible) "Hide" else "Show")
+                        }
+                    },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = text.isNotBlank(),
+                onClick = {
+                    val value = text
+                    text = ""
+                    onSave(value)
+                },
+            ) { Text("Save cookies", color = HolenBlue, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(onClick = ::dismiss) { Text("Cancel") }
         },
     )
 }

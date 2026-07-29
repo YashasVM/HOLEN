@@ -12,8 +12,8 @@ android {
         applicationId = "com.yashasvm.holen"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.gradleProperty("holenVersionCode").orElse("7").get().toInt()
-        versionName = providers.gradleProperty("holenVersionName").orElse("3.2.1").get()
+        versionCode = providers.gradleProperty("holenVersionCode").orElse("8").get().toInt()
+        versionName = providers.gradleProperty("holenVersionName").orElse("3.3.0").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -40,6 +40,17 @@ android {
 
     signingConfigs {
         val keystorePath = System.getenv("HOLEN_KEYSTORE_PATH")
+        val requireReleaseSigning =
+            providers.gradleProperty("holenRequireReleaseSigning").orElse("false").get().toBoolean()
+        val signingValues = listOf(
+            keystorePath,
+            System.getenv("HOLEN_KEYSTORE_PASSWORD"),
+            System.getenv("HOLEN_KEY_ALIAS"),
+            System.getenv("HOLEN_KEY_PASSWORD"),
+        )
+        if (requireReleaseSigning && signingValues.any { it.isNullOrBlank() }) {
+            error("Release signing is required, but the HOLEN signing configuration is incomplete.")
+        }
         if (!keystorePath.isNullOrBlank()) {
             create("release") {
                 storeFile = file(keystorePath)
@@ -56,7 +67,14 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
+                ?: if (providers.gradleProperty("holenRequireReleaseSigning")
+                        .orElse("false").get().toBoolean()
+                ) {
+                    error("Release signing is required; refusing to use a debug certificate.")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
         }
     }
 
@@ -80,7 +98,12 @@ android {
         )
     }
 
-    testOptions.unitTests.isIncludeAndroidResources = true
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all { it.useJUnit() }
+        }
+    }
 }
 
 androidComponents {

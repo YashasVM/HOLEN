@@ -11,13 +11,13 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val store = HolenStore.get(application)
     private val outputStore = OutputStore(application)
     private val engine = YtDlpEngine.get(application)
+    private val cookieStore = CookieStore(application)
     private val analyzer = SourceAnalyzer(engine)
     private val preferences = application.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
@@ -67,6 +67,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableEngineMessage = MutableStateFlow<String?>(null)
     val engineMessage = mutableEngineMessage.asStateFlow()
 
+    private val mutableCookiesConfigured = MutableStateFlow(false)
+    val cookiesConfigured = mutableCookiesConfigured.asStateFlow()
+
+    private val mutableCookieMessage = MutableStateFlow<String?>(null)
+    val cookieMessage = mutableCookieMessage.asStateFlow()
+
     private val mutableQueueEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val queueEvents = mutableQueueEvents.asSharedFlow()
 
@@ -75,8 +81,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         viewModelScope.launch {
             val folderGranted = withContext(Dispatchers.IO) {
-                // Session-file support was removed; clear any credential material left by older builds.
-                File(getApplication<Application>().noBackupFilesDir, "auth").deleteRecursively()
+                mutableCookiesConfigured.value = cookieStore.validateExisting()
                 outputStore.hasValidTreeGrant()
             }
             mutableFolderGranted.value = folderGranted
@@ -303,15 +308,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun restartOnboarding() {
-        preferences.edit {
-            putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, false)
-            putInt(HolenStore.PREF_ONBOARDING_VERSION, 0)
-        }
-        mutableOnboardingCompleted.value = false
-        mutableError.value = null
-    }
-
     fun refreshFolderGrant() = viewModelScope.launch {
         mutableFolderGranted.value = withContext(Dispatchers.IO) { outputStore.hasValidTreeGrant() }
     }
@@ -359,6 +355,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 .onFailure { mutableEngineMessage.value = friendlyFailure(it) }
             mutableBusy.value = false
+        }
+    }
+
+    fun saveCookies(text: String) {
+        viewModelScope.launch {
+            mutableCookieMessage.value = null
+            runCatching { withContext(Dispatchers.IO) { cookieStore.save(text) } }
+                .onSuccess {
+                    mutableCookiesConfigured.value = true
+                    mutableCookieMessage.value = "Cookies saved on this device."
+                }
+                .onFailure { error ->
+                    mutableCookieMessage.value = when (error.message) {
+                        CookieStore.ERROR_INVALID, CookieStore.ERROR_TOO_LARGE -> error.message
+                        else -> CookieStore.ERROR_SAVE
+                    }
+                }
+        }
+    }
+
+    fun clearCookies() {
+        viewModelScope.launch {
+            mutableCookieMessage.value = null
+            val cleared = withContext(Dispatchers.IO) { cookieStore.clear() }
+            if (cleared) {
+                mutableCookiesConfigured.value = false
+                mutableCookieMessage.value = "Cookies cleared."
+            } else {
+                mutableCookieMessage.value = "Cookies could not be cleared."
+            }
         }
     }
 

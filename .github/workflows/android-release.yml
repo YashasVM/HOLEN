@@ -5,32 +5,158 @@ on:
     tags:
       - "android-v*"
 
+# Each job starts read-only. Only the job that creates the release can write
+# repository contents, and it only runs after all checks have passed.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  validate:
+    name: Validate release source
     runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      # gitleaks-action v2.3.9. This scans the entire reachable Git history.
+      - name: Scan tracked source and history for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # actions/setup-java v4.7.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - uses: gradle/actions/setup-gradle@v4
+      # android-actions/setup-android v3.2.2
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+      # gradle/actions v4.4.3
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
       - name: Install Android SDK
         run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
-      - name: Verify release source
+      - name: Validate tag, Android version, ancestry, and version code
+        id: version
+        working-directory: prod/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^android-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tags must use android-v<major>.<minor>.<patch>." >&2
+            exit 1
+          fi
+          version="${tag#android-v}"
+
+          # The defaults, not CI overrides, are the public Android version.
+          version_name="$(sed -nE 's/.*holenVersionName"\)\.orElse\("([^"]+)"\).*/\1/p' app/build.gradle.kts | head -n 1)"
+          version_code="$(sed -nE 's/.*holenVersionCode"\)\.orElse\("([0-9]+)"\).*/\1/p' app/build.gradle.kts | head -n 1)"
+          [[ "$version_name" == "$version" ]] || {
+            echo "Tag version $version does not match Gradle versionName $version_name." >&2
+            exit 1
+          }
+          [[ "$version_code" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Gradle versionCode must be a positive integer." >&2
+            exit 1
+          }
+
+          release_commit="$(git rev-parse "${tag}^{commit}")"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$release_commit" origin/main || {
+            echo "The tagged commit must be reachable from main." >&2
+            exit 1
+          }
+
+          # Every older Android release tag must have a lower configured code.
+          # This makes versionCode monotonic even if tags were created out of order.
+          while IFS= read -r previous_tag; do
+            [[ "$previous_tag" == "$tag" ]] && continue
+            [[ "$previous_tag" =~ ^android-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            previous_code="$(git show "${previous_tag}:prod/android/app/build.gradle.kts" | sed -nE 's/.*holenVersionCode"\)\.orElse\("([0-9]+)"\).*/\1/p' | head -n 1)"
+            [[ "$previous_code" =~ ^[1-9][0-9]*$ ]] || {
+              echo "Could not determine versionCode for prior release tag $previous_tag." >&2
+              exit 1
+            }
+            (( version_code > previous_code )) || {
+              echo "versionCode $version_code must exceed $previous_code from $previous_tag." >&2
+              exit 1
+            }
+          done < <(git tag -l 'android-v*')
+
+          printf 'VERSION_NAME=%s\nVERSION_CODE=%s\n' "$version_name" "$version_code" >> "$GITHUB_ENV"
+          printf 'version_name=%s\nversion_code=%s\n' "$version_name" "$version_code" >> "$GITHUB_OUTPUT"
+      - name: Lint and run unit tests
         working-directory: prod/android
         run: ./gradlew lintEmulatorDebug testEmulatorDebugUnitTest
-      - name: Restore signing key
+
+  instrumentation:
+    name: Run Compose instrumentation tests
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-java v4.7.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+          distribution: temurin
+          java-version: "17"
+      # android-actions/setup-android v3.2.2
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+      # gradle/actions v4.4.3
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      # ReactiveCircus/android-emulator-runner v2.38.0
+      - name: Run emulator tests
+        uses: ReactiveCircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          script: cd prod/android && ./gradlew connectedEmulatorDebugAndroidTest
+
+  release:
+    name: Build and publish signed APKs
+    runs-on: ubuntu-latest
+    needs: [validate, instrumentation]
+    permissions:
+      contents: write
+    env:
+      VERSION_NAME: ${{ needs.validate.outputs.version_name }}
+      VERSION_CODE: ${{ needs.validate.outputs.version_code }}
+    steps:
+      # actions/checkout v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/setup-java v4.7.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+          distribution: temurin
+          java-version: "17"
+      # android-actions/setup-android v3.2.2
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+      # gradle/actions v4.4.3
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+      - name: Install Android SDK
+        run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
+      - name: Require and restore release signing material
+        shell: bash
         env:
           HOLEN_KEYSTORE_BASE64: ${{ secrets.HOLEN_KEYSTORE_BASE64 }}
+          HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
+          HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
+          HOLEN_KEY_PASSWORD: ${{ secrets.HOLEN_KEY_PASSWORD }}
         run: |
-          test -n "$HOLEN_KEYSTORE_BASE64"
-          printf '%s' "$HOLEN_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/holen-release.jks"
-      - name: Build signed APKs
+          set -euo pipefail
+          for name in HOLEN_KEYSTORE_BASE64 HOLEN_KEYSTORE_PASSWORD HOLEN_KEY_ALIAS HOLEN_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || { echo "Required release signing material is missing." >&2; exit 1; }
+          done
+          key_path="$RUNNER_TEMP/holen-release.jks"
+          printf '%s' "$HOLEN_KEYSTORE_BASE64" | base64 --decode > "$key_path"
+          [[ -s "$key_path" ]] || { echo "Release keystore is empty." >&2; exit 1; }
+          keytool -list -keystore "$key_path" -storepass "$HOLEN_KEYSTORE_PASSWORD" -alias "$HOLEN_KEY_ALIAS" >/dev/null
+      - name: Build signed release APKs
         working-directory: prod/android
         env:
           HOLEN_KEYSTORE_PATH: ${{ runner.temp }}/holen-release.jks
@@ -38,88 +164,76 @@ jobs:
           HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
           HOLEN_KEY_PASSWORD: ${{ secrets.HOLEN_KEY_PASSWORD }}
         run: |
-          version="${GITHUB_REF_NAME#android-v}"
           ./gradlew \
-            -PholenVersionName="$version" \
-            -PholenVersionCode="${GITHUB_RUN_NUMBER}" \
+            -PholenRequireReleaseSigning=true \
+            -PholenVersionName="$VERSION_NAME" \
+            -PholenVersionCode="$VERSION_CODE" \
             assembleArm64Release \
             assembleArmv7Release \
             assembleUniversalRelease
-      - name: Collect artifacts and checksums
+      - name: Collect versioned artifacts
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          version="${GITHUB_REF_NAME#android-v}"
           mkdir -p release
-
           collect_one() {
             local pattern="$1"
             local destination="$2"
             local matches=()
             mapfile -t matches < <(compgen -G "$pattern")
             if [[ "${#matches[@]}" -ne 1 ]]; then
-              echo "Expected exactly one APK matching $pattern; found ${#matches[@]}" >&2
+              echo "Expected exactly one APK matching $pattern; found ${#matches[@]}." >&2
               exit 1
             fi
             cp -- "${matches[0]}" "$destination"
           }
-
-          collect_one \
-            "prod/android/app/build/outputs/apk/arm64/release/*.apk" \
-            "release/holen-${version}-arm64-v8a.apk"
-          collect_one \
-            "prod/android/app/build/outputs/apk/armv7/release/*.apk" \
-            "release/holen-${version}-armeabi-v7a.apk"
-          collect_one \
-            "prod/android/app/build/outputs/apk/universal/release/*.apk" \
-            "release/holen-${version}-universal.apk"
-
-      - name: Verify signed APKs, ABIs, sizes, and checksums
+          collect_one "prod/android/app/build/outputs/apk/arm64/release/*.apk" "release/HOLEN-v${VERSION_NAME}-arm64-v8a.apk"
+          collect_one "prod/android/app/build/outputs/apk/armv7/release/*.apk" "release/HOLEN-v${VERSION_NAME}-armeabi-v7a.apk"
+          collect_one "prod/android/app/build/outputs/apk/universal/release/*.apk" "release/HOLEN-v${VERSION_NAME}-universal.apk"
+      - name: Verify signed APKs, metadata, ABIs, sizes, and checksums
         shell: bash
+        env:
+          HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
+          HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#android-v}"
           apksigner="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          aapt="${ANDROID_HOME}/build-tools/36.0.0/aapt"
+          key_path="$RUNNER_TEMP/holen-release.jks"
           max_per_abi_size=$((70 * 1024 * 1024))
+          expected_cert="$(keytool -list -v -keystore "$key_path" -storepass "$HOLEN_KEYSTORE_PASSWORD" -alias "$HOLEN_KEY_ALIAS" 2>/dev/null | awk -F': ' '/SHA256:/{print toupper($2); exit}')"
+          [[ -n "$expected_cert" ]] || { echo "Could not read release certificate fingerprint." >&2; exit 1; }
 
           verify_apk() {
             local apk="$1"
             local expected_abis="$2"
             local enforce_size="$3"
-            local actual_abis
-            local byte_size
+            local actual_abis actual_cert badging byte_size
 
             "$apksigner" verify --verbose --print-certs "$apk"
-            actual_abis="$(
-              unzip -Z1 "$apk" |
-                awk -F/ '$1 == "lib" && $3 ~ /\.so$/ { print $2 }' |
-                sort -u |
-                paste -sd, -
-            )"
-            if [[ "$actual_abis" != "$expected_abis" ]]; then
-              echo "$apk contains ABIs '$actual_abis'; expected '$expected_abis'" >&2
-              exit 1
-            fi
-            if [[ "$enforce_size" == "true" ]]; then
+            actual_cert="$("$apksigner" verify --print-certs "$apk" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print toupper($2); exit}')"
+            [[ "$actual_cert" == "$expected_cert" ]] || { echo "$apk was not signed by the configured release certificate." >&2; exit 1; }
+            actual_abis="$(unzip -Z1 "$apk" | awk -F/ '$1 == "lib" && $3 ~ /\.so$/ { print $2 }' | sort -u | paste -sd, -)"
+            [[ "$actual_abis" == "$expected_abis" ]] || { echo "$apk contains ABIs '$actual_abis'; expected '$expected_abis'." >&2; exit 1; }
+            badging="$("$aapt" dump badging "$apk")"
+            grep -Fq "versionCode='$VERSION_CODE' versionName='$VERSION_NAME'" <<<"$badging"
+            grep -Fq "application-label:'HOLEN'" <<<"$badging"
+            if [[ "$enforce_size" == true ]]; then
               byte_size="$(stat -c '%s' "$apk")"
-              if (( byte_size >= max_per_abi_size )); then
-                echo "$apk is $byte_size bytes; per-ABI APKs must be under 70 MiB" >&2
-                exit 1
-              fi
+              (( byte_size < max_per_abi_size )) || { echo "$apk exceeds the 70 MiB per-ABI limit." >&2; exit 1; }
             fi
           }
 
-          verify_apk "release/holen-${version}-arm64-v8a.apk" "arm64-v8a" true
-          verify_apk "release/holen-${version}-armeabi-v7a.apk" "armeabi-v7a" true
-          verify_apk \
-            "release/holen-${version}-universal.apk" \
-            "arm64-v8a,armeabi-v7a,x86,x86_64" \
-            false
-
-          cd release
-          sha256sum *.apk > SHA256SUMS
-      - name: Publish GitHub Release
+          verify_apk "release/HOLEN-v${VERSION_NAME}-arm64-v8a.apk" "arm64-v8a" true
+          verify_apk "release/HOLEN-v${VERSION_NAME}-armeabi-v7a.apk" "armeabi-v7a" true
+          verify_apk "release/HOLEN-v${VERSION_NAME}-universal.apk" "arm64-v8a,armeabi-v7a,x86,x86_64" false
+          (cd release && sha256sum HOLEN-v*.apk > SHA256SUMS)
+      - name: Publish HOLEN V3
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --generate-notes --verify-tag
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag \
+            --title "HOLEN V3" \
+            --notes-file docs/releases/HOLEN-V3.md \
+            --latest
