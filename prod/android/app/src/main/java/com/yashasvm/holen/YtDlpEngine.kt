@@ -1,6 +1,7 @@
 package com.yashasvm.holen
 
 import android.content.Context
+import androidx.core.content.edit
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -14,8 +15,9 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 
-class YtDlpEngine(private val context: Context) {
+class YtDlpEngine private constructor(private val context: Context) {
     private val initMutex = Mutex()
+    private val cookieStore = CookieStore(context)
     private val preferences = context.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -37,13 +39,17 @@ class YtDlpEngine(private val context: Context) {
         engineMutex.withLock {
             ensureInitialized(needsFfmpeg = false)
             val request = YoutubeDLRequest(url).apply {
+                addSiteAuthentication(url)
+                addOption("--ignore-config")
                 addOption("--dump-single-json")
                 addOption("--flat-playlist")
                 addOption("--playlist-end", PLAYLIST_PREVIEW_LIMIT)
                 addOption("--skip-download")
                 addOption("--no-warnings")
             }
-            val response = YoutubeDL.execute(request, "analysis", null)
+            val response = runYoutubeAware(url) {
+                YoutubeDL.execute(request, "analysis", null)
+            }
             val json = response.out.toJsonObject()
             val entries = json.optJSONArray("entries")
             if (entries != null) json.toPlaylist(url, entries) else json.toMedia(url)
@@ -57,6 +63,7 @@ class YtDlpEngine(private val context: Context) {
         onProgress: (TransferProgress) -> Unit,
     ): StagedDownload = withContext(Dispatchers.IO) {
         engineMutex.withLock {
+            validatePublicHttpsUrl(job.sourceUrl)
             ensureInitialized(needsFfmpeg = true)
             if (isCancelled()) throw CancellationException("Download cancelled")
             directory.mkdirs()
@@ -65,6 +72,8 @@ class YtDlpEngine(private val context: Context) {
                 "%(title).180B [%(id)s].%(ext)s",
             ).absolutePath
             val request = YoutubeDLRequest(job.sourceUrl).apply {
+                addSiteAuthentication(job.sourceUrl)
+                addOption("--ignore-config")
                 addCommands(downloadArguments(job.format))
                 addCommands(
                     listOf(
@@ -83,24 +92,26 @@ class YtDlpEngine(private val context: Context) {
                 )
             }
             var lastUpdate = 0L
-            YoutubeDL.execute(request, job.id, false) { wrapperPercent, wrapperEta, line ->
-                if (isCancelled()) {
-                    YoutubeDL.destroyProcessById(job.id)
-                } else {
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdate >= 1_000 || wrapperPercent >= 100f) {
-                        val parsed = parseTransferLine(line)
-                        onProgress(
-                            TransferProgress(
-                                percent = parsed?.percent
-                                    ?: wrapperPercent.toInt().coerceIn(0, 100),
-                                bytesDownloaded = null,
-                                totalBytes = null,
-                                speedBytesPerSecond = parsed?.speedBytesPerSecond,
-                                etaSeconds = parsed?.etaSeconds ?: wrapperEta.takeIf { it >= 0 },
-                            ),
-                        )
-                        lastUpdate = now
+            runYoutubeAware(job.sourceUrl) {
+                YoutubeDL.execute(request, job.id, false) { wrapperPercent, wrapperEta, line ->
+                    if (isCancelled()) {
+                        YoutubeDL.destroyProcessById(job.id)
+                    } else {
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdate >= 1_000 || wrapperPercent >= 100f) {
+                            val parsed = parseTransferLine(line)
+                            onProgress(
+                                TransferProgress(
+                                    percent = parsed?.percent
+                                        ?: wrapperPercent.toInt().coerceIn(0, 100),
+                                    bytesDownloaded = null,
+                                    totalBytes = null,
+                                    speedBytesPerSecond = parsed?.speedBytesPerSecond,
+                                    etaSeconds = parsed?.etaSeconds ?: wrapperEta.takeIf { it >= 0 },
+                                ),
+                            )
+                            lastUpdate = now
+                        }
                     }
                 }
             }
@@ -126,13 +137,15 @@ class YtDlpEngine(private val context: Context) {
         if (initialized) YoutubeDL.destroyProcessById(processId)
     }
 
+    fun hasAccountSession(): Boolean = cookieStore.hasSession()
+
     suspend fun updateStable(): String = withContext(Dispatchers.IO) {
         engineMutex.withLock {
             ensureInitialized(needsFfmpeg = false)
             try {
                 YoutubeDL.updateYoutubeDL(context, YoutubeDL.UpdateChannel.STABLE)
                 val version = validateVersion()
-                preferences.edit().putString(HolenStore.PREF_ENGINE_VERSION, version).apply()
+                preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, version) }
                 version
             } catch (error: Throwable) {
                 resetToBundledLocked()
@@ -152,13 +165,12 @@ class YtDlpEngine(private val context: Context) {
             val engineDirectory = File(root, YoutubeDL.ytdlpDirName)
             engineDirectory.deleteRecursively()
             YoutubeDL.init_ytdlp(context, engineDirectory)
-            context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE)
-                .edit()
-                .remove("dlpVersion")
-                .remove("dlpVersionName")
-                .apply()
+            context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
+                remove("dlpVersion")
+                remove("dlpVersionName")
+            }
             val version = "Bundled ${validateVersion()}"
-            preferences.edit().putString(HolenStore.PREF_ENGINE_VERSION, version).apply()
+            preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, version) }
             initialized = true
             version
         }
@@ -169,22 +181,21 @@ class YtDlpEngine(private val context: Context) {
             if (!initialized) {
                 try {
                     YoutubeDL.init(context)
-                    val version = validateVersion()
-                    preferences.edit().putString(
-                        HolenStore.PREF_ENGINE_VERSION,
-                        YoutubeDL.version(context) ?: "Bundled $version",
-                    ).apply()
+                    preferences.edit {
+                        putString(
+                            HolenStore.PREF_ENGINE_VERSION,
+                            YoutubeDL.version(context) ?: bundledVersion,
+                        )
+                    }
                     initialized = true
                 } catch (error: Throwable) {
                     val root = File(context.noBackupFilesDir, YoutubeDL.baseName)
                     val engineDirectory = File(root, YoutubeDL.ytdlpDirName)
                     engineDirectory.deleteRecursively()
                     YoutubeDL.init_ytdlp(context, engineDirectory)
-                    val version = validateVersion()
-                    preferences.edit().putString(
-                        HolenStore.PREF_ENGINE_VERSION,
-                        "Bundled $version",
-                    ).apply()
+                    preferences.edit {
+                        putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
+                    }
                     initialized = true
                 }
             }
@@ -203,6 +214,34 @@ class YtDlpEngine(private val context: Context) {
         )
         return response.out.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
             ?: throw IOException("The media engine returned no version.")
+    }
+
+    private fun YoutubeDLRequest.addSiteAuthentication(sourceUrl: String) {
+        if (isYoutubeUrl(sourceUrl)) {
+            cookieStore.fileOrNull()?.let { addOption("--cookies", it.absolutePath) }
+            // `default` lets yt-dlp select its current cookie-compatible fallback
+            // clients. Forcing Android/TV clients can discard account cookies or
+            // require a PO token, so it is intentionally avoided here.
+            addOption("--extractor-args", "youtube:player_client=default")
+        }
+    }
+
+    private fun <T> runYoutubeAware(sourceUrl: String, block: () -> T): T = try {
+        block()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        if (!isYoutubeUrl(sourceUrl) || !isYoutubeAuthenticationError(error.message.orEmpty())) {
+            throw error
+        }
+        val guidance = if (cookieStore.hasYouTubeCookies()) {
+            "YouTube rejected the saved account session. Update the media engine, then re-import fresh " +
+                "YouTube cookies from an age-verified account."
+        } else {
+            "This YouTube video requires sign-in or age verification. In Settings, import fresh Netscape " +
+                "cookies.txt from an age-verified YouTube account, then retry."
+        }
+        throw IOException(guidance, error)
     }
 
     private fun JSONObject.toMedia(fallbackUrl: String): SourceAnalysis.Media {
@@ -261,17 +300,17 @@ class YtDlpEngine(private val context: Context) {
         fun downloadArguments(format: DownloadFormat): List<String> = when (format) {
             DownloadFormat.ORIGINAL -> error("Original format is handled by the direct downloader.")
             DownloadFormat.BEST_MP4 -> listOf(
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
             )
             DownloadFormat.MP4_1080 -> listOf(
                 "-f",
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]",
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
                 "--merge-output-format", "mp4",
             )
             DownloadFormat.MP4_720 -> listOf(
                 "-f",
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]",
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
                 "--merge-output-format", "mp4",
             )
             DownloadFormat.AUDIO_M4A -> listOf(
@@ -319,6 +358,36 @@ class YtDlpEngine(private val context: Context) {
             return JSONObject(substring(start, end + 1))
         }
 
+        private fun isYoutubeUrl(value: String): Boolean {
+            val host = runCatching { java.net.URI(value).host?.lowercase() }.getOrNull() ?: return false
+            return host == "youtu.be" ||
+                host == "youtube.com" ||
+                host.endsWith(".youtube.com") ||
+                host == "youtube-nocookie.com" ||
+                host.endsWith(".youtube-nocookie.com")
+        }
+
+        private fun isYoutubeAuthenticationError(message: String): Boolean {
+            val normalized = message.lowercase()
+            return listOf(
+                "sign in",
+                "login",
+                "age-restricted",
+                "age restricted",
+                "age verification",
+                "confirm you're not a bot",
+                "confirm you’re not a bot",
+            ).any(normalized::contains)
+        }
+
         private val engineMutex = Mutex()
+
+        @Volatile
+        private var instance: YtDlpEngine? = null
+
+        fun get(context: Context): YtDlpEngine =
+            instance ?: synchronized(this) {
+                instance ?: YtDlpEngine(context.applicationContext).also { instance = it }
+            }
     }
 }

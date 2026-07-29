@@ -61,20 +61,22 @@ private val HolenTypography = Typography(
     displaySmall = TextStyle(
         fontFamily = Syne,
         fontWeight = FontWeight.ExtraBold,
-        fontSize = 30.sp,
-        lineHeight = 34.sp,
+        fontSize = 34.sp,
+        lineHeight = 36.sp,
+        letterSpacing = (-0.7).sp,
     ),
     headlineSmall = TextStyle(
         fontFamily = Syne,
         fontWeight = FontWeight.ExtraBold,
-        fontSize = 21.sp,
-        lineHeight = 25.sp,
+        fontSize = 23.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.3).sp,
     ),
     titleLarge = TextStyle(
         fontFamily = Syne,
         fontWeight = FontWeight.Bold,
-        fontSize = 18.sp,
-        lineHeight = 22.sp,
+        fontSize = 19.sp,
+        lineHeight = 23.sp,
     ),
     titleMedium = TextStyle(
         fontFamily = Syne,
@@ -102,12 +104,14 @@ private val HolenTypography = Typography(
         fontWeight = FontWeight.Bold,
         fontSize = 14.sp,
         lineHeight = 18.sp,
+        letterSpacing = 0.7.sp,
     ),
     labelMedium = TextStyle(
         fontFamily = DmSans,
         fontWeight = FontWeight.Bold,
         fontSize = 12.sp,
         lineHeight = 16.sp,
+        letterSpacing = 0.9.sp,
     ),
 )
 

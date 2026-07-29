@@ -2,6 +2,10 @@ package com.yashasvm.holen.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,7 +29,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.toggleable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -44,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.rememberScrollState
@@ -53,7 +58,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -71,12 +77,53 @@ import com.yashasvm.holen.JobStatus
 import com.yashasvm.holen.MainViewModel
 import com.yashasvm.holen.SourceAnalysis
 import com.yashasvm.holen.YtDlpEngine
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun HolenScreen(
     viewModel: MainViewModel,
     onChooseFolder: () -> Unit,
+    onImportCookies: () -> Unit,
+    onQueue: () -> Unit,
+    onOpen: (DownloadJob) -> Unit,
+    onShare: (DownloadJob) -> Unit,
+    onOpenCreator: () -> Unit,
+    onOpenSource: () -> Unit,
+) {
+    val onboardingCompleted by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
+    AnimatedContent(
+        targetState = onboardingCompleted,
+        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        label = "Holen app destination",
+    ) { completed ->
+        if (completed) {
+            DownloadHome(
+                viewModel = viewModel,
+                onChooseFolder = onChooseFolder,
+                onImportCookies = onImportCookies,
+                onQueue = onQueue,
+                onOpen = onOpen,
+                onShare = onShare,
+            )
+        } else {
+            OnboardingFlow(
+                viewModel = viewModel,
+                onChooseFolder = onChooseFolder,
+                onImportCookies = onImportCookies,
+                onOpenCreator = onOpenCreator,
+                onOpenSource = onOpenSource,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DownloadHome(
+    viewModel: MainViewModel,
+    onChooseFolder: () -> Unit,
+    onImportCookies: () -> Unit,
     onQueue: () -> Unit,
     onOpen: (DownloadJob) -> Unit,
     onShare: (DownloadJob) -> Unit,
@@ -92,9 +139,12 @@ fun HolenScreen(
     val rightsAcknowledged by viewModel.rightsAcknowledged.collectAsStateWithLifecycle()
     val engineVersion by viewModel.engineVersion.collectAsStateWithLifecycle()
     val engineMessage by viewModel.engineMessage.collectAsStateWithLifecycle()
-    val clipboard = LocalClipboardManager.current
+    val sessionConnected by viewModel.sessionConnected.collectAsStateWithLifecycle()
+    val sessionMessage by viewModel.sessionMessage.collectAsStateWithLifecycle()
+    val clipboard = LocalClipboard.current
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showSettings by rememberSaveable { mutableStateOf(false) }
-    var selectedJobs by rememberSaveable { mutableStateOf(setOf<String>()) }
     var deleteCandidate by remember { mutableStateOf<DownloadJob?>(null) }
 
     val activeCount = jobs.count {
@@ -103,9 +153,6 @@ fun HolenScreen(
             it.status == JobStatus.FINALIZING
     }
     val finished = jobs.filter { it.status.isTerminal }
-    LaunchedEffect(jobs) {
-        selectedJobs = selectedJobs.intersect(finished.map { it.id }.toSet())
-    }
 
     LazyColumn(
         modifier = Modifier
@@ -139,7 +186,7 @@ fun HolenScreen(
             BauhausCard {
                 SectionTag("NEW DOWNLOAD", HolenBlue)
                 Text(
-                    "Paste a public HTTPS file or media page",
+                    "Paste an HTTPS file or media page",
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.semantics { heading() },
                 )
@@ -166,8 +213,16 @@ fun HolenScreen(
                     HolenButton(
                         label = "Paste",
                         onClick = {
-                            clipboard.getText()?.text?.takeIf { it.isNotBlank() }
-                                ?.let(viewModel::setUrl)
+                            coroutineScope.launch {
+                                clipboard.getClipEntry()
+                                    ?.clipData
+                                    ?.takeIf { it.itemCount > 0 }
+                                    ?.getItemAt(0)
+                                    ?.coerceToText(context)
+                                    ?.toString()
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let(viewModel::setUrl)
+                            }
                         },
                         background = HolenSurfaceTwo,
                         foreground = HolenInk,
@@ -274,7 +329,7 @@ fun HolenScreen(
                                 },
                                 viewModel::toggleAllEntries,
                                 HolenSurface,
-                                HolenInk,
+                                foreground = HolenInk,
                             )
                             HolenButton(
                                 "Queue ${selectedEntries.size}",
@@ -335,7 +390,7 @@ fun HolenScreen(
             null -> Unit
         }
 
-        item("queue-header") {
+        if (jobs.isNotEmpty()) item("queue-header") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider(thickness = 4.dp, color = HolenInk)
                 Row(
@@ -362,38 +417,8 @@ fun HolenScreen(
                     }
                 }
                 if (finished.isNotEmpty()) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        HolenButton(
-                            if (selectedJobs.size == finished.size) "Deselect all" else "Select finished",
-                            onClick = {
-                                selectedJobs = if (selectedJobs.size == finished.size) {
-                                    emptySet()
-                                } else {
-                                    finished.map { it.id }.toSet()
-                                }
-                            },
-                            background = HolenSurfaceTwo,
-                            foreground = HolenInk,
-                        )
-                        HolenButton(
-                            "Clear finished",
-                            onClick = { viewModel.clearFinished() },
-                            background = HolenSurface,
-                            foreground = HolenInk,
-                        )
-                        if (selectedJobs.isNotEmpty()) {
-                            HolenButton(
-                                "Clear ${selectedJobs.size}",
-                                onClick = {
-                                    viewModel.clearFinished(selectedJobs)
-                                    selectedJobs = emptySet()
-                                },
-                                background = HolenRed,
-                            )
-                        }
+                    TextButton(onClick = { viewModel.clearFinished() }) {
+                        Text("Clear finished", color = HolenMuted)
                     }
                 }
             }
@@ -401,47 +426,23 @@ fun HolenScreen(
 
         if (jobs.isEmpty()) {
             item("empty") {
-                BauhausCard(background = HolenSurfaceTwo) {
-                    SectionTitle("NO DOWNLOADS YET")
-                    Text(
-                        "Analyze a link above. Downloads and conversions stay on this device.",
-                        color = HolenMuted,
-                    )
-                }
+                Text(
+                    "Paste a link above, or share one to Holen from another app.",
+                    color = HolenMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                )
             }
         } else {
             items(jobs, key = { it.id }) { job ->
                 JobCard(
                     job = job,
-                    selected = job.id in selectedJobs,
-                    onSelect = {
-                        selectedJobs = if (job.id in selectedJobs) {
-                            selectedJobs - job.id
-                        } else {
-                            selectedJobs + job.id
-                        }
-                    },
                     onCancel = { viewModel.cancel(job) },
                     onRetry = { viewModel.retry(job) },
                     onOpen = { onOpen(job) },
                     onShare = { onShare(job) },
                     onDelete = { deleteCandidate = job },
                 )
-            }
-        }
-
-        item("rights") {
-            BauhausCard(background = HolenYellow) {
-                SectionTitle("DOWNLOAD RESPONSIBLY")
-                Text(
-                    "Only download files you own or are authorized to save. Holen does not bypass DRM, accounts, or site restrictions.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (!rightsAcknowledged) {
-                    HolenButton("I understand", viewModel::acknowledgeRights, HolenInk)
-                } else {
-                    SectionTag("ACKNOWLEDGED", HolenGreen)
-                }
             }
         }
 
@@ -453,8 +454,12 @@ fun HolenScreen(
             bundledVersion = viewModel.bundledEngineVersion,
             activeVersion = engineVersion,
             message = engineMessage,
+            sessionConnected = sessionConnected,
+            sessionMessage = sessionMessage,
             busy = busy,
             onChooseFolder = onChooseFolder,
+            onImportCookies = onImportCookies,
+            onRemoveCookies = viewModel::removeCookies,
             onUpdate = viewModel::updateEngine,
             onReset = viewModel::resetEngine,
             onDismiss = { showSettings = false },
@@ -576,7 +581,7 @@ private fun PreviewCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FormatPicker(
+internal fun FormatPicker(
     selected: DownloadFormat,
     onSelected: (DownloadFormat) -> Unit,
 ) {
@@ -603,8 +608,6 @@ private fun FormatPicker(
 @Composable
 private fun JobCard(
     job: DownloadJob,
-    selected: Boolean,
-    onSelect: () -> Unit,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onOpen: () -> Unit,
@@ -613,7 +616,7 @@ private fun JobCard(
 ) {
     BauhausCard(
         background = HolenSurface,
-        borderColor = if (selected) HolenBlue else HolenInk,
+        borderColor = HolenInk,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -681,16 +684,6 @@ private fun JobCard(
                     )
                 }
             }
-            if (job.status.isTerminal) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = { onSelect() },
-                    modifier = Modifier.semantics {
-                        contentDescription = "Select ${job.title} history"
-                    },
-                    colors = CheckboxDefaults.colors(checkedColor = HolenBlue),
-                )
-            }
         }
 
         when (job.status) {
@@ -741,8 +734,12 @@ private fun SettingsDialog(
     bundledVersion: String,
     activeVersion: String,
     message: String?,
+    sessionConnected: Boolean,
+    sessionMessage: String?,
     busy: Boolean,
     onChooseFolder: () -> Unit,
+    onImportCookies: () -> Unit,
+    onRemoveCookies: () -> Unit,
     onUpdate: () -> Unit,
     onReset: () -> Unit,
     onDismiss: () -> Unit,
@@ -767,6 +764,38 @@ private fun SettingsDialog(
                     background = HolenSurfaceTwo,
                     foreground = HolenInk,
                 )
+                HorizontalDivider(thickness = 2.dp, color = HolenInk)
+                Text("ACCOUNT SESSION", style = MaterialTheme.typography.titleMedium)
+                SectionTag(
+                    if (sessionConnected) "CONNECTED" else "NOT CONNECTED",
+                    if (sessionConnected) HolenGreen else HolenSurfaceTwo,
+                )
+                Text(
+                    "Import a Netscape cookies.txt export from a browser where you are signed in. It stays private on this device and helps with age- or account-restricted sources.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = HolenMuted,
+                )
+                HolenButton(
+                    if (sessionConnected) "Replace account session" else "Connect account session",
+                    onImportCookies,
+                    HolenBlue,
+                )
+                if (sessionConnected) {
+                    TextButton(onClick = onRemoveCookies) {
+                        Text("Remove account session", color = HolenRed)
+                    }
+                }
+                sessionMessage?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (it.contains("failed", true) || it.contains("invalid", true)) {
+                            HolenRed
+                        } else {
+                            HolenGreen
+                        },
+                    )
+                }
                 HorizontalDivider(thickness = 2.dp, color = HolenInk)
                 Text("MEDIA ENGINE", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -821,7 +850,7 @@ private fun RightsQueueHelper(acknowledged: Boolean) {
 }
 
 @Composable
-private fun BauhausCard(
+internal fun BauhausCard(
     modifier: Modifier = Modifier,
     background: Color = HolenSurface,
     borderColor: Color = HolenInk,
@@ -847,12 +876,12 @@ private fun BauhausCard(
 }
 
 @Composable
-private fun HolenButton(
+internal fun HolenButton(
     label: String,
     onClick: () -> Unit,
     background: Color,
-    foreground: Color = Color.White,
     modifier: Modifier = Modifier,
+    foreground: Color = Color.White,
     enabled: Boolean = true,
     loading: Boolean = false,
 ) {
@@ -883,7 +912,7 @@ private fun HolenButton(
 }
 
 @Composable
-private fun SectionTag(text: String, background: Color) {
+internal fun SectionTag(text: String, background: Color) {
     Text(
         text,
         modifier = Modifier

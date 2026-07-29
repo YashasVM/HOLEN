@@ -1,0 +1,2 @@
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/dm_sans_license,@raw/syne_license,@raw/third_party_notices" />

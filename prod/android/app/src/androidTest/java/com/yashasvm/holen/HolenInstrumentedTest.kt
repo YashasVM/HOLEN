@@ -2,25 +2,60 @@ package com.yashasvm.holen
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlinx.coroutines.runBlocking
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
+import org.junit.runner.Description
+import org.junit.runners.model.Statement
 
 @RunWith(AndroidJUnit4::class)
 class HolenInstrumentedTest {
-    @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
 
+    private val clearFirstLaunchState = TestRule { base: Statement, _: Description ->
+        object : Statement() {
+            override fun evaluate() {
+                ApplicationProvider.getApplicationContext<Context>()
+                    .getSharedPreferences(HolenStore.PREFERENCES_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .clear()
+                    .commit()
+                base.evaluate()
+            }
+        }
+    }
+
+    @get:Rule
+    val rules: TestRule = RuleChain
+        .outerRule(clearFirstLaunchState)
+        .around(composeRule)
+
     @Test
-    fun firstLaunchShowsFolderAndRightsRequirements() {
+    fun firstLaunchExplainsFeaturesThenShowsAgreement() {
         composeRule.onNodeWithText("HOLEN").assertIsDisplayed()
-        composeRule.onNodeWithText("DOWNLOAD FOLDER REQUIRED").assertIsDisplayed()
+        composeRule.onNodeWithText("WELCOME TO HOLEN").assertIsDisplayed()
+        composeRule.onNodeWithText("SHARE DIRECTLY").assertIsDisplayed()
+        composeRule.onNodeWithText("Made by @yashas.vm").assertIsDisplayed()
+
+        composeRule.onNodeWithText("Show me how").performClick()
+        composeRule.waitForIdle()
         composeRule.onNodeWithText("DOWNLOAD RESPONSIBLY").assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "I understand and agree to download responsibly.",
+        ).assertIsDisplayed()
     }
 
     @Test
@@ -32,5 +67,65 @@ class HolenInstrumentedTest {
             "SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'",
             null,
         ).use { cursor -> assertEquals(true, cursor.moveToFirst()) }
+    }
+
+    @Test
+    fun interruptedJobsAreRequeuedAndClaimedAtomically() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = HolenStore.get(context)
+        val now = System.currentTimeMillis()
+        val jobId = "restoration-test-$now"
+        try {
+            store.insert(
+                listOf(
+                    DownloadJob(
+                        id = jobId,
+                        sourceUrl = "https://example.com/file.zip",
+                        sourceKind = SourceKind.DIRECT_FILE,
+                        format = DownloadFormat.ORIGINAL,
+                        title = "file.zip",
+                        thumbnailUrl = null,
+                        status = JobStatus.QUEUED,
+                        progress = 0,
+                        bytesDownloaded = 0,
+                        totalBytes = null,
+                        speedBytesPerSecond = null,
+                        etaSeconds = null,
+                        outputUri = null,
+                        fileName = "file.zip",
+                        mimeType = "application/zip",
+                        errorMessage = null,
+                        createdAt = 1,
+                        updatedAt = now,
+                    ),
+                ),
+            )
+
+            val claims = coroutineScope {
+                List(2) {
+                    async(Dispatchers.IO) { store.claimNextQueued() }
+                }.awaitAll()
+            }
+            assertEquals(1, claims.count { it?.id == jobId })
+            assertEquals(JobStatus.RUNNING, store.get(jobId)?.status)
+
+            store.requeueInterrupted()
+            assertEquals(JobStatus.QUEUED, store.get(jobId)?.status)
+            assertEquals(jobId, store.claimNextQueued()?.id)
+            assertEquals(JobStatus.RUNNING, store.get(jobId)?.status)
+            assertEquals(
+                true,
+                store.updateProgress(jobId, TransferProgress(10, 100, 1_000, 50, 18)),
+            )
+            assertEquals(true, store.cancelActive(jobId))
+            assertEquals(
+                false,
+                store.updateProgress(jobId, TransferProgress(90, 900, 1_000, 50, 2)),
+            )
+            assertEquals(JobStatus.CANCELLED, store.get(jobId)?.status)
+            assertEquals(10, store.get(jobId)?.progress)
+        } finally {
+            store.remove(jobId)
+        }
     }
 }

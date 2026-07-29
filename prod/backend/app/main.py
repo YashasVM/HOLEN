@@ -172,7 +172,8 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 expires_at TEXT,
-                user_email TEXT
+                user_email TEXT,
+                reserved_bytes INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -181,6 +182,7 @@ def init_db() -> None:
             ("expires_at", "TEXT"),
             ("thumbnail", "TEXT"),
             ("user_email", "TEXT"),
+            ("reserved_bytes", "INTEGER NOT NULL DEFAULT 0"),
         ]:
             if col not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {coldef}")
@@ -375,7 +377,12 @@ def public_user(row: dict[str, Any] | sqlite3.Row) -> dict[str, Any]:
 
 def assert_quota(user: dict[str, Any], additional_bytes: int = 0) -> None:
     used = int(user["ingress_bytes"]) + int(user["egress_bytes"])
-    if used + additional_bytes > int(user["usage_limit_bytes"]):
+    with db_lock, open_db() as conn:
+        reserved = conn.execute(
+            "SELECT COALESCE(SUM(reserved_bytes), 0) FROM jobs WHERE user_email = ? AND status IN ('queued', 'running')",
+            (user["user_id"],),
+        ).fetchone()[0]
+    if used + int(reserved) + additional_bytes > int(user["usage_limit_bytes"]):
         raise HTTPException(status_code=429, detail="Your bandwidth allowance is exhausted. Ask an admin to raise it.")
 
 
@@ -641,6 +648,9 @@ def run_metadata(url: str) -> dict[str, Any]:
         "webpage_url": info.get("webpage_url") or url,
         "formats": formats[-12:],
         "options": normalized_options(info),
+        # A download can combine a separate video and audio stream. Reserving
+        # the two largest advertised streams is deliberately conservative.
+        "reserved_bytes": sum(sorted((int(item["filesize"]) for item in formats if isinstance(item.get("filesize"), (int, float)) and item["filesize"] > 0), reverse=True)[:2]),
     }
 
 
@@ -676,69 +686,60 @@ def detect_output_file(job_id: str) -> Path | None:
 
 
 async def run_job(job_id: str, url: str, selected_format: str) -> None:
-    update_job(job_id, progress=1, message="Starting")
-    process = await asyncio.create_subprocess_exec(
-        *command_for(job_id, url, selected_format),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    running_processes[job_id] = process
-    assert process.stdout is not None
-    progress_pattern = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
-    last_message = "Downloading"
-    last_written_progress = 1.0
-    last_write_time = time.monotonic()
+    last_message = "Starting"
+    try:
+        update_job(job_id, progress=1, message=last_message)
+        process = await asyncio.create_subprocess_exec(
+            *command_for(job_id, url, selected_format), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        running_processes[job_id] = process
+        assert process.stdout is not None
+        progress_pattern = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+        last_written_progress, last_write_time = 1.0, time.monotonic()
+        async for raw_line in process.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            last_message = line[-300:]
+            match = progress_pattern.search(line)
+            if match:
+                new_progress, now = float(match.group(1)), time.monotonic()
+                if abs(new_progress - last_written_progress) >= 2.0 or now - last_write_time >= 3.0:
+                    update_job(job_id, progress=new_progress, message=last_message)
+                    last_written_progress, last_write_time = new_progress, now
+            else:
+                update_job(job_id, message=last_message)
 
-    async for raw_line in process.stdout:
-        line = raw_line.decode("utf-8", errors="replace").strip()
-        if not line:
-            continue
-        last_message = line[-300:]
-        match = progress_pattern.search(line)
-        if match:
-            new_progress = float(match.group(1))
-            now = time.monotonic()
-            if abs(new_progress - last_written_progress) >= 2.0 or (now - last_write_time) >= 3.0:
-                update_job(job_id, progress=new_progress, message=last_message)
-                last_written_progress = new_progress
-                last_write_time = now
-        else:
-            update_job(job_id, message=last_message)
-
-    running_processes.pop(job_id, None)
-    return_code = await process.wait()
-
-    with db_lock, open_db() as conn:
-        row = conn.execute("SELECT status, user_email FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    if row and row["status"] == "cancelled":
-        return
-
-    if return_code != 0:
-        update_job(job_id, status="failed", message=last_message, progress=0)
+        return_code = await process.wait()
+        with db_lock, open_db() as conn:
+            row = conn.execute("SELECT status, user_email FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row and row["status"] == "cancelled":
+            return
+        if return_code != 0:
+            update_job(job_id, status="failed", message=last_message, progress=0)
+            return
+        file_path = detect_output_file(job_id)
+        if not file_path:
+            update_job(job_id, status="failed", message="Download finished but no file was created")
+            return
+        expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_LINK_TTL_SECONDS, tz=timezone.utc).isoformat()
+        update_job(job_id, status="completed", progress=100, message="Ready", file_path=str(file_path), file_name=file_path.name.removeprefix(f"{job_id}."), expires_at=expires_at)
+        if row and row["user_email"]:
+            add_usage(str(row["user_email"]), "ingress_bytes", file_path.stat().st_size)
+        cleanup_expired()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        with db_lock, open_db() as conn:
+            row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row and row["status"] != "cancelled":
+            update_job(job_id, status="failed", message=f"Download failed: {str(exc)[-240:]}", progress=0)
+    finally:
+        running_processes.pop(job_id, None)
+        with db_lock, open_db() as conn:
+            conn.execute("UPDATE jobs SET reserved_bytes = 0 WHERE id = ?", (job_id,))
+            conn.commit()
         await schedule_next_jobs()
-        return
-
-    file_path = detect_output_file(job_id)
-    if not file_path:
-        update_job(job_id, status="failed", message="Download finished but no file was created")
-        await schedule_next_jobs()
-        return
-
-    from datetime import timezone as tz
-    expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_LINK_TTL_SECONDS, tz=timezone.utc).isoformat()
-    update_job(
-        job_id,
-        status="completed",
-        progress=100,
-        message="Ready",
-        file_path=str(file_path),
-        file_name=file_path.name.removeprefix(f"{job_id}."),
-        expires_at=expires_at,
-    )
-    if row and row["user_email"]:
-        add_usage(str(row["user_email"]), "ingress_bytes", file_path.stat().st_size)
-    cleanup_expired()
-    await schedule_next_jobs()
 
 
 async def schedule_next_jobs() -> None:
@@ -883,25 +884,28 @@ async def create_job(payload: JobRequest, user: dict[str, Any] = Depends(require
                 detail=f"You already have {user_active} active/queued jobs. Wait for one to finish.",
             )
 
-    title = payload.title
-    thumbnail = payload.thumbnail
-    if not title or not thumbnail:
-        try:
-            meta = run_metadata(url)
-            title = title or meta.get("title")
-            thumbnail = thumbnail or meta.get("thumbnail")
-        except Exception:
-            pass
+    try:
+        meta = await asyncio.to_thread(run_metadata, url)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not determine download size") from exc
+    reserved_bytes = int(meta.get("reserved_bytes") or 0)
+    if reserved_bytes <= 0:
+        raise HTTPException(status_code=400, detail="The source did not provide a download size, so it cannot be queued safely")
+    assert_quota(user, reserved_bytes)
+    title = payload.title or meta.get("title")
+    thumbnail = payload.thumbnail or meta.get("thumbnail")
 
     job_id = secrets.token_urlsafe(12)
     created_at = now_iso()
     with db_lock, open_db() as conn:
         conn.execute(
             """
-            INSERT INTO jobs (id, url, title, thumbnail, format, status, progress, message, created_at, updated_at, user_email)
-            VALUES (?, ?, ?, ?, ?, 'queued', 0, 'Queued', ?, ?, ?)
+            INSERT INTO jobs (id, url, title, thumbnail, format, status, progress, message, created_at, updated_at, user_email, reserved_bytes)
+            VALUES (?, ?, ?, ?, ?, 'queued', 0, 'Queued', ?, ?, ?, ?)
             """,
-            (job_id, url, title, thumbnail, payload.format, created_at, created_at, user_id),
+            (job_id, url, title, thumbnail, payload.format, created_at, created_at, user_id, reserved_bytes),
         )
         conn.commit()
     await schedule_next_jobs()
