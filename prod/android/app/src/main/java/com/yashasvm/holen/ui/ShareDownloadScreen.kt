@@ -89,15 +89,6 @@ fun ShareDownloadScreen(
             busy && analysis == null -> LoadingState(sharedUrl)
             error != null -> {
                 MessageState("This link needs attention", error.orEmpty())
-                if (error.orEmpty().contains("account", true) ||
-                    error.orEmpty().contains("age", true)
-                ) {
-                    Text(
-                        "Open Holen → Settings → Account session to connect cookies.txt.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = HolenMuted,
-                    )
-                }
                 PrimaryButton("Open Holen", onOpenHolen)
             }
             analysis is SourceAnalysis.DirectFile -> {

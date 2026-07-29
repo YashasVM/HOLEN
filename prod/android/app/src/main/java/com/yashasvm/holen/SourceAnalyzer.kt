@@ -14,10 +14,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         if (isExtractorFirstHost(URI(url).host)) {
             return@withContext engine.analyze(url)
         }
-        val probe = runCatching { probe(url) }.getOrElse { error ->
-            if (engine.hasAccountSession()) return@withContext engine.analyze(url)
-            throw error
-        }
+        val probe = probe(url)
         if (isDirectFile(probe.contentDisposition, probe.mimeType)) {
             val name = sanitizeFileName(
                 DirectDownloader.fileNameFromDisposition(probe.contentDisposition)

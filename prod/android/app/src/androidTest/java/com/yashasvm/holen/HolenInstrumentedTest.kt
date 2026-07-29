@@ -1,8 +1,11 @@
 package com.yashasvm.holen
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
@@ -44,18 +47,63 @@ class HolenInstrumentedTest {
         .around(composeRule)
 
     @Test
-    fun firstLaunchExplainsFeaturesThenShowsAgreement() {
-        composeRule.onNodeWithText("HOLEN").assertIsDisplayed()
-        composeRule.onNodeWithText("WELCOME TO HOLEN").assertIsDisplayed()
-        composeRule.onNodeWithText("SHARE DIRECTLY").assertIsDisplayed()
-        composeRule.onNodeWithText("Made by @yashas.vm").assertIsDisplayed()
-
-        composeRule.onNodeWithText("Show me how").performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithText("DOWNLOAD RESPONSIBLY").assertIsDisplayed()
+    fun firstLaunchRunsCinematicOnboardingInOrder() {
+        composeRule.onNodeWithText("Welcome to\nHOLEN.").assertIsDisplayed()
+        composeRule.onNodeWithText("Welcome to\nHOLEN.").performClick()
+        composeRule.onNodeWithTag("onboarding-about").assertIsDisplayed()
         composeRule.onNodeWithText(
-            "I understand and agree to download responsibly.",
+            "HOLEN downloads almost anything from the internet—free.",
         ).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "Skip the sketchy websites and unsafe download pages.",
+        ).assertIsDisplayed()
+        composeRule.waitUntil(4_000) {
+            composeRule.onAllNodesWithText(
+                "HOLEN OSS is open source under the MIT License.",
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("about-repository-link").assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "HOLEN downloads almost anything from the internet—free.",
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "Skip the sketchy websites and unsafe download pages.",
+        ).assertIsDisplayed()
+
+        composeRule.onNodeWithTag("onboarding-next").performClick()
+        composeRule.onNodeWithTag("onboarding-tutorial").assertIsDisplayed()
+        composeRule.onNodeWithTag("tutorial-dot-5").performClick()
+        composeRule.onNodeWithTag("tutorial-frame-5").assertIsDisplayed()
+        composeRule.onNodeWithText("Replay").assertDoesNotExist()
+        composeRule.onNodeWithTag("tutorial-page-next").performClick()
+        composeRule.onNodeWithTag("onboarding-fair-download").assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "A tiny favor from the admin.",
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun tutorialScreenshotsArePortraitBitmaps() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val resources = listOf(
+            R.drawable.onboarding_share_01,
+            R.drawable.onboarding_share_02,
+            R.drawable.onboarding_share_03,
+            R.drawable.onboarding_share_04,
+            R.drawable.onboarding_share_05,
+        )
+        resources.forEachIndexed { index, resource ->
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.resources.openRawResource(resource).use {
+                BitmapFactory.decodeStream(it, null, options)
+            }
+            assertEquals("frame ${index + 1} width", 1440, options.outWidth)
+            assertEquals(
+                "frame ${index + 1} height",
+                if (index == 0) 2561 else 2560,
+                options.outHeight,
+            )
+        }
     }
 
     @Test

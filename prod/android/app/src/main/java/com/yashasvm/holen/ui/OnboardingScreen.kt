@@ -1,8 +1,13 @@
 package com.yashasvm.holen.ui
 
+import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11,546 +16,797 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yashasvm.holen.MainViewModel
+import com.yashasvm.holen.R
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-private const val PAGE_COUNT = 3
+private enum class OnboardingStage { Welcome, About, Tutorial, FairDownload, Folder }
+
+private object OnboardingMotion {
+    const val Reveal = 420
+    const val Stagger = 360L
+    const val Exit = 210
+    const val Pill = 260
+    const val Frame = 1_800L
+    const val ManualPause = 3_000L
+}
+
+private data class TutorialData(
+    val image: Int,
+    val caption: String,
+    val description: String,
+)
+
+private val tutorialFrames = listOf(
+    TutorialData(
+        R.drawable.onboarding_share_01,
+        "Find the video or audio you want to save.",
+        "YouTube video page ready to share.",
+    ),
+    TutorialData(
+        R.drawable.onboarding_share_02,
+        "Tap Share, then open More options.",
+        "Initial share sheet with the More options action.",
+    ),
+    TutorialData(
+        R.drawable.onboarding_share_03,
+        "Choose HOLEN from the share menu.",
+        "Expanded Android share sheet showing HOLEN.",
+    ),
+    TutorialData(
+        R.drawable.onboarding_share_04,
+        "Pick a video or audio format, then tap Download.",
+        "HOLEN format selection dialog.",
+    ),
+    TutorialData(
+        R.drawable.onboarding_share_05,
+        "That’s it—HOLEN downloads it in the background.",
+        "Android notification showing a HOLEN download in progress.",
+    ),
+)
 
 @Composable
 internal fun OnboardingFlow(
     viewModel: MainViewModel,
     onChooseFolder: () -> Unit,
-    onImportCookies: () -> Unit,
     onOpenCreator: () -> Unit,
     onOpenSource: () -> Unit,
 ) {
-    val rightsAcknowledged by viewModel.rightsAcknowledged.collectAsStateWithLifecycle()
     val folderGranted by viewModel.folderGranted.collectAsStateWithLifecycle()
-    val sessionConnected by viewModel.sessionConnected.collectAsStateWithLifecycle()
-    var page by rememberSaveable { mutableIntStateOf(0) }
-    var agreementChecked by rememberSaveable(rightsAcknowledged) {
-        mutableStateOf(rightsAcknowledged)
+    var stageName by rememberSaveable { mutableStateOf(OnboardingStage.Welcome.name) }
+    val stage = OnboardingStage.valueOf(stageName)
+    val context = LocalContext.current
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
     }
 
-    Column(
+    fun goTo(next: OnboardingStage) {
+        stageName = next.name
+    }
+
+    BackHandler(enabled = stage != OnboardingStage.Welcome) {
+        goTo(OnboardingStage.entries[stage.ordinal - 1])
+    }
+
+    AnimatedContent(
+        targetState = stage,
         modifier = Modifier
             .fillMaxSize()
             .background(HolenBackground)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 18.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        OnboardingHeader(page)
-        AnimatedContent(
-            targetState = page,
-            modifier = Modifier.weight(1f),
-            transitionSpec = {
-                val direction = if (targetState > initialState) 1 else -1
+            .clipToBounds(),
+        transitionSpec = {
+            if (reducedMotion) {
+                fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+            } else {
+                val forward = targetState.ordinal > initialState.ordinal
                 (
                     slideInHorizontally(
-                        animationSpec = tween(260, easing = FastOutSlowInEasing),
-                        initialOffsetX = { it * direction },
-                    ) + fadeIn(tween(180))
+                        tween(320, easing = FastOutSlowInEasing),
+                        initialOffsetX = { if (forward) it / 4 else -it / 4 },
+                    ) + slideInVertically(
+                        tween(320, easing = FastOutSlowInEasing),
+                        initialOffsetY = { if (forward) it / 8 else -it / 8 },
+                    ) + fadeIn(tween(260))
                     ) togetherWith (
                     slideOutHorizontally(
-                        animationSpec = tween(220, easing = FastOutSlowInEasing),
-                        targetOffsetX = { -it * direction / 2 },
-                    ) + fadeOut(tween(150))
+                        tween(OnboardingMotion.Exit),
+                        targetOffsetX = { if (forward) -it / 5 else it / 5 },
+                    ) + fadeOut(tween(OnboardingMotion.Exit))
                     )
-            },
-            label = "Onboarding page",
-        ) { destination ->
-            when (destination) {
-                0 -> WelcomePage(
-                    onContinue = { page = 1 },
-                    onOpenCreator = onOpenCreator,
-                )
-                1 -> AgreementPage(
-                    checked = agreementChecked,
-                    onCheckedChange = { agreementChecked = it },
-                    onBack = { page = 0 },
-                    onContinue = {
-                        viewModel.acknowledgeRights()
-                        page = 2
-                    },
-                )
-                else -> FolderPage(
-                    folderGranted = folderGranted,
-                    sessionConnected = sessionConnected,
-                    onChooseFolder = onChooseFolder,
-                    onImportCookies = onImportCookies,
-                    onBack = { page = 1 },
-                    onComplete = viewModel::completeOnboarding,
-                    onOpenSource = onOpenSource,
-                )
             }
+        },
+        label = "Onboarding stage",
+    ) { current ->
+        when (current) {
+            OnboardingStage.Welcome -> WelcomeStage(reducedMotion) { goTo(OnboardingStage.About) }
+            OnboardingStage.About -> AboutStage(reducedMotion, onOpenSource) {
+                goTo(OnboardingStage.Tutorial)
+            }
+            OnboardingStage.Tutorial -> ShareTutorialStage(reducedMotion) {
+                goTo(OnboardingStage.FairDownload)
+            }
+            OnboardingStage.FairDownload -> FairDownloadStage(reducedMotion) {
+                viewModel.acknowledgeRights()
+                goTo(OnboardingStage.Folder)
+            }
+            OnboardingStage.Folder -> FolderSetupStage(
+                reducedMotion = reducedMotion,
+                folderGranted = folderGranted,
+                onChooseFolder = onChooseFolder,
+                onComplete = viewModel::completeOnboarding,
+            )
         }
     }
 }
 
 @Composable
-private fun OnboardingHeader(page: Int) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+private fun WelcomeStage(reducedMotion: Boolean, onContinue: () -> Unit) {
+    var focused by remember { mutableStateOf(reducedMotion) }
+    val blur by animateDpAsState(
+        if (focused) 0.dp else 14.dp,
+        tween(if (reducedMotion) 0 else 460, easing = FastOutSlowInEasing),
+        label = "Welcome blur",
+    )
+    LaunchedEffect(Unit) {
+        focused = true
+        if (!reducedMotion) delay(2_600)
+        onContinue()
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .clickable(
+                role = Role.Button,
+                onClickLabel = "Skip welcome",
+                onClick = onContinue,
+            )
+            .semantics {
+                testTag = "onboarding-welcome"
+                contentDescription = "Welcome to HOLEN. Tap to continue."
+            },
+        contentAlignment = Alignment.Center,
     ) {
+        Text(
+            "Welcome to\nHOLEN.",
+            modifier = Modifier.blur(blur).semantics { heading() },
+            color = HolenInk,
+            fontFamily = Syne,
+            fontWeight = FontWeight.ExtraBold,
+            style = MaterialTheme.typography.displaySmall,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun AboutStage(
+    reducedMotion: Boolean,
+    onOpenSource: () -> Unit,
+    onNext: () -> Unit,
+) {
+    var step by remember { mutableIntStateOf(if (reducedMotion) 5 else 0) }
+    LaunchedEffect(Unit) {
+        if (!reducedMotion) {
+            step = 1
+            delay(OnboardingMotion.Reveal.toLong())
+            step = 2
+            delay(1_400)
+            step = 3
+            delay(120)
+            step = 4
+            delay(220)
+            step = 5
+        }
+    }
+    StageLayout("onboarding-about") {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(tween(if (reducedMotion) 0 else 320)),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            BlurRevealText(
+                text = "HOLEN downloads almost anything from the internet—free.",
+                visible = step >= 1,
+                reducedMotion = reducedMotion,
+            )
+            BlurRevealText(
+                text = "Skip the sketchy websites and unsafe download pages.",
+                visible = step >= 2,
+                reducedMotion = reducedMotion,
+                supporting = true,
+            )
+            AnimatedVisibility(
+                visible = step >= 3,
+                enter = fadeIn(tween(if (reducedMotion) 0 else 400)) +
+                    slideInVertically(tween(if (reducedMotion) 0 else 400)) { it / 5 },
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    BlurRevealText(
+                        text = "HOLEN OSS is open source under the MIT License.",
+                        visible = true,
+                        reducedMotion = reducedMotion,
+                    )
+                    AnimatedVisibility(visible = step >= 4, enter = pillEnter(reducedMotion)) {
+                        Row(
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .clickable(
+                                    role = Role.Button,
+                                    onClickLabel = "Open HOLEN repository on GitHub",
+                                    onClick = onOpenSource,
+                                )
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .semantics {
+                                    testTag = "about-repository-link"
+                                    contentDescription = "GitHub repository, YashasVM slash HOLEN"
+                                },
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Image(
+                                painterResource(R.drawable.ic_github),
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                            Text(
+                                "YashasVM/HOLEN",
+                                color = HolenBlue,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = step >= 5,
+            enter = pillEnter(reducedMotion),
+        ) {
+            OnboardingPillButton("Next", onNext, Modifier.semantics { testTag = "onboarding-next" })
+        }
+    }
+}
+
+@Composable
+private fun ShareTutorialStage(reducedMotion: Boolean, onNext: () -> Unit) {
+    var frame by rememberSaveable { mutableIntStateOf(0) }
+    var manualPauseUntil by remember { mutableLongStateOf(0L) }
+
+    fun select(index: Int) {
+        frame = index.coerceIn(tutorialFrames.indices)
+        manualPauseUntil = android.os.SystemClock.uptimeMillis() + OnboardingMotion.ManualPause
+    }
+
+    LaunchedEffect(reducedMotion) {
+        if (reducedMotion) return@LaunchedEffect
+        while (frame < tutorialFrames.lastIndex) {
+            val remaining = manualPauseUntil - android.os.SystemClock.uptimeMillis()
+            if (remaining > 0) delay(remaining)
+            delay(OnboardingMotion.Frame)
+            frame++
+        }
+    }
+
+    StageLayout("onboarding-tutorial", topAligned = true) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "How to download with HOLEN",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                "Share a link. Pick a format. HOLEN handles the rest.",
+                color = HolenMuted,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        TutorialFrame(frame, reducedMotion)
         Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
+            tutorialFrames.indices.forEach { index ->
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clickable(
+                            role = Role.RadioButton,
+                            onClickLabel = "Show tutorial frame ${index + 1}",
+                        ) { select(index) }
+                        .semantics {
+                            testTag = "tutorial-dot-${index + 1}"
+                            stateDescription = if (index == frame) "Selected" else "Not selected"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier
+                            .size(
+                                width = if (index == frame) 22.dp else 8.dp,
+                                height = if (index == frame) 10.dp else 8.dp,
+                            )
+                            .clip(CircleShape)
+                            .background(if (index == frame) HolenRed else HolenMuted),
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SmallPill("Previous", enabled = frame > 0) { select(frame - 1) }
+            if (frame == tutorialFrames.lastIndex) {
+                OnboardingPillButton(
+                    "Next",
+                    onNext,
+                    Modifier
+                        .widthIn(max = 180.dp)
+                        .semantics { testTag = "tutorial-page-next" },
+                )
+            } else {
+                SmallPill("Next frame") { select(frame + 1) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TutorialFrame(frame: Int, reducedMotion: Boolean) {
+    val data = tutorialFrames[frame]
+    val imageMaxHeight = LocalConfiguration.current.screenHeightDp.dp * .48f
+    val scale by animateFloatAsState(
+        if (frame % 2 == 0) 1f else 0.992f,
+        tween(if (reducedMotion) 0 else 300),
+        label = "Stop motion scale",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        AnimatedContent(
+            targetState = frame,
+            transitionSpec = {
+                fadeIn(tween(if (reducedMotion) 0 else 260)) togetherWith
+                    fadeOut(tween(if (reducedMotion) 0 else 220))
+            },
+            label = "Tutorial image",
+        ) {
+            Image(
+                painter = painterResource(tutorialFrames[it].image),
+                contentDescription = tutorialFrames[it].description,
                 modifier = Modifier
-                    .size(42.dp)
-                    .background(HolenRed)
-                    .border(3.dp, HolenInk),
-                contentAlignment = Alignment.Center,
-            ) {
+                    .fillMaxWidth()
+                    .heightIn(max = imageMaxHeight)
+                    .aspectRatio(9f / 16f, matchHeightConstraintsFirst = true)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(HolenSurfaceTwo)
+                    .scale(scale)
+                    .semantics { testTag = "tutorial-frame-${it + 1}" },
+                contentScale = ContentScale.Fit,
+            )
+        }
+        Text(
+            data.caption,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    liveRegion = LiveRegionMode.Polite
+                    contentDescription = data.caption
+                },
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun FairDownloadStage(reducedMotion: Boolean, onSigned: () -> Unit) {
+    var signed by rememberSaveable { mutableStateOf(false) }
+    var step by remember { mutableIntStateOf(if (reducedMotion) 6 else 0) }
+    LaunchedEffect(Unit) {
+        if (!reducedMotion) {
+            for (next in 1..6) {
+                step = next
+                delay(if (next in 3..5) 95 else 180)
+            }
+        }
+    }
+    StageLayout("onboarding-fair-download") {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 560.dp)
+                .align(Alignment.CenterHorizontally)
+                .animateContentSize(tween(if (reducedMotion) 0 else 320)),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            BlurRevealText("A tiny favor from the admin.", step >= 1, reducedMotion)
+            AnimatedVisibility(step >= 2, enter = pillEnter(reducedMotion)) {
                 Text(
-                    "H",
-                    color = Color.White,
-                    fontFamily = Syne,
-                    fontWeight = FontWeight.ExtraBold,
-                    style = MaterialTheme.typography.titleLarge,
+                    "I’d rather not meet a lawyer because of your download history. Please save only files you own, have permission to use, or that are legally available to download. Deal? :)",
+                    style = MaterialTheme.typography.bodyLarge,
                 )
             }
-            Text("HOLEN", style = MaterialTheme.typography.titleLarge)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf(
+                    "Respect creators, copyright, and local laws.",
+                    "Do not use HOLEN to bypass DRM, accounts, age gates, or access controls.",
+                    "You are responsible for what you choose to download.",
+                ).forEachIndexed { index, text ->
+                    AnimatedVisibility(step >= index + 3, enter = pillEnter(reducedMotion)) {
+                        LegalLine(text)
+                    }
+                }
+            }
+            AnimatedVisibility(step >= 6, enter = pillEnter(reducedMotion)) {
+                HoldToSignButton(signed = signed, reducedMotion = reducedMotion) { signed = true }
+            }
+            AnimatedVisibility(signed, enter = pillEnter(reducedMotion)) {
+                OnboardingPillButton(
+                    "Continue",
+                    onSigned,
+                    Modifier.semantics { testTag = "hold-continue" },
+                )
+            }
         }
-        Text(
-            "0${page + 1} / 0$PAGE_COUNT",
-            modifier = Modifier
-                .background(HolenInk)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
-        )
     }
 }
 
 @Composable
-private fun WelcomePage(
-    onContinue: () -> Unit,
-    onOpenCreator: () -> Unit,
+private fun HoldToSignButton(
+    signed: Boolean,
+    reducedMotion: Boolean,
+    onSigned: () -> Unit,
 ) {
-    var revealHero by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { revealHero = true }
-
-    OnboardingPage {
-        AnimatedVisibility(
-            visible = revealHero,
-            enter = fadeIn(tween(180)) + slideInVertically(
-                animationSpec = tween(220, easing = FastOutSlowInEasing),
-                initialOffsetY = { it / 8 },
-            ) + scaleIn(initialScale = 0.98f, animationSpec = tween(220)),
-        ) {
-        Box(Modifier.fillMaxWidth().height(128.dp)) {
-            Box(
-                Modifier
-                    .size(92.dp)
-                    .align(Alignment.CenterEnd)
-                    .clip(CircleShape)
-                    .background(HolenYellow)
-                    .border(3.dp, HolenInk, CircleShape),
-            )
-            Box(
-                Modifier
-                    .size(58.dp)
-                    .align(Alignment.BottomEnd)
-                    .background(HolenBlue)
-                    .border(3.dp, HolenInk),
-            )
-            Text(
-                "SAVE\nWHAT'S\nYOURS.",
-                modifier = Modifier.align(Alignment.CenterStart),
-                color = HolenInk,
-                fontFamily = Syne,
-                fontWeight = FontWeight.ExtraBold,
-                style = MaterialTheme.typography.displaySmall,
-            )
-        }
-        }
-        SectionTag("WELCOME TO HOLEN", HolenRed)
-        Text(
-            "Your downloads,\non your terms.",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.semantics { heading() },
-        )
-        Text(
-            "Holen downloads supported public media and direct files on your device—without an account, cloud queue, or tracking.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = HolenMuted,
-        )
-        FeatureGrid()
-        Spacer(Modifier.height(2.dp))
-        HolenButton(
-            label = "Show me how",
-            onClick = onContinue,
-            background = HolenBlue,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        TextButton(
-            onClick = onOpenCreator,
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-        ) {
-            Text(
-                "Made by @yashas.vm",
-                color = HolenMuted,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
-private fun FeatureGrid() {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        FeatureRow(
-            number = "01",
-            title = "SHARE DIRECTLY",
-            detail = "Choose Holen from YouTube or any app's Share menu.",
-            accent = HolenRed,
-        )
-        FeatureRow(
-            number = "02",
-            title = "PICK YOUR QUALITY",
-            detail = "MP4, 1080p, 720p, M4A, MP3, or the original file.",
-            accent = HolenBlue,
-        )
-        FeatureRow(
-            number = "03",
-            title = "WATCH IT MOVE",
-            detail = "See real download percentage, speed, and time left.",
-            accent = HolenGreen,
-        )
-    }
-}
-
-@Composable
-private fun FeatureRow(
-    number: String,
-    title: String,
-    detail: String,
-    accent: Color,
-) {
-    Row(
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    var held by remember { mutableStateOf(false) }
+    var target by remember { mutableFloatStateOf(if (signed) 1f else 0f) }
+    val progress by animateFloatAsState(
+        target,
+        tween(if (target == 1f) 1_200 else 220),
+        finishedListener = {
+            if (it == 1f && held && !signed) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onSigned()
+            }
+        },
+        label = "Hold progress",
+    )
+    val shape = RoundedCornerShape(28.dp)
+    val completedScale by animateFloatAsState(
+        if (signed) 1.03f else 1f,
+        tween(if (reducedMotion) 0 else 150),
+        label = "Signed pulse",
+    )
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(HolenSurface)
-            .border(2.dp, HolenInk)
-            .padding(10.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .heightIn(min = 56.dp)
+            .scale(completedScale)
+            .clip(shape)
+            .background(HolenInk)
+            .pointerInput(signed) {
+                if (!signed) awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    held = true
+                    target = 1f
+                    val up = waitForUpOrCancellation()
+                    if (up == null || progress < 0.99f) {
+                        held = false
+                        target = 0f
+                    }
+                }
+            }
+            .semantics {
+                testTag = "hold-to-sign"
+                role = Role.Button
+                progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
+                stateDescription = if (signed) "Signed" else "${(progress * 100).toInt()} percent held"
+                onClick("Sign responsible download acknowledgment") {
+                    // Accessibility activation cannot express a precisely timed hold.
+                    if (!signed) {
+                        scope.launch {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSigned()
+                        }
+                    }
+                    true
+                }
+            },
     ) {
-        Text(
-            number,
-            modifier = Modifier
-                .background(accent)
-                .padding(horizontal = 7.dp, vertical = 5.dp),
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { scaleX = progress; transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, .5f) }
+                .background(HolenRed),
         )
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, style = MaterialTheme.typography.labelLarge)
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = HolenMuted)
+        AnimatedContent(
+            targetState = signed,
+            modifier = Modifier.align(Alignment.Center),
+            transitionSpec = {
+                fadeIn(tween(if (reducedMotion) 0 else 140)) togetherWith
+                    fadeOut(tween(if (reducedMotion) 0 else 100))
+            },
+            label = "Signed label",
+        ) { complete ->
+            Text(
+                if (complete) "✓  Signed. Nobody panic." else "Hold to sign",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
         }
     }
 }
 
 @Composable
-private fun AgreementPage(
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    onBack: () -> Unit,
-    onContinue: () -> Unit,
+private fun FolderSetupStage(
+    reducedMotion: Boolean,
+    folderGranted: Boolean,
+    onChooseFolder: () -> Unit,
+    onComplete: () -> Unit,
 ) {
-    OnboardingPage {
-        SectionTag("DOWNLOAD RESPONSIBLY", HolenYellow)
+    StageLayout("onboarding-folder") {
         Text(
-            "Keep downloads fair.",
+            "One last practical thing.",
             style = MaterialTheme.typography.displaySmall,
             modifier = Modifier.semantics { heading() },
         )
         Text(
-            "Holen is a tool for files you own, public-domain material, and content you have permission to save.",
+            "Choose where HOLEN should save your downloads. Android grants access only to that folder, and you can change it later in Settings.",
             style = MaterialTheme.typography.bodyLarge,
+            color = HolenMuted,
         )
-        BauhausCard(background = HolenSurfaceTwo) {
-            AgreementLine("Only download content you own or are authorized to save.")
-            HorizontalDivider(thickness = 2.dp, color = HolenInk)
-            AgreementLine("Respect copyright, creator terms, and the rules where you live.")
-            HorizontalDivider(thickness = 2.dp, color = HolenInk)
-            AgreementLine("Holen does not bypass DRM, accounts, age gates, or access controls.")
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(if (checked) Color(0xFFDCEFE4) else HolenSurface)
-                .border(3.dp, HolenInk)
-                .padding(horizontal = 8.dp, vertical = 6.dp)
-                .semantics {
-                    contentDescription = "Responsible download agreement"
-                    stateDescription = if (checked) "Accepted" else "Not accepted"
-                },
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                colors = CheckboxDefaults.colors(
-                    checkedColor = HolenGreen,
-                    checkmarkColor = Color.White,
-                ),
-            )
-            Text(
-                "I understand and agree to download responsibly.",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
+        if (folderGranted) {
+            AnimatedVisibility(true, enter = pillEnter(reducedMotion)) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("✓", color = HolenGreen, fontSize = 42.sp)
+                    Text("Download folder ready.", style = MaterialTheme.typography.titleLarge)
+                    SmallPill("Change folder", onClick = onChooseFolder)
+                }
+            }
+        } else {
+            OnboardingPillButton(
+                "Choose download folder",
+                onChooseFolder,
+                Modifier.semantics { testTag = "choose-folder" },
             )
         }
-        OnboardingActions(
-            primaryLabel = "I agree — continue",
-            primaryEnabled = checked,
-            onPrimary = onContinue,
-            onBack = onBack,
+        OnboardingPillButton(
+            "Enter HOLEN",
+            onComplete,
+            Modifier.semantics { testTag = "enter-holen" },
+            enabled = folderGranted,
         )
     }
 }
 
 @Composable
-private fun AgreementLine(text: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(
-            Modifier
-                .padding(top = 5.dp)
-                .size(10.dp)
-                .background(HolenRed)
-                .border(1.dp, HolenInk),
+private fun BlurRevealText(
+    text: String,
+    visible: Boolean,
+    reducedMotion: Boolean,
+    supporting: Boolean = false,
+    singleLine: Boolean = false,
+) {
+    val alpha by animateFloatAsState(
+        if (visible) 1f else 0f,
+        tween(if (reducedMotion) 0 else OnboardingMotion.Reveal),
+        label = "Reveal alpha",
+    )
+    val blur by animateDpAsState(
+        if (visible) 0.dp else 14.dp,
+        tween(if (reducedMotion) 0 else OnboardingMotion.Reveal, easing = FastOutSlowInEasing),
+        label = "Reveal blur",
+    )
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val headlineSize = when {
+            maxWidth < 340.dp -> 19.sp
+            maxWidth < 390.dp -> 21.sp
+            else -> 23.sp
+        }
+        Text(
+            text,
+            modifier = Modifier
+                .blur(blur)
+                .graphicsLayer {
+                    this.alpha = alpha
+                    translationY = (1f - alpha) * 18f
+                }
+                .semantics { if (!supporting) heading() },
+            style = if (supporting) {
+                MaterialTheme.typography.bodyLarge
+            } else {
+                MaterialTheme.typography.headlineSmall.copy(fontSize = headlineSize)
+            },
+            color = if (supporting) HolenMuted else HolenInk,
+            maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+            overflow = TextOverflow.Clip,
         )
+    }
+}
+
+@Composable
+private fun StageLayout(
+    tag: String,
+    topAligned: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        val gutter = when {
+            maxWidth >= 720.dp -> 72.dp
+            maxWidth >= 480.dp -> 40.dp
+            else -> 22.dp
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = gutter, vertical = 24.dp)
+                .semantics { testTag = tag },
+            verticalArrangement = if (topAligned) {
+                Arrangement.spacedBy(18.dp)
+            } else {
+                Arrangement.spacedBy(24.dp, Alignment.CenterVertically)
+            },
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun LegalLine(text: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(Modifier.padding(top = 7.dp).size(7.dp).clip(CircleShape).background(HolenRed))
         Text(text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
 @Composable
-private fun FolderPage(
-    folderGranted: Boolean,
-    sessionConnected: Boolean,
-    onChooseFolder: () -> Unit,
-    onImportCookies: () -> Unit,
-    onBack: () -> Unit,
-    onComplete: () -> Unit,
-    onOpenSource: () -> Unit,
+private fun OnboardingPillButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
-    OnboardingPage {
-        SectionTag("ONE LAST STEP", HolenBlue)
-        Text(
-            "Choose where files land.",
-            style = MaterialTheme.typography.displaySmall,
-            modifier = Modifier.semantics { heading() },
-        )
-        Text(
-            "Android's folder picker lets you grant access to one location. Holen cannot browse the rest of your storage.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = HolenMuted,
-        )
-        BauhausCard(background = if (folderGranted) Color(0xFFDCEFE4) else HolenYellow) {
-            Text(
-                if (folderGranted) "FOLDER READY" else "DOWNLOAD LOCATION",
-                style = MaterialTheme.typography.titleLarge,
+    val scale by animateFloatAsState(if (enabled) 1f else .98f, tween(120), label = "Pill state")
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .scale(scale)
+            .clip(RoundedCornerShape(28.dp))
+            .background(if (enabled) HolenRed else HolenSurfaceTwo)
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClickLabel = label,
+                onClick = onClick,
             )
-            Text(
-                if (folderGranted) {
-                    "Permission saved. You can change this folder later in Settings."
-                } else {
-                    "A Downloads/Holen folder is a good choice. Existing files are never overwritten."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            HolenButton(
-                label = if (folderGranted) "Change folder" else "Choose download folder",
-                onClick = onChooseFolder,
-                background = if (folderGranted) HolenSurface else HolenInk,
-                foreground = if (folderGranted) HolenInk else Color.White,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        AnimatedVisibility(
-            visible = folderGranted,
-            enter = fadeIn(tween(180)) + slideInVertically(
-                animationSpec = tween(220, easing = FastOutSlowInEasing),
-                initialOffsetY = { it / 3 },
-            ),
-            exit = fadeOut(tween(150)),
-        ) {
-            Text(
-                "You're set. Links shared to Holen will open straight into quality selection.",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(HolenGreen)
-                    .border(2.dp, HolenInk)
-                    .padding(12.dp),
-                color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-            )
-        }
-        OptionalYouTubeSessionCard(
-            sessionConnected = sessionConnected,
-            onImportCookies = onImportCookies,
-        )
-        TextButton(
-            onClick = onOpenSource,
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-        ) {
-            Text(
-                "Curious what the tiny code goblins do? Peek at the OSS code ->",
-                color = HolenMuted,
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center,
-            )
-        }
-        OnboardingActions(
-            primaryLabel = "Enter Holen",
-            primaryEnabled = folderGranted,
-            onPrimary = onComplete,
-            onBack = onBack,
-        )
-    }
-}
-
-@Composable
-private fun OptionalYouTubeSessionCard(
-    sessionConnected: Boolean,
-    onImportCookies: () -> Unit,
-) {
-    BauhausCard(background = if (sessionConnected) Color(0xFFDCEFE4) else HolenSurfaceTwo) {
-        SectionTag(
-            if (sessionConnected) "YOUTUBE COOKIES IMPORTED" else "OPTIONAL: YOUTUBE SIGN-IN",
-            if (sessionConnected) HolenGreen else HolenRed,
-        )
-        Text(
-            "For YouTube's age gate.",
-            style = MaterialTheme.typography.titleLarge,
-        )
-        Text(
-            "Import YouTube cookies only to download videos when YouTube requires sign-in or age verification. " +
-                "They stay on this device and are never sent to other sites.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = HolenMuted,
-        )
-        Text(
-            "This does not create a Holen account, post, subscribe, or do anything else on your behalf.",
-            style = MaterialTheme.typography.bodySmall,
-            color = HolenMuted,
-        )
-        if (!sessionConnected) {
-            Text(
-                "You'll choose a Netscape cookies.txt export from a browser where you're already signed in to YouTube.",
-                style = MaterialTheme.typography.bodySmall,
-                color = HolenMuted,
-            )
-        }
-        HolenButton(
-            label = if (sessionConnected) "Replace YouTube cookies" else "Sign in with YouTube (cookies.txt)",
-            onClick = onImportCookies,
-            background = HolenRed,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        if (!sessionConnected) {
-            Text(
-                "Skip it if you like - public downloads work without it.",
-                style = MaterialTheme.typography.bodySmall,
-                color = HolenMuted,
-            )
-        }
-    }
-}
-
-@Composable
-private fun OnboardingActions(
-    primaryLabel: String,
-    primaryEnabled: Boolean,
-    onPrimary: () -> Unit,
-    onBack: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .semantics {
+                stateDescription = if (enabled) "Enabled" else "Disabled"
+            },
+        contentAlignment = Alignment.Center,
     ) {
-        HolenButton(
-            label = "Back",
-            onClick = onBack,
-            background = HolenSurface,
-            foreground = HolenInk,
-            modifier = Modifier.weight(0.35f),
-        )
-        HolenButton(
-            label = primaryLabel,
-            onClick = onPrimary,
-            background = HolenBlue,
-            enabled = primaryEnabled,
-            modifier = Modifier.weight(0.65f),
+        Text(
+            label,
+            color = if (enabled) Color.White else HolenMuted,
+            style = MaterialTheme.typography.labelLarge,
         )
     }
 }
 
 @Composable
-private fun OnboardingPage(content: @Composable ColumnScope.() -> Unit) {
-    Column(
+private fun SmallPill(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(
         modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        content = content,
-    )
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(if (enabled) HolenSurfaceTwo else Color.Transparent)
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
+            .padding(horizontal = 18.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (enabled) HolenInk else HolenMuted, style = MaterialTheme.typography.labelLarge)
+    }
 }
+
+private fun pillEnter(reducedMotion: Boolean) =
+    fadeIn(tween(if (reducedMotion) 0 else OnboardingMotion.Pill)) +
+        slideInVertically(tween(if (reducedMotion) 0 else OnboardingMotion.Pill)) { it / 3 } +
+        scaleIn(initialScale = .96f, animationSpec = tween(if (reducedMotion) 0 else OnboardingMotion.Pill))

@@ -17,7 +17,6 @@ import java.io.IOException
 
 class YtDlpEngine private constructor(private val context: Context) {
     private val initMutex = Mutex()
-    private val cookieStore = CookieStore(context)
     private val preferences = context.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -39,7 +38,6 @@ class YtDlpEngine private constructor(private val context: Context) {
         engineMutex.withLock {
             ensureInitialized(needsFfmpeg = false)
             val request = YoutubeDLRequest(url).apply {
-                addSiteAuthentication(url)
                 addOption("--ignore-config")
                 addOption("--dump-single-json")
                 addOption("--flat-playlist")
@@ -47,9 +45,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                 addOption("--skip-download")
                 addOption("--no-warnings")
             }
-            val response = runYoutubeAware(url) {
-                YoutubeDL.execute(request, "analysis", null)
-            }
+            val response = YoutubeDL.execute(request, "analysis", null)
             val json = response.out.toJsonObject()
             val entries = json.optJSONArray("entries")
             if (entries != null) json.toPlaylist(url, entries) else json.toMedia(url)
@@ -72,7 +68,6 @@ class YtDlpEngine private constructor(private val context: Context) {
                 "%(title).180B [%(id)s].%(ext)s",
             ).absolutePath
             val request = YoutubeDLRequest(job.sourceUrl).apply {
-                addSiteAuthentication(job.sourceUrl)
                 addOption("--ignore-config")
                 addCommands(downloadArguments(job.format))
                 addCommands(
@@ -92,7 +87,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                 )
             }
             var lastUpdate = 0L
-            runYoutubeAware(job.sourceUrl) {
+            runYoutubeAware {
                 YoutubeDL.execute(request, job.id, false) { wrapperPercent, wrapperEta, line ->
                     if (isCancelled()) {
                         YoutubeDL.destroyProcessById(job.id)
@@ -137,8 +132,6 @@ class YtDlpEngine private constructor(private val context: Context) {
         if (initialized) YoutubeDL.destroyProcessById(processId)
     }
 
-    fun hasAccountSession(): Boolean = cookieStore.hasSession()
-
     suspend fun updateStable(): String = withContext(Dispatchers.IO) {
         engineMutex.withLock {
             ensureInitialized(needsFfmpeg = false)
@@ -149,7 +142,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                 version
             } catch (error: Throwable) {
                 resetToBundledLocked()
-                throw IOException("Engine update failed and the bundled engine was restored.", error)
+                throw IOException("Engine update failed. Close and reopen HOLEN to restore the bundled engine.", error)
             }
         }
     }
@@ -161,18 +154,9 @@ class YtDlpEngine private constructor(private val context: Context) {
     private suspend fun resetToBundledLocked(): String =
         initMutex.withLock {
             YoutubeDL.destroyProcessById("analysis")
-            val root = File(context.noBackupFilesDir, YoutubeDL.baseName)
-            val engineDirectory = File(root, YoutubeDL.ytdlpDirName)
-            engineDirectory.deleteRecursively()
-            YoutubeDL.init_ytdlp(context, engineDirectory)
-            context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
-                remove("dlpVersion")
-                remove("dlpVersionName")
-            }
-            val version = "Bundled ${validateVersion()}"
-            preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, version) }
-            initialized = true
-            version
+            clearRuntimeLocked()
+            preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, "Bundled (restores after restart)") }
+            "Bundled runtime cleared. Close and reopen HOLEN to rebuild it."
         }
 
     private suspend fun ensureInitialized(needsFfmpeg: Boolean) {
@@ -188,22 +172,47 @@ class YtDlpEngine private constructor(private val context: Context) {
                         )
                     }
                     initialized = true
-                } catch (error: Throwable) {
-                    val root = File(context.noBackupFilesDir, YoutubeDL.baseName)
-                    val engineDirectory = File(root, YoutubeDL.ytdlpDirName)
-                    engineDirectory.deleteRecursively()
-                    YoutubeDL.init_ytdlp(context, engineDirectory)
-                    preferences.edit {
-                        putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
+                } catch (firstError: Throwable) {
+                    try {
+                        clearRuntimeLocked()
+                        YoutubeDL.init(context)
+                        preferences.edit {
+                            putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
+                        }
+                        initialized = true
+                    } catch (fallbackError: Throwable) {
+                        throw IOException(
+                            "Media engine startup failed. The bundled engine could not be restored.",
+                            fallbackError,
+                        ).also { it.addSuppressed(firstError) }
                     }
-                    initialized = true
                 }
             }
             if (needsFfmpeg && !ffmpegInitialized) {
-                FFmpeg.init(context)
-                ffmpegInitialized = true
+                try {
+                    FFmpeg.init(context)
+                    ffmpegInitialized = true
+                } catch (error: Throwable) {
+                    throw IOException("Media engine startup failed. The media tools could not load.", error)
+                }
             }
         }
+    }
+
+    /**
+     * The wrapper extracts Python, yt-dlp, and FFmpeg into this directory. Clearing only
+     * yt-dlp leaves a broken Python/FFmpeg runtime behind, so recovery must remove all of it.
+     */
+    private fun clearRuntimeLocked() {
+        File(context.noBackupFilesDir, YoutubeDL.baseName).deleteRecursively()
+        context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
+            remove("pythonLibVersion")
+            remove("ffmpegLibVersion")
+            remove("dlpVersion")
+            remove("dlpVersionName")
+        }
+        initialized = false
+        ffmpegInitialized = false
     }
 
     private fun validateVersion(): String {
@@ -216,33 +225,7 @@ class YtDlpEngine private constructor(private val context: Context) {
             ?: throw IOException("The media engine returned no version.")
     }
 
-    private fun YoutubeDLRequest.addSiteAuthentication(sourceUrl: String) {
-        if (isYoutubeUrl(sourceUrl)) {
-            cookieStore.fileOrNull()?.let { addOption("--cookies", it.absolutePath) }
-            // `default` lets yt-dlp select its current cookie-compatible fallback
-            // clients. Forcing Android/TV clients can discard account cookies or
-            // require a PO token, so it is intentionally avoided here.
-            addOption("--extractor-args", "youtube:player_client=default")
-        }
-    }
-
-    private fun <T> runYoutubeAware(sourceUrl: String, block: () -> T): T = try {
-        block()
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: Throwable) {
-        if (!isYoutubeUrl(sourceUrl) || !isYoutubeAuthenticationError(error.message.orEmpty())) {
-            throw error
-        }
-        val guidance = if (cookieStore.hasYouTubeCookies()) {
-            "YouTube rejected the saved account session. Update the media engine, then re-import fresh " +
-                "YouTube cookies from an age-verified account."
-        } else {
-            "This YouTube video requires sign-in or age verification. In Settings, import fresh Netscape " +
-                "cookies.txt from an age-verified YouTube account, then retry."
-        }
-        throw IOException(guidance, error)
-    }
+    private fun <T> runYoutubeAware(block: () -> T): T = block()
 
     private fun JSONObject.toMedia(fallbackUrl: String): SourceAnalysis.Media {
         val formats = optJSONArray("formats") ?: JSONArray()

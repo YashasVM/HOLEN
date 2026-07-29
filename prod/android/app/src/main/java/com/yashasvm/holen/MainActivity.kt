@@ -60,12 +60,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val cookiePicker = registerForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        uri?.let(viewModel::importCookies)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         outputStore = OutputStore(this)
@@ -98,13 +92,10 @@ class MainActivity : ComponentActivity() {
                     onOpen = { launch(outputStore.openIntent(it)) },
                     onShare = { launch(outputStore.shareIntent(it)) },
                     onOpenCreator = {
-                        launch(Intent(Intent.ACTION_VIEW, Uri.parse(CREATOR_GITHUB)))
+                        launch(Intent(Intent.ACTION_VIEW, Uri.parse(CREATOR_WEBSITE)))
                     },
                     onOpenSource = {
                         launch(Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_GITHUB)))
-                    },
-                    onImportCookies = {
-                        cookiePicker.launch(arrayOf("text/plain", "application/octet-stream"))
                     },
                 )
             }
@@ -169,7 +160,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private val SHARED_HTTPS = Regex("""https://\S+""")
-        private const val CREATOR_GITHUB = "https://github.com/yashasvm"
+        private const val CREATOR_WEBSITE = "https://yashasvm.pages.dev"
         private const val PROJECT_GITHUB = "https://github.com/YashasVM/HOLEN"
         const val EXTRA_SHARED_URL = "com.yashasvm.holen.extra.SHARED_URL"
     }

@@ -247,10 +247,6 @@ fun friendlyFailure(error: Throwable): String {
     val message = error.message.orEmpty()
     return when {
         message.contains("DRM", true) -> "This source is DRM-protected and cannot be downloaded."
-        message.contains("YouTube rejected the saved account session", true) ->
-            "YouTube rejected the saved session. Update the media engine, then re-import fresh cookies from an age-verified account."
-        message.contains("import fresh Netscape cookies", true) ->
-            "This video needs YouTube sign-in. Import fresh cookies.txt from an age-verified account in Settings, then retry."
         message.contains("login", true) ||
             message.contains("sign in", true) ||
             message.contains("age", true) -> "This source requires an account or age verification."
@@ -273,9 +269,12 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("denied", true) -> "Download folder access was revoked. Choose the folder again."
         message.contains("timed out", true) ||
             message.contains("timeout", true) -> "The network timed out. Retry to continue the partial download."
-        message.contains("initialize", true) ||
-            message.contains("python", true) ||
-            message.contains("engine", true) -> "The media engine could not start. Reset or update it in Settings."
+        message.contains("media engine startup failed", true) ||
+            message.contains("engine failed to initialize", true) ||
+            message.contains("could not initialize youtubedl", true) ||
+            message.contains("dlopen failed", true) ||
+            message.contains("libpython", true) ->
+            "The media engine could not start. Reset or update it in Settings."
         message.contains("network", true) ||
             error is java.io.IOException -> "The network transfer failed. Retry to continue the partial download."
         else -> message.lineSequence()

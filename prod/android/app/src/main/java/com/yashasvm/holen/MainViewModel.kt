@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -18,7 +19,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val outputStore = OutputStore(application)
     private val engine = YtDlpEngine.get(application)
     private val analyzer = SourceAnalyzer(engine)
-    private val cookieStore = CookieStore(application)
     private val preferences = application.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
         android.content.Context.MODE_PRIVATE,
@@ -55,7 +55,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val rightsAcknowledged = mutableRightsAcknowledged.asStateFlow()
 
     private val mutableOnboardingCompleted = MutableStateFlow(
-        preferences.getBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, false),
+        preferences.getBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, false) &&
+            preferences.getInt(HolenStore.PREF_ONBOARDING_VERSION, 0) >=
+            HolenStore.ONBOARDING_VERSION,
     )
     val onboardingCompleted = mutableOnboardingCompleted.asStateFlow()
 
@@ -65,12 +67,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableEngineMessage = MutableStateFlow<String?>(null)
     val engineMessage = mutableEngineMessage.asStateFlow()
 
-    private val mutableSessionConnected = MutableStateFlow(false)
-    val sessionConnected = mutableSessionConnected.asStateFlow()
-
-    private val mutableSessionMessage = MutableStateFlow<String?>(null)
-    val sessionMessage = mutableSessionMessage.asStateFlow()
-
     private val mutableQueueEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val queueEvents = mutableQueueEvents.asSharedFlow()
 
@@ -78,11 +74,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            val (folderGranted, sessionConnected) = withContext(Dispatchers.IO) {
-                outputStore.hasValidTreeGrant() to cookieStore.hasSession()
+            val folderGranted = withContext(Dispatchers.IO) {
+                // Session-file support was removed; clear any credential material left by older builds.
+                File(getApplication<Application>().noBackupFilesDir, "auth").deleteRecursively()
+                outputStore.hasValidTreeGrant()
             }
             mutableFolderGranted.value = folderGranted
-            mutableSessionConnected.value = sessionConnected
         }
     }
 
@@ -296,11 +293,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 mutableError.value = "Choose a download folder to continue."
                 return@launch
             }
-            preferences.edit { putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, true) }
+            preferences.edit {
+                putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, true)
+                putInt(HolenStore.PREF_ONBOARDING_VERSION, HolenStore.ONBOARDING_VERSION)
+            }
             mutableOnboardingCompleted.value = true
             mutableError.value = null
             if (mutableUrl.value.isNotBlank()) analyze()
         }
+    }
+
+    fun restartOnboarding() {
+        preferences.edit {
+            putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, false)
+            putInt(HolenStore.PREF_ONBOARDING_VERSION, 0)
+        }
+        mutableOnboardingCompleted.value = false
+        mutableError.value = null
     }
 
     fun refreshFolderGrant() = viewModelScope.launch {
@@ -346,7 +355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { engine.resetToBundled() }
                 .onSuccess {
                     mutableEngineVersion.value = it
-                    mutableEngineMessage.value = "Bundled engine restored."
+                    mutableEngineMessage.value = "Engine files cleared. Close and reopen HOLEN to rebuild them."
                 }
                 .onFailure { mutableEngineMessage.value = friendlyFailure(it) }
             mutableBusy.value = false
@@ -355,32 +364,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         engine.cancel("analysis")
-    }
-
-    fun importCookies(uri: android.net.Uri) {
-        if (mutableBusy.value) return
-        viewModelScope.launch {
-            mutableBusy.value = true
-            mutableSessionMessage.value = null
-            runCatching { cookieStore.import(uri) }
-                .onSuccess {
-                    mutableSessionConnected.value = true
-                    mutableSessionMessage.value = "Account session connected."
-                    mutableAnalysis.value = null
-                }
-                .onFailure {
-                    mutableSessionConnected.value = cookieStore.hasSession()
-                    mutableSessionMessage.value = friendlyFailure(it)
-                }
-            mutableBusy.value = false
-        }
-    }
-
-    fun removeCookies() {
-        cookieStore.remove()
-        mutableSessionConnected.value = false
-        mutableSessionMessage.value = "Account session removed."
-        mutableAnalysis.value = null
     }
 
     private fun SourceAnalysis.DirectFile.toJob(

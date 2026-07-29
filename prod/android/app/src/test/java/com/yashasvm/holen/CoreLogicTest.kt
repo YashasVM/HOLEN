@@ -187,57 +187,13 @@ class CoreLogicTest {
         assertTrue(friendlyFailure(IOException("network reset")).contains("Retry"))
         assertTrue(friendlyFailure(Exception("DRM protected")).contains("DRM"))
         assertTrue(friendlyFailure(Exception("login required")).contains("account"))
-        assertTrue(
-            friendlyFailure(
-                Exception("YouTube rejected the saved account session. Re-import cookies."),
-            ).contains("re-import fresh cookies"),
-        )
-        assertTrue(
-            friendlyFailure(
-                Exception("In Settings, import fresh Netscape cookies.txt from an age-verified account."),
-            ).contains("cookies.txt"),
-        )
         assertTrue(friendlyFailure(Exception("permission denied")).contains("folder"))
         assertTrue(friendlyFailure(Exception("engine failed to initialize")).contains("engine"))
-        assertTrue(friendlyFailure(IOException("Network response 404")).contains("HTTP 404"))
-    }
-
-    @Test
-    fun cookieImportAcceptsOnlyNetscapeRows() {
-        assertTrue(
-            CookieStore.isValidNetscapeCookieText(
-                """
-                # Netscape HTTP Cookie File
-                .example.com	TRUE	/	TRUE	2147483647	session	value
-                """.trimIndent(),
-            ),
-        )
-        assertTrue(
-            CookieStore.isValidNetscapeCookieText(
-                "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue",
-            ),
-        )
-        assertFalse(CookieStore.isValidNetscapeCookieText(""))
-        assertFalse(CookieStore.isValidNetscapeCookieText("session=value"))
-    }
-
-    @Test
-    fun youtubeCookieImportKeepsOnlyYoutubeRows() {
         assertEquals(
-            "# Netscape HTTP Cookie File\n#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue",
-            CookieStore.youtubeCookieTextOrNull(
-                listOf(
-                    "# Netscape HTTP Cookie File",
-                    ".example.com\tTRUE\t/\tTRUE\t2147483647\tsession\tvalue",
-                    "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tvalue",
-                ).joinToString("\n"),
-            ),
+            "extractor engine returned an unexpected response",
+            friendlyFailure(Exception("extractor engine returned an unexpected response")),
         )
-        assertNull(
-            CookieStore.youtubeCookieTextOrNull(
-                ".example.com\tTRUE\t/\tTRUE\t2147483647\tsession\tvalue",
-            ),
-        )
+        assertTrue(friendlyFailure(IOException("Network response 404")).contains("HTTP 404"))
     }
 
     @Test

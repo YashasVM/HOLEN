@@ -1,13 +1,24 @@
 package com.yashasvm.holen.ui
 
+import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -56,6 +67,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
@@ -65,6 +77,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,7 +97,6 @@ import kotlinx.coroutines.launch
 fun HolenScreen(
     viewModel: MainViewModel,
     onChooseFolder: () -> Unit,
-    onImportCookies: () -> Unit,
     onQueue: () -> Unit,
     onOpen: (DownloadJob) -> Unit,
     onShare: (DownloadJob) -> Unit,
@@ -101,7 +113,6 @@ fun HolenScreen(
             DownloadHome(
                 viewModel = viewModel,
                 onChooseFolder = onChooseFolder,
-                onImportCookies = onImportCookies,
                 onQueue = onQueue,
                 onOpen = onOpen,
                 onShare = onShare,
@@ -110,7 +121,6 @@ fun HolenScreen(
             OnboardingFlow(
                 viewModel = viewModel,
                 onChooseFolder = onChooseFolder,
-                onImportCookies = onImportCookies,
                 onOpenCreator = onOpenCreator,
                 onOpenSource = onOpenSource,
             )
@@ -123,7 +133,6 @@ fun HolenScreen(
 private fun DownloadHome(
     viewModel: MainViewModel,
     onChooseFolder: () -> Unit,
-    onImportCookies: () -> Unit,
     onQueue: () -> Unit,
     onOpen: (DownloadJob) -> Unit,
     onShare: (DownloadJob) -> Unit,
@@ -139,13 +148,20 @@ private fun DownloadHome(
     val rightsAcknowledged by viewModel.rightsAcknowledged.collectAsStateWithLifecycle()
     val engineVersion by viewModel.engineVersion.collectAsStateWithLifecycle()
     val engineMessage by viewModel.engineMessage.collectAsStateWithLifecycle()
-    val sessionConnected by viewModel.sessionConnected.collectAsStateWithLifecycle()
-    val sessionMessage by viewModel.sessionMessage.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var deleteCandidate by remember { mutableStateOf<DownloadJob?>(null) }
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
 
     val activeCount = jobs.count {
         it.status == JobStatus.QUEUED ||
@@ -153,15 +169,37 @@ private fun DownloadHome(
             it.status == JobStatus.FINALIZING
     }
     val finished = jobs.filter { it.status.isTerminal }
+    val idle = url.isBlank() &&
+        analysis == null &&
+        jobs.isEmpty() &&
+        !busy &&
+        error == null &&
+        folderGranted
 
-    LazyColumn(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(HolenBackground)
             .windowInsetsPadding(WindowInsets.safeDrawing),
-        contentPadding = PaddingValues(start = 16.dp, top = 20.dp, end = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        val idleTop = ((maxHeight - 520.dp) / 2).coerceAtLeast(20.dp)
+        val topPadding by animateDpAsState(
+            if (idle) idleTop else 20.dp,
+            tween(if (reducedMotion) 0 else 360, easing = FastOutSlowInEasing),
+            label = "Home hero position",
+        )
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics { testTag = if (idle) "home-idle" else "home-active" },
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = topPadding,
+                end = 16.dp,
+                bottom = 20.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         item("header") {
             Header(
                 activeCount = activeCount,
@@ -194,14 +232,15 @@ private fun DownloadHome(
                     value = url,
                     onValueChange = viewModel::setUrl,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Source URL") },
-                    placeholder = { Text("https://…") },
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = { Text("Source URL", style = MaterialTheme.typography.bodyMedium) },
+                    placeholder = { Text("https://…", style = MaterialTheme.typography.bodyLarge) },
                     singleLine = false,
                     minLines = 2,
                     maxLines = 4,
                     isError = error != null,
                     supportingText = error?.let { message ->
-                        { Text(message, color = HolenRed) }
+                        { Text(message, color = HolenRed, style = MaterialTheme.typography.bodySmall) }
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     shape = RectangleShape,
@@ -227,7 +266,12 @@ private fun DownloadHome(
                         background = HolenSurfaceTwo,
                         foreground = HolenInk,
                     )
-                    if (url.isNotEmpty()) {
+                    AnimatedVisibility(
+                        visible = url.isNotEmpty(),
+                        enter = fadeIn(tween(if (reducedMotion) 0 else 150)) +
+                            slideInVertically(tween(if (reducedMotion) 0 else 150)) { it / 4 },
+                        exit = fadeOut(tween(if (reducedMotion) 0 else 100)),
+                    ) {
                         HolenButton(
                             "Clear",
                             viewModel::clearUrl,
@@ -235,63 +279,77 @@ private fun DownloadHome(
                             foreground = HolenInk,
                         )
                     }
-                    HolenButton(
-                        label = if (busy) "Analyzing…" else "Analyze",
-                        onClick = viewModel::analyze,
-                        background = HolenBlue,
-                        enabled = url.isNotBlank() && !busy,
-                        loading = busy,
-                    )
+                    AnimatedContent(
+                        targetState = busy,
+                        transitionSpec = {
+                            fadeIn(tween(if (reducedMotion) 0 else 120)) togetherWith
+                                fadeOut(tween(if (reducedMotion) 0 else 100))
+                        },
+                        label = "Analyze state",
+                    ) { analyzing ->
+                        HolenButton(
+                            label = if (analyzing) "Analyzing…" else "Analyze",
+                            onClick = viewModel::analyze,
+                            background = HolenBlue,
+                            enabled = url.isNotBlank() && !analyzing,
+                            loading = analyzing,
+                        )
+                    }
                 }
             }
         }
 
         when (val preview = analysis) {
             is SourceAnalysis.DirectFile -> item("direct-preview") {
-                PreviewCard(
-                    tag = "DIRECT FILE",
-                    title = preview.title,
-                    thumbnailUrl = null,
-                    details = listOfNotNull(
-                        preview.mimeType,
-                        preview.sizeBytes?.let(::formatBytes),
-                        "Original format",
-                    ),
-                ) {
-                    RightsQueueHelper(rightsAcknowledged)
-                    HolenButton(
-                        "Queue original",
-                        onQueue,
-                        HolenGreen,
-                        enabled = !busy && folderGranted && rightsAcknowledged,
-                    )
+                MotionEntrance(reducedMotion, "direct-preview") {
+                    PreviewCard(
+                        tag = "DIRECT FILE",
+                        title = preview.title,
+                        thumbnailUrl = null,
+                        details = listOfNotNull(
+                            preview.mimeType,
+                            preview.sizeBytes?.let(::formatBytes),
+                            "Original format",
+                        ),
+                    ) {
+                        RightsQueueHelper(rightsAcknowledged)
+                        HolenButton(
+                            "Queue original",
+                            onQueue,
+                            HolenGreen,
+                            enabled = !busy && folderGranted && rightsAcknowledged,
+                        )
+                    }
                 }
             }
 
             is SourceAnalysis.Media -> item("media-preview") {
-                PreviewCard(
-                    tag = preview.uploader ?: "MEDIA",
-                    title = preview.title,
-                    thumbnailUrl = preview.thumbnailUrl,
-                    details = listOfNotNull(
-                        preview.durationSeconds?.let(::formatDuration),
-                        preview.estimatedSizes[format]?.let { "Est. ${formatBytes(it)}" },
-                    ),
-                ) {
-                    FormatPicker(format, viewModel::setFormat)
-                    RightsQueueHelper(rightsAcknowledged)
-                    HolenButton(
-                        "Add to queue",
-                        onQueue,
-                        HolenGreen,
-                        enabled = !busy && folderGranted && rightsAcknowledged,
-                    )
+                MotionEntrance(reducedMotion, "media-preview") {
+                    PreviewCard(
+                        tag = preview.uploader ?: "MEDIA",
+                        title = preview.title,
+                        thumbnailUrl = preview.thumbnailUrl,
+                        details = listOfNotNull(
+                            preview.durationSeconds?.let(::formatDuration),
+                            preview.estimatedSizes[format]?.let { "Est. ${formatBytes(it)}" },
+                        ),
+                    ) {
+                        FormatPicker(format, viewModel::setFormat)
+                        RightsQueueHelper(rightsAcknowledged)
+                        HolenButton(
+                            "Add to queue",
+                            onQueue,
+                            HolenGreen,
+                            enabled = !busy && folderGranted && rightsAcknowledged,
+                        )
+                    }
                 }
             }
 
             is SourceAnalysis.Playlist -> {
                 item("playlist-preview") {
-                    BauhausCard(background = HolenSurfaceTwo) {
+                    MotionEntrance(reducedMotion, "playlist-preview") {
+                        BauhausCard(background = HolenSurfaceTwo) {
                         SectionTag("PLAYLIST", HolenRed)
                         Text(
                             preview.title,
@@ -344,6 +402,7 @@ private fun DownloadHome(
                         }
                     }
                 }
+                }
                 items(preview.entries, key = { "playlist-${it.id}" }) { entry ->
                     val selected = entry.id in selectedEntries
                     Row(
@@ -370,8 +429,7 @@ private fun DownloadHome(
                         Column(Modifier.weight(1f)) {
                             Text(
                                 entry.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.titleMedium,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -391,7 +449,8 @@ private fun DownloadHome(
         }
 
         if (jobs.isNotEmpty()) item("queue-header") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            MotionEntrance(reducedMotion, "queue-header") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider(thickness = 4.dp, color = HolenInk)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -421,6 +480,7 @@ private fun DownloadHome(
                         Text("Clear finished", color = HolenMuted)
                     }
                 }
+                }
             }
         }
 
@@ -435,17 +495,21 @@ private fun DownloadHome(
             }
         } else {
             items(jobs, key = { it.id }) { job ->
-                JobCard(
-                    job = job,
-                    onCancel = { viewModel.cancel(job) },
-                    onRetry = { viewModel.retry(job) },
-                    onOpen = { onOpen(job) },
-                    onShare = { onShare(job) },
-                    onDelete = { deleteCandidate = job },
-                )
+                MotionEntrance(reducedMotion, "job-${job.id}", Modifier.animateItem()) {
+                    JobCard(
+                        job = job,
+                        reducedMotion = reducedMotion,
+                        onCancel = { viewModel.cancel(job) },
+                        onRetry = { viewModel.retry(job) },
+                        onOpen = { onOpen(job) },
+                        onShare = { onShare(job) },
+                        onDelete = { deleteCandidate = job },
+                    )
+                }
             }
         }
 
+        }
     }
 
     if (showSettings) {
@@ -454,12 +518,12 @@ private fun DownloadHome(
             bundledVersion = viewModel.bundledEngineVersion,
             activeVersion = engineVersion,
             message = engineMessage,
-            sessionConnected = sessionConnected,
-            sessionMessage = sessionMessage,
             busy = busy,
             onChooseFolder = onChooseFolder,
-            onImportCookies = onImportCookies,
-            onRemoveCookies = viewModel::removeCookies,
+            onRestartOnboarding = {
+                viewModel.restartOnboarding()
+                showSettings = false
+            },
             onUpdate = viewModel::updateEngine,
             onReset = viewModel::resetEngine,
             onDismiss = { showSettings = false },
@@ -490,6 +554,25 @@ private fun DownloadHome(
             },
         )
     }
+}
+
+@Composable
+private fun MotionEntrance(
+    reducedMotion: Boolean,
+    tag: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = true,
+        modifier = modifier.semantics { testTag = tag },
+        enter = fadeIn(tween(if (reducedMotion) 0 else 280)) +
+            slideInVertically(tween(if (reducedMotion) 0 else 320)) { it.coerceAtMost(24) } +
+            scaleIn(
+                initialScale = .98f,
+                animationSpec = tween(if (reducedMotion) 0 else 320),
+            ),
+    ) { content() }
 }
 
 @Composable
@@ -608,12 +691,18 @@ internal fun FormatPicker(
 @Composable
 private fun JobCard(
     job: DownloadJob,
+    reducedMotion: Boolean,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val animatedProgress by animateFloatAsState(
+        job.progress.toFloat(),
+        tween(if (reducedMotion) 0 else 220),
+        label = "Job progress",
+    )
     BauhausCard(
         background = HolenSurface,
         borderColor = HolenInk,
@@ -651,11 +740,19 @@ private fun JobCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    StatusBadge(job.status)
+                    AnimatedContent(
+                        targetState = job.status,
+                        transitionSpec = {
+                            fadeIn(tween(if (reducedMotion) 0 else 140)) togetherWith
+                                fadeOut(tween(if (reducedMotion) 0 else 100))
+                        },
+                        label = "Job status",
+                    ) { status ->
+                        StatusBadge(status)
+                    }
                     Text(
                         job.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.titleMedium,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -663,7 +760,7 @@ private fun JobCard(
                 }
                 if (job.status in ACTIVE_STATUSES) {
                     LinearProgressIndicator(
-                        progress = { job.progress / 100f },
+                        progress = { animatedProgress / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(10.dp)
@@ -734,12 +831,9 @@ private fun SettingsDialog(
     bundledVersion: String,
     activeVersion: String,
     message: String?,
-    sessionConnected: Boolean,
-    sessionMessage: String?,
     busy: Boolean,
     onChooseFolder: () -> Unit,
-    onImportCookies: () -> Unit,
-    onRemoveCookies: () -> Unit,
+    onRestartOnboarding: () -> Unit,
     onUpdate: () -> Unit,
     onReset: () -> Unit,
     onDismiss: () -> Unit,
@@ -764,38 +858,12 @@ private fun SettingsDialog(
                     background = HolenSurfaceTwo,
                     foreground = HolenInk,
                 )
-                HorizontalDivider(thickness = 2.dp, color = HolenInk)
-                Text("ACCOUNT SESSION", style = MaterialTheme.typography.titleMedium)
-                SectionTag(
-                    if (sessionConnected) "CONNECTED" else "NOT CONNECTED",
-                    if (sessionConnected) HolenGreen else HolenSurfaceTwo,
-                )
-                Text(
-                    "Import a Netscape cookies.txt export from a browser where you are signed in. It stays private on this device and helps with age- or account-restricted sources.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = HolenMuted,
-                )
                 HolenButton(
-                    if (sessionConnected) "Replace account session" else "Connect account session",
-                    onImportCookies,
-                    HolenBlue,
+                    "View welcome & setup",
+                    onRestartOnboarding,
+                    background = HolenYellow,
+                    foreground = HolenInk,
                 )
-                if (sessionConnected) {
-                    TextButton(onClick = onRemoveCookies) {
-                        Text("Remove account session", color = HolenRed)
-                    }
-                }
-                sessionMessage?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (it.contains("failed", true) || it.contains("invalid", true)) {
-                            HolenRed
-                        } else {
-                            HolenGreen
-                        },
-                    )
-                }
                 HorizontalDivider(thickness = 2.dp, color = HolenInk)
                 Text("MEDIA ENGINE", style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -885,10 +953,34 @@ internal fun HolenButton(
     enabled: Boolean = true,
     loading: Boolean = false,
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val context = LocalContext.current
+    val reducedMotion = remember {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
+    val pressScale by animateFloatAsState(
+        if (pressed && !reducedMotion) .97f else 1f,
+        tween(if (reducedMotion) 0 else 120),
+        label = "Button press",
+    )
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.heightIn(min = 48.dp),
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+                alpha = if (pressed && !reducedMotion) .88f else 1f
+            },
+        interactionSource = interactionSource,
         shape = RectangleShape,
         border = androidx.compose.foundation.BorderStroke(2.dp, HolenInk),
         colors = ButtonDefaults.buttonColors(

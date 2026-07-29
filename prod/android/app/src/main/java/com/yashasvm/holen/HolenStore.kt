@@ -423,6 +423,8 @@ class HolenStore private constructor(context: Context) :
         const val PREF_ENGINE_VERSION = "engine_version"
         const val PREF_RIGHTS_ACKNOWLEDGED = "rights_acknowledged"
         const val PREF_ONBOARDING_COMPLETED = "onboarding_completed"
+        const val PREF_ONBOARDING_VERSION = "onboarding_version"
+        const val ONBOARDING_VERSION = 5
 
         private val COLUMNS = arrayOf(
             "id",

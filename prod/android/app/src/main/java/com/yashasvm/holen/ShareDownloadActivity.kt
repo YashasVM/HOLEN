@@ -12,13 +12,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.yashasvm.holen.ui.HolenTheme
 import com.yashasvm.holen.ui.ShareDownloadScreen
 
 class ShareDownloadActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
-    private var sharedUrl: String? = null
+    private var sharedUrl by mutableStateOf<String?>(null)
     private var queueAfterPermission = false
 
     private val notificationPermission = registerForActivityResult(
