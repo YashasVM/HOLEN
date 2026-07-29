@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -13,10 +15,14 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.ui.graphics.toArgb
 import com.yashasvm.holen.ui.HolenBackground
 import com.yashasvm.holen.ui.HolenScreen
 import com.yashasvm.holen.ui.HolenTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -29,17 +35,18 @@ class MainActivity : ComponentActivity() {
         val data = result.data
         val uri = data?.data
         if (result.resultCode == RESULT_OK && uri != null) {
-            val persisted = runCatching {
-                outputStore.persistTree(
-                    uri,
-                    data.flags,
-                )
-                check(outputStore.hasValidTreeGrant())
-            }
-            if (persisted.isSuccess) {
-                viewModel.folderSelectionSucceeded()
-            } else {
-                viewModel.folderSelectionFailed()
+            lifecycleScope.launch {
+                val persisted = withContext(Dispatchers.IO) {
+                    runCatching {
+                        outputStore.persistTree(uri, data.flags)
+                        check(outputStore.hasValidTreeGrant())
+                    }
+                }
+                if (persisted.isSuccess) {
+                    viewModel.folderSelectionSucceeded()
+                } else {
+                    viewModel.folderSelectionFailed()
+                }
             }
         }
     }
@@ -51,6 +58,12 @@ class MainActivity : ComponentActivity() {
             queueAfterPermission = false
             viewModel.queue()
         }
+    }
+
+    private val cookiePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let(viewModel::importCookies)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -66,7 +79,16 @@ class MainActivity : ComponentActivity() {
                 HolenBackground.toArgb(),
             ),
         )
-        populateFromIntent(intent)
+        if (savedInstanceState == null) populateFromIntent(intent)
+        lifecycleScope.launch {
+            viewModel.queueEvents.collect {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Download added to queue. Starting now.",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
         setContent {
             HolenTheme {
                 HolenScreen(
@@ -75,9 +97,19 @@ class MainActivity : ComponentActivity() {
                     onQueue = ::queueWithNotificationPermission,
                     onOpen = { launch(outputStore.openIntent(it)) },
                     onShare = { launch(outputStore.shareIntent(it)) },
+                    onOpenCreator = {
+                        launch(Intent(Intent.ACTION_VIEW, Uri.parse(CREATOR_GITHUB)))
+                    },
+                    onOpenSource = {
+                        launch(Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_GITHUB)))
+                    },
+                    onImportCookies = {
+                        cookiePicker.launch(arrayOf("text/plain", "application/octet-stream"))
+                    },
                 )
             }
         }
+        viewModel.recoverQueue()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -117,13 +149,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun populateFromIntent(intent: Intent?) {
-        val candidate = when (intent?.action) {
+        val candidate = intent?.getStringExtra(EXTRA_SHARED_URL) ?: when (intent?.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
                 ?.let { SHARED_HTTPS.find(it)?.value ?: it }
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         }
-        if (!candidate.isNullOrBlank()) viewModel.setUrl(candidate)
+        if (!candidate.isNullOrBlank()) viewModel.receiveIncomingUrl(candidate)
     }
 
     private fun launch(intent: Intent?) {
@@ -137,5 +169,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private val SHARED_HTTPS = Regex("""https://\S+""")
+        private const val CREATOR_GITHUB = "https://github.com/yashasvm"
+        private const val PROJECT_GITHUB = "https://github.com/YashasVM/HOLEN"
+        const val EXTRA_SHARED_URL = "com.yashasvm.holen.extra.SHARED_URL"
     }
 }

@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -28,7 +29,7 @@ class OutputStore(private val context: Context) {
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
         context.contentResolver.takePersistableUriPermission(uri, grantFlags)
-        preferences.edit().putString(HolenStore.PREF_DOWNLOAD_TREE, uri.toString()).apply()
+        preferences.edit { putString(HolenStore.PREF_DOWNLOAD_TREE, uri.toString()) }
     }
 
     fun hasValidTreeGrant(): Boolean {
@@ -66,7 +67,7 @@ class OutputStore(private val context: Context) {
         try {
             val copied = resolver.openOutputStream(document, "w")?.use { output ->
                 FileInputStream(staged.file).use { input ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    val buffer = ByteArray(COPY_BUFFER_SIZE)
                     var count = 0L
                     while (true) {
                         coroutineContext.ensureActive()
@@ -163,6 +164,7 @@ class OutputStore(private val context: Context) {
     )
 
     companion object {
+        private const val COPY_BUFFER_SIZE = 64 * 1024
         private const val ORPHAN_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000
 
         fun destinationName(requested: String, existing: Set<String>): String {

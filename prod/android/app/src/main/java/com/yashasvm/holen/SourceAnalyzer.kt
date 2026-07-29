@@ -3,13 +3,21 @@ package com.yashasvm.holen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
-import java.net.HttpURLConnection
 import java.net.URI
+import okhttp3.Request
 
 class SourceAnalyzer(private val engine: YtDlpEngine) {
     suspend fun analyze(rawUrl: String): SourceAnalysis = withContext(Dispatchers.IO) {
-        val url = validateHttpsUrl(rawUrl)
-        val probe = probe(url)
+        // Validate before handing an extractor-first URL to the media engine too.
+        // The direct probe below additionally pins its actual network sockets.
+        val url = validatePublicHttpsUrl(rawUrl)
+        if (isExtractorFirstHost(URI(url).host)) {
+            return@withContext engine.analyze(url)
+        }
+        val probe = runCatching { probe(url) }.getOrElse { error ->
+            if (engine.hasAccountSession()) return@withContext engine.analyze(url)
+            throw error
+        }
         if (isDirectFile(probe.contentDisposition, probe.mimeType)) {
             val name = sanitizeFileName(
                 DirectDownloader.fileNameFromDisposition(probe.contentDisposition)
@@ -43,37 +51,37 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
     }
 
     private fun request(rawUrl: String, method: String): ProbeResult {
-        var url = rawUrl
+        var endpoint = resolvePublicHttpsEndpoint(rawUrl)
         repeat(MAX_REDIRECTS + 1) { redirect ->
-            val connection = URI(url).toURL().openConnection() as HttpURLConnection
-            connection.instanceFollowRedirects = false
-            connection.requestMethod = method
-            connection.connectTimeout = TIMEOUT_MS
-            connection.readTimeout = TIMEOUT_MS
-            connection.setRequestProperty("User-Agent", USER_AGENT)
-            if (method == "GET") connection.setRequestProperty("Range", "bytes=0-0")
-            val status = connection.responseCode
+            val request = Request.Builder().url(endpoint.url).method(method, null)
+                .header("User-Agent", USER_AGENT)
+                .apply { if (method == "GET") header("Range", "bytes=0-0") }
+                .build()
+            val response = pinnedPublicHttpsClient(endpoint, TIMEOUT_MS.toLong()).newCall(request).execute()
+            val status = response.code
             if (status !in REDIRECT_CODES) {
                 return ProbeResult(
-                    finalUrl = url,
+                    finalUrl = endpoint.url,
                     status = status,
-                    mimeType = connection.contentType?.substringBefore(';')?.trim()?.lowercase(),
-                    contentDisposition = connection.getHeaderField("Content-Disposition"),
-                    contentLength = connection.getHeaderField("Content-Range")
+                    mimeType = response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase(),
+                    contentDisposition = response.header("Content-Disposition"),
+                    contentLength = response.header("Content-Range")
                         ?.substringAfterLast('/', "")
                         ?.toLongOrNull()
-                        ?: connection.contentLengthLong.takeIf { it >= 0 },
-                ).also { connection.disconnect() }
+                        ?: response.body?.contentLength()?.takeIf { it >= 0 },
+                ).also { response.close() }
             }
             if (redirect == MAX_REDIRECTS) {
-                connection.disconnect()
+                response.close()
                 throw IOException("Too many redirects.")
             }
-            val location = connection.getHeaderField("Location")
-                ?: throw IOException("Redirect response had no destination.")
-            val next = URI(url).resolve(location).toString()
-            connection.disconnect()
-            url = validateHttpsUrl(next)
+            val location = response.header("Location") ?: run {
+                response.close()
+                throw IOException("Redirect response had no destination.")
+            }
+            val next = URI(endpoint.url).resolve(location).toString()
+            response.close()
+            endpoint = resolvePublicHttpsEndpoint(next)
         }
         error("Unreachable")
     }
@@ -88,9 +96,16 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
 
     companion object {
         private const val MAX_REDIRECTS = 5
-        private const val TIMEOUT_MS = 20_000
+        private const val TIMEOUT_MS = 3_000
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+
+        fun isExtractorFirstHost(host: String?): Boolean {
+            val normalized = host?.trimEnd('.')?.lowercase() ?: return false
+            return normalized == "youtu.be" ||
+                normalized == "youtube.com" ||
+                normalized.endsWith(".youtube.com")
+        }
 
         fun isDirectFile(contentDisposition: String?, mimeType: String?): Boolean {
             if (contentDisposition?.contains("attachment", ignoreCase = true) == true) return true

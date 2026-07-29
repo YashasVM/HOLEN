@@ -1,5 +1,10 @@
 <resources>
     <string name="app_name">Holen</string>
+    <string name="share_target_label">Download with Holen</string>
     <string name="notification_channel_name">Downloads</string>
     <string name="notification_channel_description">Active Holen downloads</string>
+    <string name="notification_completion_channel_name">Completed downloads</string>
+    <string name="notification_completion_channel_description">Alerts when a Holen download is ready</string>
+    <string name="download_complete_title">Download complete</string>
+    <string name="download_complete_detail">%1$s is ready. Tap to open it.</string>
 </resources>

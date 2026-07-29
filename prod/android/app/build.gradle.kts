@@ -12,8 +12,8 @@ android {
         applicationId = "com.yashasvm.holen"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.gradleProperty("holenVersionCode").orElse("1").get().toInt()
-        versionName = providers.gradleProperty("holenVersionName").orElse("0.1.0").get()
+        versionCode = providers.gradleProperty("holenVersionCode").orElse("2").get().toInt()
+        versionName = providers.gradleProperty("holenVersionName").orElse("0.2.0").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -30,7 +30,7 @@ android {
         }
         create("universal") {
             dimension = "abi"
-            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
         }
         create("emulator") {
             dimension = "abi"
@@ -90,7 +90,7 @@ androidComponents {
     beforeVariants { variant ->
         val abi = variant.productFlavors.find { it.first == "abi" }?.second
         variant.enable = when (variant.buildType) {
-            "debug" -> abi == "emulator"
+            "debug" -> abi == "emulator" || abi == "arm64" || abi == "universal"
             "release" -> abi != "emulator"
             else -> true
         }
@@ -100,6 +100,7 @@ androidComponents {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.concurrent.futures)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -125,5 +126,6 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.espresso.core)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.test.junit4)
 }
