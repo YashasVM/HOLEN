@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -52,6 +53,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -82,6 +84,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -102,32 +105,57 @@ fun HolenScreen(
     onQueue: () -> Unit,
     onOpen: (DownloadJob) -> Unit,
     onShare: (DownloadJob) -> Unit,
-    onOpenCreator: () -> Unit,
     onOpenSource: () -> Unit,
 ) {
     val onboardingCompleted by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
-    AnimatedContent(
-        targetState = onboardingCompleted,
-        transitionSpec = { fadeIn() togetherWith fadeOut() },
-        label = "Holen app destination",
-    ) { completed ->
-        if (completed) {
-            DownloadHome(
-                viewModel = viewModel,
-                onChooseFolder = onChooseFolder,
-                onQueue = onQueue,
-                onOpen = onOpen,
-                onShare = onShare,
-            )
-        } else {
-            OnboardingFlow(
-                viewModel = viewModel,
-                onChooseFolder = onChooseFolder,
-                onOpenCreator = onOpenCreator,
-                onOpenSource = onOpenSource,
-            )
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = HolenBackground,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        bottomBar = { CreatorCredit() },
+    ) { contentPadding ->
+        AnimatedContent(
+            targetState = onboardingCompleted,
+            modifier = Modifier.fillMaxSize().padding(contentPadding),
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            label = "Holen app destination",
+        ) { completed ->
+            if (completed) {
+                DownloadHome(
+                    viewModel = viewModel,
+                    onChooseFolder = onChooseFolder,
+                    onQueue = onQueue,
+                    onOpen = onOpen,
+                    onShare = onShare,
+                )
+            } else {
+                OnboardingFlow(
+                    viewModel = viewModel,
+                    onChooseFolder = onChooseFolder,
+                    onOpenSource = onOpenSource,
+                )
+            }
         }
     }
+}
+
+@Composable
+internal fun CreatorCredit(modifier: Modifier = Modifier) {
+    Text(
+        "Made by @yashas.vm",
+        modifier = modifier
+            .fillMaxWidth()
+            .background(HolenBackground)
+            .navigationBarsPadding()
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .semantics {
+                testTag = "persistent-creator-credit"
+                contentDescription = "Made by at yashas dot vm."
+            },
+        color = HolenBlue,
+        style = MaterialTheme.typography.labelLarge,
+        textAlign = TextAlign.Center,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

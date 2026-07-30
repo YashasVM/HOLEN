@@ -149,12 +149,12 @@ private val tutorialFrames = listOf(
 internal fun OnboardingFlow(
     viewModel: MainViewModel,
     onChooseFolder: () -> Unit,
-    onOpenCreator: () -> Unit,
     onOpenSource: () -> Unit,
 ) {
     val folderGranted by viewModel.folderGranted.collectAsStateWithLifecycle()
     var stageName by rememberSaveable { mutableStateOf(OnboardingStage.Welcome.name) }
-    val stage = OnboardingStage.valueOf(stageName)
+    val stage = OnboardingStage.entries.firstOrNull { it.name == stageName }
+        ?: OnboardingStage.Welcome
     val context = LocalContext.current
     val reducedMotion = remember {
         runCatching {
@@ -204,10 +204,9 @@ internal fun OnboardingFlow(
         label = "Onboarding stage",
     ) { current ->
         when (current) {
-            OnboardingStage.Welcome -> WelcomeStage(
-                reducedMotion = reducedMotion,
-                onOpenCreator = onOpenCreator,
-            ) { goTo(OnboardingStage.About) }
+            OnboardingStage.Welcome -> WelcomeStage(reducedMotion) {
+                goTo(OnboardingStage.About)
+            }
             OnboardingStage.About -> AboutStage(reducedMotion, onOpenSource) {
                 goTo(OnboardingStage.Tutorial)
             }
@@ -231,11 +230,9 @@ internal fun OnboardingFlow(
 @Composable
 private fun WelcomeStage(
     reducedMotion: Boolean,
-    onOpenCreator: () -> Unit,
     onContinue: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(reducedMotion) }
-    var showCreator by remember { mutableStateOf(reducedMotion) }
     val blur by animateDpAsState(
         if (focused) 0.dp else 14.dp,
         tween(if (reducedMotion) 0 else 460, easing = FastOutSlowInEasing),
@@ -243,8 +240,6 @@ private fun WelcomeStage(
     )
     LaunchedEffect(Unit) {
         focused = true
-        if (!reducedMotion) delay(620)
-        showCreator = true
         if (!reducedMotion) delay(2_600)
         onContinue()
     }
@@ -272,31 +267,6 @@ private fun WelcomeStage(
             style = MaterialTheme.typography.displaySmall,
             textAlign = TextAlign.Center,
         )
-        AnimatedVisibility(
-            visible = showCreator,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 28.dp),
-            enter = pillEnter(reducedMotion),
-        ) {
-            Text(
-                "Made by @yashas.vm",
-                modifier = Modifier
-                    .clip(RoundedCornerShape(18.dp))
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = "Open YashasVM on GitHub",
-                        onClick = onOpenCreator,
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .semantics {
-                        testTag = "welcome-creator-link"
-                        contentDescription = "Made by at yashas dot vm. Open YashasVM on GitHub."
-                    },
-                color = HolenBlue,
-                style = MaterialTheme.typography.labelLarge,
-            )
-        }
     }
 }
 
