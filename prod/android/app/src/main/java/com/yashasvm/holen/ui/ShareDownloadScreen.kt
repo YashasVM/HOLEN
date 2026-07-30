@@ -56,64 +56,70 @@ fun ShareDownloadScreen(
             .fillMaxWidth()
             .background(HolenBackground)
             .border(3.dp, HolenInk)
-            .heightIn(max = 640.dp)
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .heightIn(max = 640.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(
-                "DOWNLOAD WITH HOLEN",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.semantics { heading() },
-            )
-            HolenButton("Close", onDismiss, HolenSurface, foreground = HolenInk)
-        }
-
-        when {
-            !hasValidUrl -> MessageState(
-                "No HTTPS link found",
-                "Share a public media or file link with Holen.",
-            )
-            !setupComplete || !folderGranted -> {
-                MessageState(
-                    "Finish setup first",
-                    "Choose a download folder and accept the responsible-download agreement.",
-                )
-                PrimaryButton("Open Holen", onOpenHolen)
-            }
-            busy && analysis == null -> LoadingState(sharedUrl)
-            error != null -> {
-                MessageState("This link needs attention", error.orEmpty())
-                PrimaryButton("Open Holen", onOpenHolen)
-            }
-            analysis is SourceAnalysis.DirectFile -> {
-                val item = analysis as SourceAnalysis.DirectFile
-                SharedTitle(item.title, "Original file")
-                PrimaryButton("Download original", onDownload, enabled = !busy)
-            }
-            analysis is SourceAnalysis.Media -> {
-                val item = analysis as SourceAnalysis.Media
-                SharedTitle(item.title, item.uploader ?: "Media")
-                FormatPicker(format, viewModel::setFormat)
-                PrimaryButton("Download", onDownload, enabled = !busy)
-            }
-            analysis is SourceAnalysis.Playlist -> {
-                val item = analysis as SourceAnalysis.Playlist
-                SharedTitle(item.title, "Playlist")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    "Choose playlist items in the full app.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = HolenMuted,
+                    "DOWNLOAD WITH HOLEN",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { heading() },
                 )
-                PrimaryButton("Open Holen", onOpenHolen)
+                HolenButton("Close", onDismiss, HolenSurface, foreground = HolenInk)
             }
-            else -> LoadingState(sharedUrl)
+
+            when {
+                !hasValidUrl -> MessageState(
+                    "No HTTPS link found",
+                    "Share a public media or file link with Holen.",
+                )
+                !setupComplete || !folderGranted -> {
+                    MessageState(
+                        "Finish setup first",
+                        "Choose a download folder and accept the responsible-download agreement.",
+                    )
+                    PrimaryButton("Open Holen", onOpenHolen)
+                }
+                busy && analysis == null -> LoadingState(sharedUrl)
+                error != null -> {
+                    MessageState("This link needs attention", error.orEmpty())
+                    PrimaryButton("Open Holen", onOpenHolen)
+                }
+                analysis is SourceAnalysis.DirectFile -> {
+                    val item = analysis as SourceAnalysis.DirectFile
+                    SharedTitle(item.title, "Original file")
+                    PrimaryButton("Download original", onDownload, enabled = !busy)
+                }
+                analysis is SourceAnalysis.Media -> {
+                    val item = analysis as SourceAnalysis.Media
+                    SharedTitle(item.title, item.uploader ?: "Media")
+                    FormatPicker(format, viewModel::setFormat)
+                    PrimaryButton("Download", onDownload, enabled = !busy)
+                }
+                analysis is SourceAnalysis.Playlist -> {
+                    val item = analysis as SourceAnalysis.Playlist
+                    SharedTitle(item.title, "Playlist")
+                    Text(
+                        "Choose playlist items in the full app.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = HolenMuted,
+                    )
+                    PrimaryButton("Open Holen", onOpenHolen)
+                }
+                else -> LoadingState(sharedUrl)
+            }
         }
+        CreatorCredit()
     }
 }
 

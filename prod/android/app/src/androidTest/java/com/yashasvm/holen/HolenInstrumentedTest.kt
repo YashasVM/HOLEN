@@ -2,6 +2,7 @@ package com.yashasvm.holen
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -49,8 +50,11 @@ class HolenInstrumentedTest {
     @Test
     fun firstLaunchRunsCinematicOnboardingInOrder() {
         composeRule.onNodeWithText("Welcome to\nHOLEN.").assertIsDisplayed()
+        composeRule.onAllNodesWithText("Made by @yashas.vm").assertCountEquals(1)
+        composeRule.onNodeWithText("Made by @yashas.vm").assertIsDisplayed()
         composeRule.onNodeWithText("Welcome to\nHOLEN.").performClick()
         composeRule.onNodeWithTag("onboarding-about").assertIsDisplayed()
+        composeRule.onNodeWithTag("persistent-creator-credit").assertIsDisplayed()
         composeRule.onNodeWithText(
             "Download anything with HOLEN. Free.",
         ).assertIsDisplayed()
