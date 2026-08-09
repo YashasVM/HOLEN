@@ -245,12 +245,20 @@ fun JobStatus.canTransitionTo(next: JobStatus): Boolean = when (this) {
 
 fun friendlyFailure(error: Throwable): String {
     val message = error.message.orEmpty()
+    val normalized = message.lowercase()
     return when {
-        message.contains("DRM", true) -> "This source is DRM-protected and cannot be downloaded."
-        message.contains("login", true) ||
-            message.contains("sign in", true) ||
-            message.contains("age", true) -> "This source requires an account or age verification."
-        message.contains("unsupported", true) -> "This URL is not supported by the current engine."
+        normalized.contains("drm") -> "This source is DRM-protected and cannot be downloaded."
+        normalized.contains("confirm you're not a bot") ||
+            normalized.contains("confirm you’re not a bot") ||
+            normalized.contains("verify you are human") ||
+            normalized.contains("unusual traffic") ||
+            normalized.contains("http error 429") ->
+            "The source asked for a bot check. Wait a little, then retry; valid cookies may help for content you can access."
+        isAgeRestrictedFailure(normalized) ->
+            "This video needs age verification. Use fresh cookies from an account permitted to watch it, then retry."
+        isLoginRequiredFailure(normalized) ->
+            "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry."
+        normalized.contains("unsupported") -> "This URL is not supported by the current engine."
         message.startsWith("Network response ", true) -> {
             val status = message.substringAfter("Network response ").takeWhile(Char::isDigit)
             if (status.isNotBlank()) {
@@ -285,6 +293,26 @@ fun friendlyFailure(error: Throwable): String {
     }
 }
 
+private fun isAgeRestrictedFailure(message: String): Boolean = listOf(
+    "age-restricted",
+    "age restricted",
+    "age verification",
+    "verify your age",
+    "confirm your age",
+    "age-confirmation",
+).any(message::contains)
+
+private fun isLoginRequiredFailure(message: String): Boolean = listOf(
+    "login required",
+    "sign in required",
+    "sign in to confirm",
+    "please sign in",
+    "authentication required",
+    "members-only",
+    "members only",
+    "this video is private",
+).any(message::contains)
+
 fun sanitizeFileName(value: String, fallback: String = "download"): String {
     val clean = value
         .substringAfterLast('/')
@@ -297,23 +325,114 @@ fun sanitizeFileName(value: String, fallback: String = "download"): String {
 }
 
 fun parseTransferLine(line: String): TransferProgress? {
-    val percent = Regex("""(\d{1,3}(?:\.\d+)?)%""").find(line)
+    parseMachineTransferLine(line)?.let { return it }
+    // yt-dlp's human-readable progress text is deliberately parsed here instead of
+    // relying only on the Android wrapper.  The wrapper's built-in expression is
+    // stricter than current yt-dlp output (for example, it misses "of ~ 12MiB").
+    val percent = Regex("""(\d{1,3}(?:\.\d+)?)\s*%""").find(line)
         ?.groupValues?.get(1)?.toFloatOrNull()?.toInt()?.coerceIn(0, 100)
         ?: return null
-    val total = Regex("""of\s+~?([\d.]+)([KMG]?i?B)""", RegexOption.IGNORE_CASE)
+    val total = Regex("""\bof\s+(?:~\s*)?([\d.,]+)\s*([KMGT]?i?B)""", RegexOption.IGNORE_CASE)
         .find(line)?.let { parseByteAmount(it.groupValues[1], it.groupValues[2]) }
     val downloaded = total?.let { it * percent / 100L }
-    val speed = Regex("""at\s+([\d.]+)([KMG]?i?B)/s""", RegexOption.IGNORE_CASE)
+    val speed = Regex("""\bat\s+([\d.,]+)\s*([KMGT]?i?B)/s""", RegexOption.IGNORE_CASE)
         .find(line)?.let { parseByteAmount(it.groupValues[1], it.groupValues[2]) }
-    val eta = Regex("""ETA\s+(\d+):(\d+)(?::(\d+))?""", RegexOption.IGNORE_CASE)
-        .find(line)?.groupValues?.drop(1)?.let { parts ->
-            if (parts[2].isNotEmpty()) {
-                parts[0].toLong() * 3600 + parts[1].toLong() * 60 + parts[2].toLong()
-            } else {
-                parts[0].toLong() * 60 + parts[1].toLong()
-            }
+    val eta = Regex("""\bETA\s+(?:(\d+):)?(\d{1,2}):(\d{2})""", RegexOption.IGNORE_CASE)
+        .find(line)?.let { match ->
+            val hours = match.groupValues[1].toLongOrNull() ?: 0L
+            val minutes = match.groupValues[2].toLongOrNull() ?: 0L
+            val seconds = match.groupValues[3].toLongOrNull() ?: 0L
+            hours * 3600 + minutes * 60 + seconds
         }
     return TransferProgress(percent, downloaded, total, speed, eta)
+}
+
+/**
+ * Parses HOLEN's explicit yt-dlp progress template.  Unlike yt-dlp's human
+ * output this format is stable across locale, spacing, and total-size variants.
+ * Values unavailable for a particular extractor are emitted as `NA`.
+ */
+fun parseMachineTransferLine(line: String): TransferProgress? {
+    val fields = line.trim()
+        .takeIf { it.startsWith(PROGRESS_MARKER) }
+        ?.removePrefix(PROGRESS_MARKER)
+        ?.trim()
+        ?.split('|')
+        ?: return null
+    if (fields.size != 6) return null
+
+    val percent = fields[0].trim().removeSuffix("%").toFloatOrNull()
+        ?.toInt()?.coerceIn(0, 100)
+        ?: return null
+    val downloaded = fields[1].progressLong()
+    val exactTotal = fields[2].progressLong()
+    val estimatedTotal = fields[3].progressLong()
+    return TransferProgress(
+        percent = percent,
+        bytesDownloaded = downloaded,
+        totalBytes = exactTotal ?: estimatedTotal,
+        speedBytesPerSecond = fields[4].progressLong(),
+        etaSeconds = fields[5].progressLong(),
+    )
+}
+
+private fun String.progressLong(): Long? = trim()
+    .takeUnless { it.isBlank() || it.equals("NA", ignoreCase = true) }
+    ?.toLongOrNull()
+
+/** The exact token emitted by [YtDlpEngine] via `--progress-template`. */
+const val PROGRESS_MARKER = "HOLEN_PROGRESS"
+
+/**
+ * Combines the library callback with yt-dlp's text progress.  A wrapper callback can
+ * report -1 while a download is active, or retain an old value for unrelated output;
+ * never turn either case into a visible 0% regression.
+ */
+fun transferProgressFromCallback(
+    line: String,
+    wrapperPercent: Float,
+    wrapperEta: Long,
+    previous: TransferProgress?,
+): TransferProgress? {
+    val parsed = parseTransferLine(line)
+    val wrapperValue = wrapperPercent
+        .takeIf { it.isFinite() && it in 0f..100f }
+        ?.toInt()
+    val rawPercent = parsed?.percent ?: wrapperValue ?: previous?.percent ?: return null
+    val percent = maxOf(previous?.percent ?: 0, rawPercent).coerceIn(0, 100)
+    val total = parsed?.totalBytes ?: previous?.totalBytes
+    val downloaded = parsed?.bytesDownloaded
+        ?: total?.let { it * percent / 100L }
+        ?: previous?.bytesDownloaded
+    val eta = parsed?.etaSeconds
+        ?: wrapperEta.takeIf { it >= 0 }
+        ?: previous?.etaSeconds
+    return TransferProgress(
+        percent = percent,
+        bytesDownloaded = downloaded,
+        totalBytes = total,
+        speedBytesPerSecond = parsed?.speedBytesPerSecond ?: previous?.speedBytesPerSecond,
+        etaSeconds = eta,
+    )
+}
+
+/**
+ * Preserves live state when independent progress sources race each other.  A
+ * staging-file sampler can provide real transferred bytes while yt-dlp's
+ * callback supplies the authoritative total, speed, and ETA a moment later.
+ */
+fun mergeTransferProgress(
+    previous: TransferProgress?,
+    candidate: TransferProgress,
+): TransferProgress {
+    if (previous == null) return candidate
+    return TransferProgress(
+        percent = maxOf(previous.percent, candidate.percent).coerceIn(0, 100),
+        bytesDownloaded = listOfNotNull(previous.bytesDownloaded, candidate.bytesDownloaded).maxOrNull(),
+        totalBytes = candidate.totalBytes ?: previous.totalBytes,
+        speedBytesPerSecond = candidate.speedBytesPerSecond ?: previous.speedBytesPerSecond,
+        etaSeconds = candidate.etaSeconds ?: previous.etaSeconds,
+    )
 }
 
 private fun parseByteAmount(number: String, unit: String): Long {
@@ -324,7 +443,9 @@ private fun parseByteAmount(number: String, unit: String): Long {
         "MIB" -> 1_048_576L
         "GB" -> 1_000_000_000L
         "GIB" -> 1_073_741_824L
+        "TB" -> 1_000_000_000_000L
+        "TIB" -> 1_099_511_627_776L
         else -> 1L
     }
-    return (number.toDouble() * multiplier).toLong()
+    return (number.replace(",", "").toDouble() * multiplier).toLong()
 }

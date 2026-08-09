@@ -2,7 +2,7 @@
 
 HOLEN is a native, fully on-device downloader for Android 10 and newer. Direct HTTPS files use Android networking; supported media pages use the bundled `youtubedl-android`, Python, yt-dlp, and FFmpeg runtime. HOLEN does not require a HOLEN server, Clerk, a WebView sign-in, analytics, or telemetry.
 
-Download [HOLEN-v3.3.1-arm64-debug.apk](https://github.com/YashasVM/HOLEN/releases/download/V3/HOLEN-v3.3.1-arm64-debug.apk) from the [HOLEN V3 release](https://github.com/YashasVM/HOLEN/releases/tag/V3). It is for ARM64 phones, including the Galaxy S24 Ultra. Verify it against [SHA256SUMS-V3](https://github.com/YashasVM/HOLEN/releases/download/V3/SHA256SUMS-V3) before installing.
+Release builds are published from the [HOLEN releases page](https://github.com/YashasVM/HOLEN/releases). Physical-device APKs are ARM64 builds suitable for modern phones such as the Galaxy S24 Ultra and Nothing Phone (3a) Pro. Verify downloaded release assets against the checksum published with that release.
 
 Only download files you own or are authorized to save. HOLEN does not bypass DRM or access controls, and supported-site availability can change.
 
@@ -40,7 +40,7 @@ From this directory:
 ./gradlew testEmulatorDebugUnitTest lintEmulatorDebug assembleEmulatorDebug
 ```
 
-Emulator debug builds contain x86 and x86_64 native libraries. Never distribute them to physical-device users. A requested ARM64 debug handoff is built with `:app:assembleArm64Debug` and must be copied as `prod/APKs/HOLEN-v3.3.1-arm64-debug.apk` after ABI and version verification.
+Emulator debug builds contain x86 and x86_64 native libraries. Never distribute them to physical-device users. A requested ARM64 debug handoff is built with `:app:assembleArm64Debug` and must be copied to `prod/APKs` with its explicit version after ABI and version verification.
 
 Release builds are signed and produced by the tag workflow:
 

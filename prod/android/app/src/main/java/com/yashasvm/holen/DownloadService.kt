@@ -12,6 +12,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,6 +38,8 @@ class DownloadService : Service() {
 
     @Volatile
     private var stopping = false
+
+    private var blockedPublicationIds: Set<String> = emptySet()
 
     override fun onCreate() {
         super.onCreate()
@@ -119,38 +124,55 @@ class DownloadService : Service() {
 
     private suspend fun processQueue(startId: Int) = processorMutex.withLock {
         if (!recovered) {
-            store.requeueInterrupted()
+            blockedPublicationIds = recoverPublishedFiles()
+            store.requeueInterrupted(blockedPublicationIds)
             recovered = true
         }
         while (!stopping) {
-            val job = store.claimNextQueued() ?: break
+            val job = store.claimNextQueued(blockedPublicationIds) ?: break
             currentJobId = job.id
             var publishedOutput: OutputStore.PublishedFile? = null
+            val progressWriter = ProgressWriter(store, job.id)
             try {
                 updateNotification(job, TransferProgress(0, null, null, null, null))
                 val directory = outputStore.stagingDirectory(job.id)
-                val staged = if (job.sourceKind == SourceKind.DIRECT_FILE) {
-                    directDownloader.download(job, directory, { shouldAbort(job.id) }) { progress ->
+                // This is a safety net for extractors that do not provide a
+                // usable total or temporarily stop printing progress. It reports
+                // bytes that really exist in our private staging directory; it
+                // never invents a percentage when no total is known.
+                val stagingProgress = StagingProgressSampler(directory, job.totalBytes) { progress ->
+                    if (!shouldAbort(job.id)) {
+                        progressWriter.report(progress)
+                        updateNotification(job, progress)
+                    }
+                }.also(StagingProgressSampler::start)
+                val staged = try {
+                    val reportProgress: (TransferProgress) -> Unit = { progress ->
+                        stagingProgress.observeExtractor(progress)
                         if (!shouldAbort(job.id)) {
-                            store.updateProgress(job.id, progress)
+                            progressWriter.report(progress)
                             updateNotification(job, progress)
                         }
                     }
-                } else {
-                    engine.download(job, directory, { shouldAbort(job.id) }) { progress ->
-                        if (!shouldAbort(job.id)) {
-                            scope.launch { store.updateProgress(job.id, progress) }
-                            updateNotification(job, progress)
-                        }
+                    if (job.sourceKind == SourceKind.DIRECT_FILE) {
+                        directDownloader.download(job, directory, { shouldAbort(job.id) }, reportProgress)
+                    } else {
+                        engine.download(job, directory, { shouldAbort(job.id) }, reportProgress)
                     }
+                } finally {
+                    stagingProgress.stop()
                 }
+                // All buffered RUNNING writes must finish before the state
+                // becomes FINALIZING. This prevents an old callback from
+                // painting a completed item as an active transfer.
+                progressWriter.finish()
                 check(!shouldAbort(job.id)) { "Download cancelled" }
                 store.transition(job.id, JobStatus.FINALIZING)
                 updateNotification(
                     job.copy(status = JobStatus.FINALIZING),
                     TransferProgress(99, staged.file.length(), staged.file.length(), null, null),
                 )
-                val published = outputStore.publish(staged) { shouldAbort(job.id) }
+                val published = outputStore.publish(job.id, staged) { shouldAbort(job.id) }
                 publishedOutput = published
                 check(!shouldAbort(job.id)) { "Download cancelled" }
                 val completionRows = store.complete(
@@ -161,13 +183,20 @@ class DownloadService : Service() {
                     published.byteCount,
                 )
                 if (completionRows == 0) {
-                    outputStore.deleteDocument(published.uri)
+                    val deleted = runCatching { outputStore.deleteDocument(published.uri) }
+                        .getOrDefault(false)
+                    if (deleted) outputStore.confirmPublication(job.id)
                     error("Download cancelled")
                 }
+                outputStore.confirmPublication(job.id)
                 runCatching { showCompletionNotification(job, published) }
                 publishedOutput = null
             } catch (error: Throwable) {
-                publishedOutput?.let { runCatching { outputStore.deleteDocument(it.uri) } }
+                publishedOutput?.let {
+                    val deleted = runCatching { outputStore.deleteDocument(it.uri) }
+                        .getOrDefault(false)
+                    if (deleted) outputStore.confirmPublication(job.id)
+                }
                 if (job.id in timedOutIds) {
                     runCatching { store.transition(job.id, JobStatus.QUEUED) }
                 } else if (job.id in cancelledIds) {
@@ -179,6 +208,7 @@ class DownloadService : Service() {
                     }
                 }
             } finally {
+                progressWriter.finish()
                 cancelledIds -= job.id
                 timedOutIds -= job.id
                 currentJobId = null
@@ -190,6 +220,45 @@ class DownloadService : Service() {
     private fun shouldAbort(jobId: String): Boolean =
         stopping || jobId in cancelledIds || jobId in timedOutIds
 
+    /** Reconciles SAF files copied just before an unexpected process death. */
+    private suspend fun recoverPublishedFiles(): Set<String> {
+        val blockedFinalizingIds = mutableSetOf<String>()
+        for (jobId in outputStore.pendingPublicationIds()) {
+            when (val recovery = outputStore.recoverPublication(jobId)) {
+                is OutputStore.PublicationRecovery.Complete -> {
+                    val published = recovery.file
+                    val completed = store.complete(
+                        jobId,
+                        published.uri.toString(),
+                        published.fileName,
+                        published.mimeType,
+                        published.byteCount,
+                    )
+                    val status = store.get(jobId)?.status
+                    if (completed > 0 || status == JobStatus.COMPLETED) {
+                        outputStore.confirmPublication(jobId)
+                    } else {
+                        val deleted = runCatching { outputStore.deleteDocument(published.uri) }
+                            .getOrDefault(false)
+                        if (deleted) outputStore.confirmPublication(jobId)
+                        else blockedFinalizingIds += jobId
+                    }
+                }
+                is OutputStore.PublicationRecovery.Partial -> {
+                    val deleted = runCatching { outputStore.deleteDocument(recovery.uri) }
+                        .getOrDefault(false)
+                    if (deleted) outputStore.confirmPublication(jobId)
+                    else blockedFinalizingIds += jobId
+                }
+                OutputStore.PublicationRecovery.NotCreated,
+                OutputStore.PublicationRecovery.NoJournal,
+                -> outputStore.confirmPublication(jobId)
+                OutputStore.PublicationRecovery.Unavailable -> blockedFinalizingIds += jobId
+            }
+        }
+        return blockedFinalizingIds
+    }
+
     private fun updateNotification(job: DownloadJob, progress: TransferProgress) {
         startTransferForeground(
             notification(
@@ -198,6 +267,7 @@ class DownloadService : Service() {
                 speed = progress.speedBytesPerSecond,
                 eta = progress.etaSeconds,
                 jobId = job.id,
+                totalBytes = progress.totalBytes,
             ),
         )
     }
@@ -208,6 +278,7 @@ class DownloadService : Service() {
         speed: Long?,
         eta: Long?,
         jobId: String?,
+        totalBytes: Long? = null,
     ): Notification {
         val cancelIntent = jobId?.let {
             Intent(this, DownloadService::class.java).apply {
@@ -243,7 +314,11 @@ class DownloadService : Service() {
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_PROGRESS)
-            .setProgress(100, progress.coerceIn(0, 100), false)
+            .setProgress(
+                if (totalBytes == null) 0 else 100,
+                progress.coerceIn(0, 100),
+                totalBytes == null,
+            )
             .apply {
                 if (cancelPendingIntent != null) {
                     addAction(Notification.Action.Builder(null, "Cancel", cancelPendingIntent).build())
@@ -361,5 +436,114 @@ class DownloadService : Service() {
             } else {
                 "%d:%02d".format(seconds / 60, seconds % 60)
             }
+    }
+}
+
+/**
+ * Coalesces noisy extractor callbacks into ordered database updates. Unlike a
+ * fire-and-forget coroutine per callback, [finish] is a real barrier before a
+ * job starts finalization.
+ */
+private class ProgressWriter(
+    private val store: HolenStore,
+    private val jobId: String,
+) {
+    private val updates = Channel<TransferProgress>(Channel.CONFLATED)
+    private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val worker = workerScope.launch {
+        for (progress in updates) {
+            runCatching { store.updateProgress(jobId, progress) }
+        }
+    }
+
+    private var latest: TransferProgress? = null
+
+    @Synchronized
+    fun report(progress: TransferProgress) {
+        val merged = mergeTransferProgress(latest, progress)
+        if (merged != latest) updates.trySend(merged)
+        latest = merged
+    }
+
+    suspend fun finish() {
+        updates.close()
+        worker.join()
+        workerScope.cancel()
+    }
+}
+
+/**
+ * Samples the extractor's private staging area while a transfer is active.
+ * This remains useful when an extractor omits progress lines, while the normal
+ * yt-dlp callback remains the authoritative source for exact totals and ETA.
+ */
+private class StagingProgressSampler(
+    private val directory: java.io.File,
+    initialTotalBytes: Long?,
+    private val onProgress: (TransferProgress) -> Unit,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var worker: kotlinx.coroutines.Job? = null
+
+    @Volatile
+    private var knownTotalBytes: Long? = initialTotalBytes
+
+    @Volatile
+    private var floorPercent = 0
+
+    private var previousBytes = 0L
+    private var previousAt = 0L
+
+    fun start() {
+        worker = scope.launch {
+            while (true) {
+                delay(SAMPLE_INTERVAL_MS)
+                sample()
+            }
+        }
+    }
+
+    fun observeExtractor(progress: TransferProgress) {
+        progress.totalBytes?.let { knownTotalBytes = it }
+        floorPercent = maxOf(floorPercent, progress.percent)
+    }
+
+    private fun sample() {
+        val bytes = directory.takeIf(java.io.File::isDirectory)
+            ?.walkTopDown()
+            ?.filter { file ->
+                file.isFile && !file.name.endsWith(".ytdl") && !file.name.endsWith(".part-Frag")
+            }
+            ?.maxOfOrNull(java.io.File::length)
+            ?: return
+        val now = System.currentTimeMillis()
+        if (bytes <= previousBytes) return
+        val elapsed = (now - previousAt).takeIf { previousAt > 0L && it > 0L }
+        val total = knownTotalBytes
+        val measuredPercent = total?.let {
+            // A size estimate can be slightly low, but the media process has not
+            // completed while a staging file is still growing.
+            ((bytes * 100L / it.coerceAtLeast(1L)).toInt()).coerceIn(0, 99)
+        } ?: floorPercent
+        onProgress(
+            TransferProgress(
+                percent = maxOf(floorPercent, measuredPercent),
+                bytesDownloaded = bytes,
+                totalBytes = total,
+                speedBytesPerSecond = elapsed?.let { (bytes - previousBytes) * 1_000L / it },
+                etaSeconds = null,
+            ),
+        )
+        previousBytes = bytes
+        previousAt = now
+    }
+
+    suspend fun stop() {
+        worker?.cancelAndJoin()
+        scope.cancel()
+    }
+
+    private companion object {
+        const val SAMPLE_INTERVAL_MS = 500L
     }
 }

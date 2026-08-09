@@ -31,8 +31,12 @@ class DirectDownloader {
     ): StagedDownload = withContext(Dispatchers.IO) {
         cancelled.set(false)
         if (isCancelled()) throw CancellationException("Download cancelled")
-        directory.mkdirs()
-        val part = File(directory, "download.part")
+        check(directory.isDirectory || directory.mkdirs()) {
+            "Could not prepare private download storage."
+        }
+        // This name is deliberately not derived from the response. A hostile
+        // Content-Disposition value must never collide with the resumable part.
+        val part = File(directory, PART_FILE_NAME)
         var existing = part.takeIf(File::exists)?.length() ?: 0L
         var connection = open(job.sourceUrl, existing.takeIf { it > 0 })
         if (existing > 0 && !shouldAppend(
@@ -56,7 +60,7 @@ class DirectDownloader {
             val disposition = connection.header("Content-Disposition")
             val suggested = fileNameFromDisposition(disposition)
                 ?: URI(job.sourceUrl).path.substringAfterLast('/').ifBlank { job.title }
-            val fileName = sanitizeFileName(suggested)
+            val fileName = completionFileName(suggested)
             val mimeType = OutputStore.mimeTypeFor(fileName, connection.header("Content-Type")?.substringBefore(';'))
             var downloaded = existing
             var lastBytes = existing
@@ -146,6 +150,9 @@ class DirectDownloader {
 
     companion object {
         private const val COPY_BUFFER_SIZE = 64 * 1024
+        // Keep the established name so installs upgrading from earlier builds
+        // can continue an existing direct download.
+        private const val PART_FILE_NAME = "download.part"
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 20_000
         private const val USER_AGENT = "Holen Android/1"
@@ -185,6 +192,11 @@ class DirectDownloader {
                 }
             return Regex("""filename="?([^";]+)"?""", RegexOption.IGNORE_CASE)
                 .find(header)?.groupValues?.get(1)
+        }
+
+        internal fun completionFileName(suggested: String): String {
+            val sanitized = sanitizeFileName(suggested)
+            return if (sanitized == PART_FILE_NAME) "download-$sanitized" else sanitized
         }
     }
 }

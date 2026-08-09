@@ -10,6 +10,7 @@ import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -44,12 +45,21 @@ class OutputStore(private val context: Context) {
         return File(File(base, "downloads"), jobId).apply { mkdirs() }
     }
 
+    /**
+     * Copies a completed private staging file into the user-selected SAF tree.
+     * A small durable journal closes the crash window between creating the
+     * document and recording the completed job in SQLite.
+     */
     suspend fun publish(
+        jobId: String,
         staged: StagedDownload,
         isCancelled: () -> Boolean = { false },
     ): PublishedFile = withContext(Dispatchers.IO) {
         val tree = treeUri ?: throw StorageException("Download folder permission is missing.")
         if (!hasValidTreeGrant()) throw StorageException("Download folder permission was revoked.")
+        require(staged.file.isFile && staged.file.length() > 0) {
+            "The completed staging file is missing. Retry the download."
+        }
         val resolver = context.contentResolver
         val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
             tree,
@@ -57,15 +67,26 @@ class OutputStore(private val context: Context) {
         )
         val existing = childNames(tree)
         val safeName = destinationName(sanitizeFileName(staged.fileName), existing)
-        val document = DocumentsContract.createDocument(
-            resolver,
-            treeDocument,
-            staged.mimeType,
-            safeName,
-        ) ?: throw StorageException("The selected folder could not create a file.")
-
+        val pending = PendingPublication(
+            jobId = jobId,
+            treeUri = tree.toString(),
+            fileName = safeName,
+            mimeType = staged.mimeType,
+            byteCount = staged.file.length(),
+            documentUri = null,
+        )
+        savePending(pending)
+        var document: Uri? = null
         try {
-            val copied = resolver.openOutputStream(document, "w")?.use { output ->
+            val created = DocumentsContract.createDocument(
+                resolver,
+                treeDocument,
+                staged.mimeType,
+                safeName,
+            ) ?: throw StorageException("The selected folder could not create a file.")
+            document = created
+            savePending(pending.copy(documentUri = created.toString()))
+            val copied = resolver.openOutputStream(created, "w")?.use { output ->
                 FileInputStream(staged.file).use { input ->
                     val buffer = ByteArray(COPY_BUFFER_SIZE)
                     var count = 0L
@@ -87,12 +108,58 @@ class OutputStore(private val context: Context) {
                 throw StorageException("The copied file did not match the completed download.")
             }
             staged.file.parentFile?.deleteRecursively()
-            PublishedFile(document, safeName, staged.mimeType, copied)
+            PublishedFile(created, safeName, staged.mimeType, copied)
         } catch (error: Throwable) {
-            runCatching { DocumentsContract.deleteDocument(resolver, document) }
+            val cleaned = document?.let { created ->
+                runCatching { DocumentsContract.deleteDocument(resolver, created) }
+                    .getOrDefault(false)
+            } ?: true
+            // Keep the journal when the provider refuses cleanup. Recovery can
+            // inspect/delete the partial file after the grant becomes available.
+            if (cleaned) clearPending(jobId)
             throw error
         }
     }
+
+    /** Marks a published file as committed to the job database. */
+    fun confirmPublication(jobId: String) = clearPending(jobId)
+
+    /**
+     * Recovers a file that reached the selected folder before the process died.
+     * When the saved document URI was not written, the file is located by its
+     * collision-free destination name inside the original SAF tree.
+     */
+    suspend fun recoverPublication(jobId: String): PublicationRecovery = withContext(Dispatchers.IO) {
+        val pending = pendingPublications()[jobId] ?: return@withContext PublicationRecovery.NoJournal
+        val located = pending.documentUri?.let { LocatedDocument.Found(Uri.parse(it)) }
+            ?: findChildDocument(pending.treeUri, pending.fileName)
+        val uri = when (located) {
+            is LocatedDocument.Found -> located.uri
+            LocatedDocument.NotFound -> return@withContext PublicationRecovery.NotCreated
+            LocatedDocument.Unavailable -> return@withContext PublicationRecovery.Unavailable
+        }
+        when (val inspected = inspectDocument(uri)) {
+            is DocumentInspection.Found -> {
+                val actual = inspected.details
+                when (publicationMatch(
+                    pending.fileName,
+                    pending.byteCount,
+                    actual.fileName,
+                    actual.byteCount.takeIf { it >= 0 },
+                )) {
+                    PublicationMatch.PARTIAL -> PublicationRecovery.Partial(uri)
+                    PublicationMatch.UNAVAILABLE -> PublicationRecovery.Unavailable
+                    PublicationMatch.COMPLETE -> PublicationRecovery.Complete(
+                        PublishedFile(uri, actual.fileName, pending.mimeType, pending.byteCount),
+                    )
+                }
+            }
+            DocumentInspection.NotFound -> PublicationRecovery.NotCreated
+            DocumentInspection.Unavailable -> PublicationRecovery.Unavailable
+        }
+    }
+
+    fun pendingPublicationIds(): Set<String> = pendingPublications().keys
 
     suspend fun deleteDocument(uri: Uri): Boolean = withContext(Dispatchers.IO) {
         DocumentsContract.deleteDocument(context.contentResolver, uri)
@@ -137,6 +204,140 @@ class OutputStore(private val context: Context) {
         stagingDirectory(jobId).deleteRecursively()
     }
 
+    private fun findChildDocument(rawTree: String, fileName: String): LocatedDocument {
+        val tree = Uri.parse(rawTree)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+            tree,
+            DocumentsContract.getTreeDocumentId(tree),
+        )
+        return try {
+            val cursor = context.contentResolver.query(
+                children,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            ) ?: return LocatedDocument.Unavailable
+            cursor.use {
+                val idIndex = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = it.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)
+                while (it.moveToNext()) {
+                    if (it.getString(nameIndex) == fileName) {
+                        return LocatedDocument.Found(
+                            DocumentsContract.buildDocumentUriUsingTree(tree, it.getString(idIndex)),
+                        )
+                    }
+                }
+                LocatedDocument.NotFound
+            }
+        } catch (_: Throwable) {
+            LocatedDocument.Unavailable
+        }
+    }
+
+    private fun inspectDocument(uri: Uri): DocumentInspection {
+        return try {
+            val cursor = context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                null,
+                null,
+                null,
+            ) ?: return DocumentInspection.Unavailable
+            cursor.use {
+                if (!it.moveToFirst()) return DocumentInspection.NotFound
+                val nameIndex = it.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = it.getColumnIndexOrThrow(OpenableColumns.SIZE)
+                DocumentInspection.Found(
+                    DocumentDetails(
+                        fileName = it.getString(nameIndex),
+                        byteCount = if (it.isNull(sizeIndex)) -1 else it.getLong(sizeIndex),
+                    ),
+                )
+            }
+        } catch (_: Throwable) {
+            DocumentInspection.Unavailable
+        }
+    }
+
+    private fun pendingPublications(): Map<String, PendingPublication> = synchronized(journalLock) {
+        val root = runCatching {
+            JSONObject(preferences.getString(PREF_PENDING_PUBLICATIONS, "{}"))
+        }.getOrElse { JSONObject() }
+        buildMap {
+            root.keys().forEach { jobId ->
+                val item = root.optJSONObject(jobId) ?: return@forEach
+                val tree = item.optString("tree")
+                val name = item.optString("name")
+                val mime = item.optString("mime")
+                val bytes = item.optLong("bytes", -1)
+                if (tree.isNotBlank() && name.isNotBlank() && mime.isNotBlank() && bytes >= 0) {
+                    put(
+                        jobId,
+                        PendingPublication(
+                            jobId,
+                            tree,
+                            name,
+                            mime,
+                            bytes,
+                            item.optString("uri").takeIf(String::isNotBlank),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun savePending(pending: PendingPublication) = synchronized(journalLock) {
+        val root = runCatching {
+            JSONObject(preferences.getString(PREF_PENDING_PUBLICATIONS, "{}"))
+        }.getOrElse { JSONObject() }
+        root.put(
+            pending.jobId,
+            JSONObject().apply {
+                put("tree", pending.treeUri)
+                put("name", pending.fileName)
+                put("mime", pending.mimeType)
+                put("bytes", pending.byteCount)
+                pending.documentUri?.let { put("uri", it) }
+            },
+        )
+        preferences.edit(commit = true) { putString(PREF_PENDING_PUBLICATIONS, root.toString()) }
+    }
+
+    private fun clearPending(jobId: String) = synchronized(journalLock) {
+        val root = runCatching {
+            JSONObject(preferences.getString(PREF_PENDING_PUBLICATIONS, "{}"))
+        }.getOrElse { JSONObject() }
+        if (root.has(jobId)) {
+            root.remove(jobId)
+            preferences.edit(commit = true) { putString(PREF_PENDING_PUBLICATIONS, root.toString()) }
+        }
+    }
+
+    private data class PendingPublication(
+        val jobId: String,
+        val treeUri: String,
+        val fileName: String,
+        val mimeType: String,
+        val byteCount: Long,
+        val documentUri: String?,
+    )
+
+    private data class DocumentDetails(val fileName: String, val byteCount: Long)
+
+    private sealed interface LocatedDocument {
+        data class Found(val uri: Uri) : LocatedDocument
+        data object NotFound : LocatedDocument
+        data object Unavailable : LocatedDocument
+    }
+
+    private sealed interface DocumentInspection {
+        data class Found(val details: DocumentDetails) : DocumentInspection
+        data object NotFound : DocumentInspection
+        data object Unavailable : DocumentInspection
+    }
+
     private fun childNames(tree: Uri): Set<String> {
         val resolver = context.contentResolver
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -163,9 +364,19 @@ class OutputStore(private val context: Context) {
         val byteCount: Long,
     )
 
+    sealed interface PublicationRecovery {
+        data class Complete(val file: PublishedFile) : PublicationRecovery
+        data class Partial(val uri: Uri) : PublicationRecovery
+        data object NotCreated : PublicationRecovery
+        data object Unavailable : PublicationRecovery
+        data object NoJournal : PublicationRecovery
+    }
+
     companion object {
         private const val COPY_BUFFER_SIZE = 64 * 1024
         private const val ORPHAN_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000
+        private const val PREF_PENDING_PUBLICATIONS = "pending_publications"
+        private val journalLock = Any()
 
         fun destinationName(requested: String, existing: Set<String>): String {
             if (requested !in existing) return requested
@@ -183,5 +394,23 @@ class OutputStore(private val context: Context) {
                 ?: fallback
                 ?: "application/octet-stream"
         }
+
+        internal fun publicationMatch(
+            expectedName: String,
+            expectedBytes: Long,
+            actualName: String,
+            actualBytes: Long?,
+        ): PublicationMatch = when {
+            actualName != expectedName -> PublicationMatch.PARTIAL
+            actualBytes == null -> PublicationMatch.UNAVAILABLE
+            actualBytes != expectedBytes -> PublicationMatch.PARTIAL
+            else -> PublicationMatch.COMPLETE
+        }
     }
+}
+
+internal enum class PublicationMatch {
+    COMPLETE,
+    PARTIAL,
+    UNAVAILABLE,
 }
