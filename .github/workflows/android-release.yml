@@ -204,7 +204,7 @@ jobs:
           aapt="${ANDROID_HOME}/build-tools/36.0.0/aapt"
           key_path="$RUNNER_TEMP/holen-release.jks"
           max_per_abi_size=$((70 * 1024 * 1024))
-          expected_cert="$(keytool -list -v -keystore "$key_path" -storepass "$HOLEN_KEYSTORE_PASSWORD" -alias "$HOLEN_KEY_ALIAS" 2>/dev/null | awk -F': ' '/SHA256:/{print toupper($2); exit}')"
+          expected_cert="$(keytool -list -v -keystore "$key_path" -storepass "$HOLEN_KEYSTORE_PASSWORD" -alias "$HOLEN_KEY_ALIAS" 2>/dev/null | awk -F': ' '/SHA256:/{gsub(":", "", $2); print toupper($2); exit}')"
           [[ -n "$expected_cert" ]] || { echo "Could not read release certificate fingerprint." >&2; exit 1; }
 
           verify_apk() {
