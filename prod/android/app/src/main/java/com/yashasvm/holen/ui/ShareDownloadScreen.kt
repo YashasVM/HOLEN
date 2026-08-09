@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -43,6 +44,7 @@ fun ShareDownloadScreen(
     val sharedUrl by viewModel.url.collectAsStateWithLifecycle()
     val format by viewModel.selectedFormat.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val analysisPhase by viewModel.analysisPhase.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val setupComplete by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
     val folderGranted by viewModel.folderGranted.collectAsStateWithLifecycle()
@@ -90,10 +92,30 @@ fun ShareDownloadScreen(
                     )
                     PrimaryButton("Open Holen", onOpenHolen)
                 }
-                busy && analysis == null -> LoadingState(sharedUrl)
+                busy && analysis == null -> LoadingState(
+                    url = sharedUrl,
+                    phase = analysisPhase,
+                    onCancel = viewModel::stopAnalysis,
+                )
                 error != null -> {
                     MessageState("This link needs attention", error.orEmpty())
-                    PrimaryButton("Open Holen", onOpenHolen)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        HolenButton(
+                            label = "Try again",
+                            onClick = viewModel::retryAnalysis,
+                            background = HolenBlue,
+                        )
+                        HolenButton(
+                            label = "Open Holen",
+                            onClick = onOpenHolen,
+                            background = HolenSurfaceTwo,
+                            foreground = HolenInk,
+                        )
+                    }
                 }
                 analysis is SourceAnalysis.DirectFile -> {
                     val item = analysis as SourceAnalysis.DirectFile
@@ -103,7 +125,11 @@ fun ShareDownloadScreen(
                 analysis is SourceAnalysis.Media -> {
                     val item = analysis as SourceAnalysis.Media
                     SharedTitle(item.title, item.uploader ?: "Media")
-                    FormatPicker(format, viewModel::setFormat)
+                    FormatPicker(
+                        selected = format,
+                        onSelected = viewModel::setFormat,
+                        estimatedSizes = item.estimatedSizes,
+                    )
                     PrimaryButton("Download", onDownload, enabled = !busy)
                 }
                 analysis is SourceAnalysis.Playlist -> {
@@ -116,10 +142,9 @@ fun ShareDownloadScreen(
                     )
                     PrimaryButton("Open Holen", onOpenHolen)
                 }
-                else -> LoadingState(sharedUrl)
+                else -> LoadingState(sharedUrl, analysisPhase, viewModel::stopAnalysis)
             }
         }
-        CreatorCredit()
     }
 }
 
@@ -146,7 +171,7 @@ private fun MessageState(title: String, detail: String) {
 }
 
 @Composable
-private fun LoadingState(url: String) {
+private fun LoadingState(url: String, phase: String?, onCancel: () -> Unit) {
     val host = runCatching { URI(url).host.removePrefix("www.") }.getOrNull()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTag(
@@ -154,7 +179,7 @@ private fun LoadingState(url: String) {
             background = HolenYellow,
         )
         Text(
-            "Fetching file details",
+            phase ?: "Fetching file details",
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.semantics { heading() },
         )
@@ -173,6 +198,13 @@ private fun LoadingState(url: String) {
                 color = HolenMuted,
             )
         }
+        HolenButton(
+            label = "Cancel",
+            onClick = onCancel,
+            background = HolenSurfaceTwo,
+            foreground = HolenInk,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

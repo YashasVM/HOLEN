@@ -15,6 +15,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.ui.graphics.toArgb
 import com.yashasvm.holen.ui.HolenBackground
@@ -23,11 +24,13 @@ import com.yashasvm.holen.ui.HolenTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     private lateinit var outputStore: OutputStore
     private var queueAfterPermission = false
+    private var pendingAppUpdate: File? = null
 
     private val folderPicker = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -83,6 +86,9 @@ class MainActivity : ComponentActivity() {
                 ).show()
             }
         }
+        lifecycleScope.launch {
+            viewModel.appInstallEvents.collect(::openAppInstaller)
+        }
         setContent {
             HolenTheme {
                 HolenScreen(
@@ -109,6 +115,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.refreshFolderGrant()
+        pendingAppUpdate?.let { apk ->
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                openAppInstaller(apk)
+            }
+        }
     }
 
     private fun chooseFolder() {
@@ -143,7 +154,9 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         }
-        if (!candidate.isNullOrBlank()) viewModel.receiveIncomingUrl(candidate)
+        if (!candidate.isNullOrBlank()) {
+            viewModel.receiveIncomingUrl(candidate, AnalysisMode.FULL)
+        }
     }
 
     private fun launch(intent: Intent?) {
@@ -152,6 +165,37 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
         } catch (_: ActivityNotFoundException) {
             // The job card remains available when no installed app can handle the MIME type.
+        }
+    }
+
+    private fun openAppInstaller(apk: File) {
+        if (!apk.isFile) return
+        pendingAppUpdate = apk
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            Toast.makeText(
+                this,
+                "Allow HOLEN to install updates, then return here.",
+                Toast.LENGTH_LONG,
+            ).show()
+            launch(
+                Intent(
+                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+            return
+        }
+        val contentUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(contentUri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                },
+            )
+            pendingAppUpdate = null
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "Android's package installer is unavailable.", Toast.LENGTH_LONG).show()
         }
     }
 

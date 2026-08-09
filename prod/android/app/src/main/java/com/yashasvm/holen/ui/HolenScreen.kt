@@ -51,6 +51,7 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Switch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -91,6 +92,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.yashasvm.holen.DownloadFormat
 import com.yashasvm.holen.DownloadJob
+import com.yashasvm.holen.AppUpdateState
 import com.yashasvm.holen.JobStatus
 import com.yashasvm.holen.MainViewModel
 import com.yashasvm.holen.SourceAnalysis
@@ -112,7 +114,10 @@ fun HolenScreen(
         modifier = Modifier.fillMaxSize(),
         containerColor = HolenBackground,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = { CreatorCredit() },
+        // Attribution belongs to the download home, not the setup/signing flow.
+        bottomBar = {
+            if (onboardingCompleted) CreatorCredit()
+        },
     ) { contentPadding ->
         AnimatedContent(
             targetState = onboardingCompleted,
@@ -173,6 +178,7 @@ private fun DownloadHome(
     val format by viewModel.selectedFormat.collectAsStateWithLifecycle()
     val selectedEntries by viewModel.selectedEntries.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val analysisPhase by viewModel.analysisPhase.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val folderGranted by viewModel.folderGranted.collectAsStateWithLifecycle()
     val rightsAcknowledged by viewModel.rightsAcknowledged.collectAsStateWithLifecycle()
@@ -180,6 +186,8 @@ private fun DownloadHome(
     val engineMessage by viewModel.engineMessage.collectAsStateWithLifecycle()
     val cookiesConfigured by viewModel.cookiesConfigured.collectAsStateWithLifecycle()
     val cookieMessage by viewModel.cookieMessage.collectAsStateWithLifecycle()
+    val filenameSuffixEnabled by viewModel.filenameSuffixEnabled.collectAsStateWithLifecycle()
+    val appUpdate by viewModel.appUpdate.collectAsStateWithLifecycle()
     val clipboard = LocalClipboard.current
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -328,6 +336,44 @@ private fun DownloadHome(
                         )
                     }
                 }
+                AnimatedVisibility(visible = busy && analysis == null) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(HolenSurfaceTwo)
+                            .border(2.dp, HolenInk)
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = HolenBlue,
+                            )
+                            Text(
+                                analysisPhase ?: "Preparing your download options",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        HolenButton(
+                            "Cancel analysis",
+                            viewModel::stopAnalysis,
+                            background = HolenSurface,
+                            foreground = HolenInk,
+                        )
+                    }
+                }
+                AnimatedVisibility(visible = error != null && analysis == null && !busy) {
+                    HolenButton(
+                        "Try again",
+                        viewModel::retryAnalysis,
+                        background = HolenBlue,
+                    )
+                }
             }
         }
 
@@ -366,7 +412,11 @@ private fun DownloadHome(
                             preview.estimatedSizes[format]?.let { "Est. ${formatBytes(it)}" },
                         ),
                     ) {
-                        FormatPicker(format, viewModel::setFormat)
+                        FormatPicker(
+                            selected = format,
+                            onSelected = viewModel::setFormat,
+                            estimatedSizes = preview.estimatedSizes,
+                        )
                         RightsQueueHelper(rightsAcknowledged)
                         HolenButton(
                             "Add to queue",
@@ -552,12 +602,16 @@ private fun DownloadHome(
             message = engineMessage,
             cookiesConfigured = cookiesConfigured,
             cookieMessage = cookieMessage,
+            filenameSuffixEnabled = filenameSuffixEnabled,
+            appUpdate = appUpdate,
             busy = busy,
             onChooseFolder = onChooseFolder,
             onUpdate = viewModel::updateEngine,
             onReset = viewModel::resetEngine,
             onSaveCookies = viewModel::saveCookies,
             onClearCookies = viewModel::clearCookies,
+            onFilenameSuffixChanged = viewModel::setFilenameSuffixEnabled,
+            onCheckAppUpdate = { viewModel.checkAppUpdate(manual = true) },
             onDismiss = { showSettings = false },
         )
     }
@@ -586,6 +640,14 @@ private fun DownloadHome(
             },
         )
     }
+
+    AppUpdateDialog(
+        state = appUpdate,
+        onAccept = viewModel::downloadAppUpdate,
+        onDismiss = viewModel::dismissAppUpdate,
+        onInstall = viewModel::installDownloadedAppUpdate,
+        onClearError = viewModel::clearAppUpdateMessage,
+    )
 }
 
 @Composable
@@ -699,6 +761,7 @@ private fun PreviewCard(
 internal fun FormatPicker(
     selected: DownloadFormat,
     onSelected: (DownloadFormat) -> Unit,
+    estimatedSizes: Map<DownloadFormat, Long?> = emptyMap(),
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("FORMAT", style = MaterialTheme.typography.labelMedium)
@@ -709,7 +772,10 @@ internal fun FormatPicker(
             MEDIA_FORMATS.forEach { format ->
                 val active = selected == format
                 HolenButton(
-                    label = format.label,
+                    label = format.formatLabel(
+                        estimatedSize = estimatedSizes[format],
+                        sizeWasRequested = estimatedSizes.containsKey(format),
+                    ),
                     onClick = { onSelected(format) },
                     background = if (active) HolenBlue else HolenSurface,
                     foreground = if (active) Color.White else HolenInk,
@@ -865,12 +931,16 @@ private fun SettingsDialog(
     message: String?,
     cookiesConfigured: Boolean,
     cookieMessage: String?,
+    filenameSuffixEnabled: Boolean,
+    appUpdate: AppUpdateState,
     busy: Boolean,
     onChooseFolder: () -> Unit,
     onUpdate: () -> Unit,
     onReset: () -> Unit,
     onSaveCookies: (String) -> Unit,
     onClearCookies: () -> Unit,
+    onFilenameSuffixChanged: (Boolean) -> Unit,
+    onCheckAppUpdate: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var showCookieDialog by remember { mutableStateOf(false) }
@@ -923,7 +993,40 @@ private fun SettingsDialog(
                     enabled = !busy,
                 )
                 HorizontalDivider(thickness = 2.dp, color = HolenInk)
+                Text("APP UPDATES", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    appUpdateSummary(appUpdate),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (appUpdate is AppUpdateState.Error) HolenRed else HolenMuted,
+                )
+                HolenButton(
+                    if (appUpdate is AppUpdateState.Checking) "Checking…" else "Check for app update",
+                    onCheckAppUpdate,
+                    HolenBlue,
+                    enabled = appUpdate !is AppUpdateState.Checking && appUpdate !is AppUpdateState.Downloading,
+                    loading = appUpdate is AppUpdateState.Checking,
+                )
+                HorizontalDivider(thickness = 2.dp, color = HolenInk)
                 Text("ADVANCED", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Add (HOLEN) to filenames", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            if (filenameSuffixEnabled) "Files save as Title (HOLEN).ext" else "Files save as Title.ext",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = HolenMuted,
+                        )
+                    }
+                    Switch(
+                        checked = filenameSuffixEnabled,
+                        onCheckedChange = onFilenameSuffixChanged,
+                        modifier = Modifier.semantics { testTag = "filename-suffix-toggle" },
+                    )
+                }
                 Text(
                     if (cookiesConfigured) "Configured on this device" else "Not configured",
                     style = MaterialTheme.typography.bodySmall,
@@ -995,6 +1098,110 @@ private fun SettingsDialog(
 }
 
 @Composable
+private fun AppUpdateDialog(
+    state: AppUpdateState,
+    onAccept: () -> Unit,
+    onDismiss: () -> Unit,
+    onInstall: () -> Unit,
+    onClearError: () -> Unit,
+) {
+    when (state) {
+        is AppUpdateState.Available -> AlertDialog(
+            onDismissRequest = onDismiss,
+            shape = RectangleShape,
+            containerColor = HolenSurface,
+            title = { Text("UPDATE AVAILABLE", style = MaterialTheme.typography.titleLarge) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${state.release.title} is ready to download.")
+                    Text(
+                        "HOLEN will download the official ARM64 APK from GitHub, verify its package, version, and signing key, then open Android's installer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = HolenMuted,
+                    )
+                    if (state.release.notes.isNotBlank()) {
+                        Text(
+                            state.release.notes.take(700),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 8,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onAccept) {
+                    Text("Update now", color = HolenBlue, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
+        )
+
+        is AppUpdateState.Downloading -> AlertDialog(
+            onDismissRequest = {},
+            shape = RectangleShape,
+            containerColor = HolenSurface,
+            title = { Text("DOWNLOADING UPDATE", style = MaterialTheme.typography.titleLarge) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val fraction = state.totalBytes
+                        ?.takeIf { it > 0L }
+                        ?.let { (state.downloadedBytes.toFloat() / it).coerceIn(0f, 1f) }
+                    if (fraction == null) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = HolenBlue)
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { fraction },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = HolenBlue,
+                        )
+                    }
+                    Text(
+                        state.totalBytes?.let { "${formatBytes(state.downloadedBytes)} of ${formatBytes(it)}" }
+                            ?: "${formatBytes(state.downloadedBytes)} downloaded",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {},
+        )
+
+        is AppUpdateState.Ready -> AlertDialog(
+            onDismissRequest = {},
+            shape = RectangleShape,
+            containerColor = HolenSurface,
+            title = { Text("UPDATE READY", style = MaterialTheme.typography.titleLarge) },
+            text = { Text("The verified ${state.release.versionName} APK is ready. Android will ask you to confirm the update.") },
+            confirmButton = {
+                TextButton(onClick = onInstall) {
+                    Text("Install update", color = HolenBlue, fontWeight = FontWeight.Bold)
+                }
+            },
+        )
+
+        is AppUpdateState.Error -> AlertDialog(
+            onDismissRequest = onClearError,
+            shape = RectangleShape,
+            containerColor = HolenSurface,
+            title = { Text("UPDATE NOT READY", style = MaterialTheme.typography.titleLarge) },
+            text = { Text(state.message) },
+            confirmButton = { TextButton(onClick = onClearError) { Text("OK", color = HolenBlue) } },
+        )
+
+        AppUpdateState.Idle, AppUpdateState.Checking -> Unit
+    }
+}
+
+private fun appUpdateSummary(state: AppUpdateState): String = when (state) {
+    AppUpdateState.Idle -> "Checks GitHub public releases once a day. Installation always needs your approval."
+    AppUpdateState.Checking -> "Checking the latest public GitHub release…"
+    is AppUpdateState.Available -> "HOLEN ${state.release.versionName} is available."
+    is AppUpdateState.Downloading -> "Downloading HOLEN ${state.release.versionName}."
+    is AppUpdateState.Ready -> "HOLEN ${state.release.versionName} is ready to install."
+    is AppUpdateState.Error -> state.message
+}
+
+@Composable
 private fun CookieDialog(
     onSave: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -1013,7 +1220,7 @@ private fun CookieDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Authentication cookies are sensitive and may grant access to your account. Paste only a Netscape-format cookies.txt file exported from an account you own or are authorized to use. HOLEN stores it only in private on-device storage. Cookies may expire, and they cannot bypass DRM or other access controls.",
+                    "Authentication cookies are sensitive and may grant access to your account. Paste only a Netscape-format cookies.txt file exported from an account you own or are authorized to use. HOLEN stores it only in private on-device storage. If the current link failed, HOLEN retries it after a successful save. Cookies may expire, and they cannot bypass DRM or other access controls.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedTextField(
@@ -1220,7 +1427,7 @@ private fun jobDetail(job: DownloadJob): String = when (job.status) {
     JobStatus.CANCELLED -> "Cancelled — partial data removed"
 }
 
-private fun formatBytes(bytes: Long): String {
+internal fun formatBytes(bytes: Long): String {
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
     var amount = bytes.toDouble()
     var unit = 0
@@ -1230,6 +1437,19 @@ private fun formatBytes(bytes: Long): String {
     }
     return if (unit == 0) "${amount.toLong()} ${units[unit]}"
     else "%.1f %s".format(amount, units[unit])
+}
+
+private fun DownloadFormat.formatLabel(
+    estimatedSize: Long?,
+    sizeWasRequested: Boolean,
+): String = buildString {
+    append(label)
+    if (estimatedSize != null && estimatedSize > 0) {
+        append("\nEst. ")
+        append(formatBytes(estimatedSize))
+    } else if (sizeWasRequested) {
+        append("\nSize unavailable")
+    }
 }
 
 private fun formatDuration(seconds: Long): String =

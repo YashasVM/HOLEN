@@ -44,13 +44,14 @@ class ShareDownloadActivity : ComponentActivity() {
                     hasValidUrl = sharedUrl != null,
                     onDownload = ::queueWithNotificationPermission,
                     onOpenHolen = ::openHolen,
-                    onDismiss = ::finish,
+                    onDismiss = ::dismissPopup,
                     onQueued = ::confirmQueued,
                 )
             }
         }
         if (savedInstanceState == null) window.decorView.post {
-            sharedUrl?.let(viewModel::receiveIncomingUrl)
+            // The share sheet exposes per-format sizes, which are available from full analysis.
+            sharedUrl?.let { viewModel.receiveIncomingUrl(it, AnalysisMode.FULL) }
         }
     }
 
@@ -64,7 +65,7 @@ class ShareDownloadActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         sharedUrl = extractSharedHttps(intent)
-        sharedUrl?.let(viewModel::receiveIncomingUrl)
+        sharedUrl?.let { viewModel.receiveIncomingUrl(it, AnalysisMode.FULL) }
     }
 
     private fun queueWithNotificationPermission() {
@@ -80,11 +81,17 @@ class ShareDownloadActivity : ComponentActivity() {
     }
 
     private fun openHolen() {
+        viewModel.cancelAnalysis()
         startActivity(
             Intent(this, MainActivity::class.java).apply {
                 sharedUrl?.let { putExtra(MainActivity.EXTRA_SHARED_URL, it) }
             },
         )
+        finish()
+    }
+
+    private fun dismissPopup() {
+        viewModel.cancelAnalysis()
         finish()
     }
 

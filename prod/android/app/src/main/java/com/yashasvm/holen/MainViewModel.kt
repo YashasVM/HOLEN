@@ -9,8 +9,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -19,6 +22,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val engine = YtDlpEngine.get(application)
     private val cookieStore = CookieStore(application)
     private val analyzer = SourceAnalyzer(engine)
+    private val appUpdateManager = AppUpdateManager(application)
     private val preferences = application.getSharedPreferences(
         HolenStore.PREFERENCES_NAME,
         android.content.Context.MODE_PRIVATE,
@@ -40,6 +44,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val mutableBusy = MutableStateFlow(false)
     val busy = mutableBusy.asStateFlow()
+
+    /**
+     * A short, user-facing status for an interactive metadata request. This is
+     * deliberately separate from [busy] so surfaces can explain a wait without
+     * exposing extractor diagnostics.
+     */
+    private val mutableAnalysisPhase = MutableStateFlow<String?>(null)
+    val analysisPhase = mutableAnalysisPhase.asStateFlow()
 
     private val mutableError = MutableStateFlow<String?>(null)
     val error = mutableError.asStateFlow()
@@ -73,10 +85,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableCookieMessage = MutableStateFlow<String?>(null)
     val cookieMessage = mutableCookieMessage.asStateFlow()
 
+    private val mutableFilenameSuffixEnabled = MutableStateFlow(
+        preferences.getBoolean(HolenStore.PREF_FILENAME_SUFFIX_ENABLED, true),
+    )
+    val filenameSuffixEnabled = mutableFilenameSuffixEnabled.asStateFlow()
+
+    private val mutableAppUpdate = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
+    val appUpdate = mutableAppUpdate.asStateFlow()
+
+    private val mutableAppInstallEvents = MutableSharedFlow<File>(extraBufferCapacity = 1)
+    val appInstallEvents = mutableAppInstallEvents.asSharedFlow()
+
     private val mutableQueueEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val queueEvents = mutableQueueEvents.asSharedFlow()
 
     val bundledEngineVersion: String = engine.bundledVersion
+
+    private var analysisJob: Job? = null
+    private var analysisProcessId: String? = null
+    private var warmupJob: Job? = null
+    private var latestAnalysisRequest = 0L
+    private var lastAnalysisMode = AnalysisMode.FULL
+    private var lastAnalysisFailed = false
+    private var appUpdateCheckJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -85,15 +116,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 outputStore.hasValidTreeGrant()
             }
             mutableFolderGranted.value = folderGranted
+            if (mutableOnboardingCompleted.value) warmEngine()
         }
+        checkAppUpdate()
     }
 
     fun recoverQueue() {
         viewModelScope.launch {
             if (!DownloadService.isRunning) {
-                store.requeueInterrupted()
                 if (withContext(Dispatchers.IO) {
-                        outputStore.hasValidTreeGrant() && store.hasQueued()
+                        outputStore.hasValidTreeGrant() && store.hasRecoverableWork()
                     }
                 ) {
                     DownloadService.wake(getApplication())
@@ -104,30 +136,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setUrl(value: String) {
+        cancelAnalysis()
         mutableUrl.value = value
         mutableAnalysis.value = null
         mutableError.value = null
+        mutableAnalysisPhase.value = null
+        lastAnalysisFailed = false
     }
 
     fun clearUrl() = setUrl("")
 
-    fun receiveIncomingUrl(value: String) {
+    fun receiveIncomingUrl(value: String, mode: AnalysisMode = AnalysisMode.FULL) {
         setUrl(value)
-        if (mutableOnboardingCompleted.value) analyze()
+        if (mutableOnboardingCompleted.value) analyze(mode)
     }
 
     fun setFormat(format: DownloadFormat) {
         mutableSelectedFormat.value = format
     }
 
-    fun analyze() {
-        if (mutableBusy.value) return
-        viewModelScope.launch {
-            mutableBusy.value = true
-            mutableError.value = null
-            mutableAnalysis.value = null
-            runCatching { analyzer.analyze(mutableUrl.value) }
-                .onSuccess { result ->
+    fun analyze(mode: AnalysisMode = AnalysisMode.FULL) {
+        val requestedUrl = mutableUrl.value.trim()
+        if (requestedUrl.isBlank()) {
+            mutableError.value = "Paste a public HTTPS link first."
+            return
+        }
+        cancelAnalysis()
+        val request = ++latestAnalysisRequest
+        val processId = engine.createAnalysisProcessId()
+        analysisProcessId = processId
+        lastAnalysisMode = mode
+        lastAnalysisFailed = false
+        mutableBusy.value = true
+        mutableError.value = null
+        mutableAnalysis.value = null
+        mutableAnalysisPhase.value = when (mode) {
+            AnalysisMode.QUICK -> "Reading shared link"
+            AnalysisMode.FULL -> "Fetching download options"
+        }
+        analysisJob = viewModelScope.launch {
+            try {
+                val result = analyzer.analyze(requestedUrl, mode, processId)
+                if (request == latestAnalysisRequest) {
                     mutableAnalysis.value = result
                     mutableSelectedFormat.value = when (result) {
                         is SourceAnalysis.DirectFile -> DownloadFormat.ORIGINAL
@@ -139,10 +189,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         emptySet()
                     }
                     mutableEngineVersion.value = engine.activeVersion
+                    mutableAnalysisPhase.value = null
+                    lastAnalysisFailed = false
                 }
-                .onFailure { mutableError.value = friendlyFailure(it) }
-            mutableBusy.value = false
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (request == latestAnalysisRequest) {
+                    mutableError.value = friendlyFailure(error)
+                    mutableAnalysisPhase.value = null
+                    lastAnalysisFailed = true
+                }
+            } finally {
+                if (request == latestAnalysisRequest) {
+                    mutableBusy.value = false
+                    analysisJob = null
+                    analysisProcessId = null
+                }
+            }
         }
+    }
+
+    fun retryAnalysis() = analyze(lastAnalysisMode)
+
+    fun stopAnalysis() {
+        cancelAnalysis()
+        if (mutableUrl.value.isNotBlank()) {
+            mutableError.value = "Analysis cancelled. Try again when you are ready."
+        }
+    }
+
+    /** Cancels only the in-flight preview request; queue downloads continue untouched. */
+    fun cancelAnalysis() {
+        if (analysisJob?.isActive == true) {
+            ++latestAnalysisRequest
+            analysisJob?.cancel()
+            analysisProcessId?.let(engine::cancelAnalysis)
+        }
+        analysisJob = null
+        analysisProcessId = null
+        mutableBusy.value = false
+        mutableAnalysisPhase.value = null
     }
 
     fun toggleEntry(id: String) {
@@ -304,7 +390,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             mutableOnboardingCompleted.value = true
             mutableError.value = null
+            warmEngine()
             if (mutableUrl.value.isNotBlank()) analyze()
+        }
+    }
+
+    private fun warmEngine() {
+        if (warmupJob?.isActive == true) return
+        warmupJob = viewModelScope.launch {
+            runCatching { engine.warmup() }
+                .onSuccess { mutableEngineVersion.value = engine.activeVersion }
         }
     }
 
@@ -365,6 +460,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess {
                     mutableCookiesConfigured.value = true
                     mutableCookieMessage.value = "Cookies saved on this device."
+                    if (lastAnalysisFailed && mutableUrl.value.isNotBlank()) {
+                        analyze(lastAnalysisMode)
+                    }
                 }
                 .onFailure { error ->
                     mutableCookieMessage.value = when (error.message) {
@@ -388,8 +486,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setFilenameSuffixEnabled(enabled: Boolean) {
+        preferences.edit { putBoolean(HolenStore.PREF_FILENAME_SUFFIX_ENABLED, enabled) }
+        mutableFilenameSuffixEnabled.value = enabled
+    }
+
+    /** A maximum of one automatic GitHub request per day; Settings can request a manual check. */
+    fun checkAppUpdate(manual: Boolean = false) {
+        if (appUpdateCheckJob?.isActive == true) return
+        val now = System.currentTimeMillis()
+        if (!manual && !isAppUpdateCheckDue(preferences.getLong(HolenStore.PREF_APP_UPDATE_LAST_CHECK_AT, 0L), now)) {
+            return
+        }
+        appUpdateCheckJob = viewModelScope.launch {
+            if (manual) mutableAppUpdate.value = AppUpdateState.Checking
+            preferences.edit { putLong(HolenStore.PREF_APP_UPDATE_LAST_CHECK_AT, now) }
+            runCatching { appUpdateManager.latestRelease() }
+                .onSuccess { release ->
+                    val dismissed = preferences.getString(HolenStore.PREF_APP_UPDATE_DISMISSED_TAG, null)
+                    mutableAppUpdate.value = if (release != null && release.tag != dismissed) {
+                        AppUpdateState.Available(release)
+                    } else {
+                        AppUpdateState.Idle
+                    }
+                }
+                .onFailure { error ->
+                    mutableAppUpdate.value = if (manual) {
+                        AppUpdateState.Error(friendlyAppUpdateFailure(error))
+                    } else {
+                        AppUpdateState.Idle
+                    }
+                }
+            appUpdateCheckJob = null
+        }
+    }
+
+    fun dismissAppUpdate() {
+        val available = mutableAppUpdate.value as? AppUpdateState.Available ?: return
+        preferences.edit { putString(HolenStore.PREF_APP_UPDATE_DISMISSED_TAG, available.release.tag) }
+        mutableAppUpdate.value = AppUpdateState.Idle
+    }
+
+    fun downloadAppUpdate() {
+        val available = mutableAppUpdate.value as? AppUpdateState.Available ?: return
+        val release = available.release
+        viewModelScope.launch {
+            runCatching {
+                appUpdateManager.download(release) { downloaded, total ->
+                    mutableAppUpdate.value = AppUpdateState.Downloading(release, downloaded, total)
+                }
+            }.onSuccess { apk ->
+                mutableAppUpdate.value = AppUpdateState.Ready(release, apk)
+                mutableAppInstallEvents.tryEmit(apk)
+            }.onFailure { error ->
+                mutableAppUpdate.value = AppUpdateState.Error(friendlyAppUpdateFailure(error))
+            }
+        }
+    }
+
+    fun clearAppUpdateMessage() {
+        if (mutableAppUpdate.value is AppUpdateState.Error) mutableAppUpdate.value = AppUpdateState.Idle
+    }
+
+    fun installDownloadedAppUpdate() {
+        val ready = mutableAppUpdate.value as? AppUpdateState.Ready ?: return
+        mutableAppInstallEvents.tryEmit(ready.apk)
+    }
+
+    private fun isAppUpdateCheckDue(lastCheckAt: Long, now: Long): Boolean =
+        lastCheckAt <= 0L || now - lastCheckAt >= APP_UPDATE_CHECK_INTERVAL_MS
+
+    private fun friendlyAppUpdateFailure(error: Throwable): String = when {
+        error.message?.contains("signing key", ignoreCase = true) == true ->
+            "This release uses a different signing key, so Android cannot update this installation."
+        error.message?.contains("not newer", ignoreCase = true) == true ->
+            "The release is not newer than this installation."
+        else -> "Could not prepare the app update. Check your connection and try again."
+    }
+
     override fun onCleared() {
-        engine.cancel("analysis")
+        cancelAnalysis()
+    }
+
+    private companion object {
+        const val APP_UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L
     }
 
     private fun SourceAnalysis.DirectFile.toJob(

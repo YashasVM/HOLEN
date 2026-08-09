@@ -94,6 +94,7 @@ class CoreLogicTest {
             "www.youtube.com",
             "m.youtube.com",
             "youtu.be",
+            "www.youtube-nocookie.com",
         ).forEach { host ->
             assertTrue("$host should use the extractor immediately", SourceAnalyzer.isExtractorFirstHost(host))
         }
@@ -199,6 +200,83 @@ class CoreLogicTest {
     }
 
     @Test
+    fun progressParsesModernYtDlpSpacingAndTildeTotals() {
+        val result = parseTransferLine(
+            "[download]  42.5% of ~ 1,024.00MiB at  2.50MiB/s ETA 1:02:03",
+        )!!
+        assertEquals(42, result.percent)
+        assertEquals(1_073_741_824L, result.totalBytes)
+        assertEquals(2_621_440L, result.speedBytesPerSecond)
+        assertEquals(3_723L, result.etaSeconds)
+    }
+
+    @Test
+    fun machineProgressTemplateKeepsExactBytesWithoutHumanOutputParsing() {
+        val result = parseMachineTransferLine(
+            "HOLEN_PROGRESS 42.5%|4404019|10485760|NA|2621440|3",
+        )!!
+        assertEquals(42, result.percent)
+        assertEquals(4_404_019L, result.bytesDownloaded)
+        assertEquals(10_485_760L, result.totalBytes)
+        assertEquals(2_621_440L, result.speedBytesPerSecond)
+        assertEquals(3L, result.etaSeconds)
+    }
+
+    @Test
+    fun progressSourcesMergeWithoutMovingTheBarBackward() {
+        val callback = TransferProgress(52, 52L, 100L, 5L, 10L)
+        val sampledFile = TransferProgress(48, 60L, null, 7L, null)
+        val merged = mergeTransferProgress(callback, sampledFile)
+        assertEquals(52, merged.percent)
+        assertEquals(60L, merged.bytesDownloaded)
+        assertEquals(100L, merged.totalBytes)
+        assertEquals(7L, merged.speedBytesPerSecond)
+        assertEquals(10L, merged.etaSeconds)
+    }
+
+    @Test
+    fun callbackProgressNeverTurnsUnknownWrapperIntoZeroOrRegresses() {
+        val previous = TransferProgress(42, 42L, 100L, 2L, 10L)
+        val unknown = transferProgressFromCallback("[info] Downloading", -1f, -1L, previous)!!
+        assertEquals(42, unknown.percent)
+        val regressed = transferProgressFromCallback(
+            "[download]  3.0% of 10.00MiB at 2.00MiB/s ETA 00:05",
+            3f,
+            5L,
+            previous,
+        )!!
+        assertEquals(42, regressed.percent)
+        assertEquals(10_485_760L, regressed.totalBytes)
+    }
+
+    @Test
+    fun ytDlpOutputNameUsesHolenSuffixWithoutMediaId() {
+        val template = YtDlpEngine.outputTemplateFor(java.io.File("downloads"))
+        assertTrue(template.endsWith("%(title).160B (HOLEN).%(ext)s"))
+        assertFalse(template.contains("%(id)s"))
+    }
+
+    @Test
+    fun engineCheckIsRateLimitedToOncePerWeek() {
+        val now = 10_000_000_000L
+        assertTrue(YtDlpEngine.isEngineCheckDue(0L, now))
+        assertFalse(YtDlpEngine.isEngineCheckDue(now - 60_000L, now))
+        assertTrue(YtDlpEngine.isEngineCheckDue(now - 8L * 24 * 60 * 60 * 1000, now))
+    }
+
+    @Test
+    fun appUpdateVersionsAndHostsAreStrictlyValidated() {
+        assertTrue(AppUpdateVersion.isNewer("v3.4.3", "3.4.2"))
+        assertTrue(AppUpdateVersion.isNewer("3.5", "3.4.99"))
+        assertFalse(AppUpdateVersion.isNewer("3.4.2", "3.4.2"))
+        assertFalse(AppUpdateVersion.isNewer("latest", "3.4.2"))
+        assertTrue(AppUpdateVersion.isAllowedGitHubHost("api.github.com"))
+        assertTrue(AppUpdateVersion.isAllowedGitHubHost("objects.githubusercontent.com"))
+        assertFalse(AppUpdateVersion.isAllowedGitHubHost("github.com.evil.example"))
+        assertFalse(AppUpdateVersion.isAllowedGitHubHost("example.com"))
+    }
+
+    @Test
     fun jobTransitionsProtectTerminalFiles() {
         assertTrue(JobStatus.QUEUED.canTransitionTo(JobStatus.RUNNING))
         assertTrue(JobStatus.RUNNING.canTransitionTo(JobStatus.FINALIZING))
@@ -219,6 +297,23 @@ class CoreLogicTest {
             friendlyFailure(Exception("extractor engine returned an unexpected response")),
         )
         assertTrue(friendlyFailure(IOException("Network response 404")).contains("HTTP 404"))
+    }
+
+    @Test
+    fun webpageErrorsAreNotMisclassifiedAsAgeRestricted() {
+        val webpageFailure = friendlyFailure(Exception("Unable to download webpage: HTTP Error 403"))
+        assertEquals("Unable to download webpage: HTTP Error 403", webpageFailure)
+        assertFalse(webpageFailure.contains("account", ignoreCase = true))
+        assertTrue(friendlyFailure(Exception("age-restricted video")).contains("age", ignoreCase = true))
+        assertTrue(friendlyFailure(Exception("login required")).contains("account", ignoreCase = true))
+        assertTrue(friendlyFailure(Exception("confirm you're not a bot")).contains("bot", ignoreCase = true))
+    }
+
+    @Test
+    fun quickAnalysisHasASmallPlaylistLimitAndDeadline() {
+        assertEquals(3, YtDlpEngine.QUICK_PLAYLIST_PREVIEW_LIMIT)
+        assertTrue(YtDlpEngine.QUICK_ANALYSIS_TIMEOUT_MS in 1_000L..15_000L)
+        assertTrue(YtDlpEngine.QUICK_PLAYLIST_PREVIEW_LIMIT < YtDlpEngine.PLAYLIST_PREVIEW_LIMIT)
     }
 
     @Test

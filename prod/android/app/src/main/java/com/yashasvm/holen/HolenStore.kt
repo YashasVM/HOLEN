@@ -102,14 +102,19 @@ class HolenStore private constructor(context: Context) :
         ).use { cursor -> if (cursor.moveToFirst()) cursor.toJob() else null }
     }
 
-    suspend fun claimNextQueued(): DownloadJob? = write {
+    suspend fun claimNextQueued(excludedIds: Set<String> = emptySet()): DownloadJob? = write {
         beginTransaction()
         try {
+            val selection = if (excludedIds.isEmpty()) {
+                "status = ?"
+            } else {
+                "status = ? AND id NOT IN (${excludedIds.joinToString(",") { "?" }})"
+            }
             val job = query(
                 "jobs",
                 COLUMNS,
-                "status = ?",
-                arrayOf(JobStatus.QUEUED.name),
+                selection,
+                arrayOf(JobStatus.QUEUED.name, *excludedIds.toTypedArray()),
                 null,
                 null,
                 "created_at ASC",
@@ -143,6 +148,18 @@ class HolenStore private constructor(context: Context) :
         readableDatabase.rawQuery(
             "SELECT 1 FROM jobs WHERE status = ? LIMIT 1",
             arrayOf(JobStatus.QUEUED.name),
+        ).use(Cursor::moveToFirst)
+    }
+
+    /** Includes transfers that must be recovered by [DownloadService] first. */
+    suspend fun hasRecoverableWork(): Boolean = withContext(Dispatchers.IO) {
+        readableDatabase.rawQuery(
+            "SELECT 1 FROM jobs WHERE status IN (?, ?, ?) LIMIT 1",
+            arrayOf(
+                JobStatus.QUEUED.name,
+                JobStatus.RUNNING.name,
+                JobStatus.FINALIZING.name,
+            ),
         ).use(Cursor::moveToFirst)
     }
 
@@ -239,10 +256,13 @@ class HolenStore private constructor(context: Context) :
             "jobs",
             ContentValues().apply {
                 put("progress", progress.percent)
-                progress.bytesDownloaded.putOrNull(this, "bytes_downloaded")
-                progress.totalBytes.putOrNull(this, "total_bytes")
-                progress.speedBytesPerSecond.putOrNull(this, "speed_bytes_per_second")
-                progress.etaSeconds.putOrNull(this, "eta_seconds")
+                // Keep metadata's known estimate until yt-dlp replaces it with an
+                // exact value. A progress line which omits a field must not erase
+                // the information needed to render a live bar.
+                progress.bytesDownloaded?.let { put("bytes_downloaded", it) }
+                progress.totalBytes?.let { put("total_bytes", it) }
+                progress.speedBytesPerSecond?.let { put("speed_bytes_per_second", it) }
+                progress.etaSeconds?.let { put("eta_seconds", it) }
                 put("updated_at", updatedAt)
             },
             "id = ? AND status = ?",
@@ -253,10 +273,10 @@ class HolenStore private constructor(context: Context) :
                 mutableJobs.value = mutableJobs.value.map { job ->
                     if (job.id == id) job.copy(
                         progress = progress.percent,
-                        bytesDownloaded = progress.bytesDownloaded,
-                        totalBytes = progress.totalBytes,
-                        speedBytesPerSecond = progress.speedBytesPerSecond,
-                        etaSeconds = progress.etaSeconds,
+                        bytesDownloaded = progress.bytesDownloaded ?: job.bytesDownloaded,
+                        totalBytes = progress.totalBytes ?: job.totalBytes,
+                        speedBytesPerSecond = progress.speedBytesPerSecond ?: job.speedBytesPerSecond,
+                        etaSeconds = progress.etaSeconds ?: job.etaSeconds,
                         updatedAt = updatedAt,
                     ) else job
                 }
@@ -291,20 +311,50 @@ class HolenStore private constructor(context: Context) :
         )
     }
 
-    suspend fun requeueInterrupted() = write {
-        update(
+    /**
+     * Makes work left in a non-terminal state by a process death runnable again.
+     *
+     * Direct downloads keep their .part file and media downloads use yt-dlp's
+     * --continue option, so resetting displayed progress does not throw away a
+     * resumable transfer. Finalizing jobs are normally reconciled from
+     * [OutputStore]'s durable publication journal before this method is called.
+     */
+    suspend fun requeueInterrupted(
+        blockedFinalizingIds: Set<String> = emptySet(),
+    ) = write {
+        val values = ContentValues().apply {
+            put("status", JobStatus.QUEUED.name)
+            put("progress", 0)
+            putNull("bytes_downloaded")
+            putNull("total_bytes")
+            putNull("speed_bytes_per_second")
+            putNull("eta_seconds")
+            put("error_message", "Interrupted. Resuming download.")
+            put("updated_at", System.currentTimeMillis())
+        }
+        val running = update(
             "jobs",
-            ContentValues().apply {
-                put("status", JobStatus.QUEUED.name)
-                put("progress", 0)
-                putNull("speed_bytes_per_second")
-                putNull("eta_seconds")
-                put("error_message", "Interrupted. Tap Retry to resume if it does not restart.")
-                put("updated_at", System.currentTimeMillis())
-            },
-            "status IN (?, ?)",
-            arrayOf(JobStatus.RUNNING.name, JobStatus.FINALIZING.name),
+            values,
+            "status = ?",
+            arrayOf(JobStatus.RUNNING.name),
         )
+        val finalizing = if (blockedFinalizingIds.isEmpty()) {
+            update(
+                "jobs",
+                values,
+                "status = ?",
+                arrayOf(JobStatus.FINALIZING.name),
+            )
+        } else {
+            val placeholders = blockedFinalizingIds.joinToString(",") { "?" }
+            update(
+                "jobs",
+                values,
+                "status = ? AND id NOT IN ($placeholders)",
+                arrayOf(JobStatus.FINALIZING.name, *blockedFinalizingIds.toTypedArray()),
+            )
+        }
+        running + finalizing
     }
 
     suspend fun clearFinished(ids: Set<String>? = null) = write {
@@ -421,6 +471,11 @@ class HolenStore private constructor(context: Context) :
         const val PREFERENCES_NAME = "holen"
         const val PREF_DOWNLOAD_TREE = "download_tree_uri"
         const val PREF_ENGINE_VERSION = "engine_version"
+        const val PREF_ENGINE_LAST_CHECK_AT = "engine_last_check_at"
+        const val PREF_ENGINE_LAST_SUCCESSFUL_UPDATE_AT = "engine_last_successful_update_at"
+        const val PREF_FILENAME_SUFFIX_ENABLED = "filename_holen_suffix_enabled"
+        const val PREF_APP_UPDATE_LAST_CHECK_AT = "app_update_last_check_at"
+        const val PREF_APP_UPDATE_DISMISSED_TAG = "app_update_dismissed_tag"
         const val PREF_RIGHTS_ACKNOWLEDGED = "rights_acknowledged"
         const val PREF_ONBOARDING_COMPLETED = "onboarding_completed"
         const val PREF_ONBOARDING_VERSION = "onboarding_version"
