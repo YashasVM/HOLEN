@@ -82,24 +82,45 @@ export function stagingRoot(): string {
   mkdirSync(d, { recursive: true })
   return d
 }
-export function cookiesPath(): string { return join(dataDir(), 'cookies.txt') }
-export function jobsDbPath(): string { return join(dataDir(), 'jobs.json') }
+export function cookiesPath(): string {
+  return join(dataDir(), 'cookies.txt')
+}
+export function jobsDbPath(): string {
+  return join(dataDir(), 'jobs.json')
+}
 
 export function hasCookies(): boolean {
-  try { return existsSync(cookiesPath()) && readFileSync(cookiesPath(), 'utf8').trim().length > 0 } catch { return false }
+  try {
+    return existsSync(cookiesPath()) && readFileSync(cookiesPath(), 'utf8').trim().length > 0
+  } catch {
+    return false
+  }
 }
-export function readCookies(): string { try { return readFileSync(cookiesPath(), 'utf8') } catch { return '' } }
+export function readCookies(): string {
+  try {
+    return readFileSync(cookiesPath(), 'utf8')
+  } catch {
+    return ''
+  }
+}
 export function saveCookies(text: string): void {
   const t = text.trim()
   if (!t) throw new Error('Paste Netscape cookies.txt content first.')
   if (t.length > 512 * 1024) throw new Error('Cookies file is too large (max 512 KB).')
-  if (!t.includes('# Netscape HTTP Cookie File') && !t.includes('# HTTP Cookie File')) {
-    // still allow but warn — yt-dlp is strict; store anyway
+  if (t.includes('\0')) throw new Error('Invalid cookies content.')
+  // reject path-like content that would be confused with --cookies path traversal
+  if (t.includes('..') && t.split('\n').some((l) => l.trim().startsWith('/'))) {
+    throw new Error('Paste file contents, not a file path.')
   }
   writeFileSync(cookiesPath(), t.endsWith('\n') ? t : t + '\n', 'utf8')
   prefsStore.set('cookiesConfigured', true)
 }
-export function clearCookies(): void { try { rmSync(cookiesPath(), { force: true }) } catch {} ; prefsStore.set('cookiesConfigured', false) }
+export function clearCookies(): void {
+  try {
+    rmSync(cookiesPath(), { force: true })
+  } catch {}
+  prefsStore.set('cookiesConfigured', false)
+}
 
 export function ensureDownloadDir(): string {
   const dir = getPrefs().downloadDir
@@ -113,7 +134,10 @@ export function cleanOrphanStaging(knownIds: Set<string>): void {
     for (const name of readdirSync(root)) {
       if (!knownIds.has(name)) {
         const p = join(root, name)
-        try { const s = statSync(p); if (s.isDirectory()) rmSync(p, { recursive: true, force: true }) } catch {}
+        try {
+          const s = statSync(p)
+          if (s.isDirectory()) rmSync(p, { recursive: true, force: true })
+        } catch {}
       }
     }
   } catch {}

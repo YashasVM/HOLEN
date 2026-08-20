@@ -9,14 +9,12 @@
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM"],
     "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/renderer/src/*"]
-    },
+    "paths": { "@/*": ["src/renderer/src/*"] },
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": false
   },
-  "include": ["src/renderer/**/*", "src/preload/**/*"],
-  "exclude": ["node_modules", "dist", "dist-elevated", "src/main"]
+  "include": ["src/renderer/**/*", "src/preload/**/*", "src/main/models.ts"],
+  "exclude": ["node_modules", "dist", "dist-elevated", "out", "src/main"]
 }
