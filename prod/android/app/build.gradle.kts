@@ -12,8 +12,8 @@ android {
         applicationId = "com.yashasvm.holen"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.gradleProperty("holenVersionCode").orElse("16").get().toInt()
-        versionName = providers.gradleProperty("holenVersionName").orElse("5.0.0").get()
+        versionCode = providers.gradleProperty("holenVersionCode").orElse("17").get().toInt()
+        versionName = providers.gradleProperty("holenVersionName").orElse("5.0.1").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
