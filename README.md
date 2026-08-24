@@ -8,7 +8,7 @@ Private, on-device downloads—on Android or in your terminal.
 
 Share or paste a link, choose a format, and save it to your folder. HOLEN is a native Kotlin app with no account, analytics, or hosted download server.
 
-[Download the ARM64 APK](https://github.com/YashasVM/HOLEN/releases/download/V3/HOLEN-v3.3.1-arm64-debug.apk) · [Android setup](prod/android/README.md)
+[Download the universal APK](https://github.com/YashasVM/HOLEN/releases/download/android-v5.0.0/HOLEN-v5.0.0-universal.apk) · [Android setup](prod/android/README.md)
 
 ### Terminal
 
