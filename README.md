@@ -20,6 +20,12 @@ npx holen-dl
 
 Choose quality, resolution, MP4/MKV/MP3, and download. Source: [yt-cmd](https://github.com/YashasVM/yt-cmd).
 
+### Website.
+
+Paste a link, choose a format, and save it to your folder. (it's hosted on my old laptop so don't except the FASTEST speeds//)
+
+[Holen. website link.](https://holen.yvmx.dpdns.org/)
+
 ## Privacy first
 
 Downloads stay on your device. HOLEN does not bypass DRM, accounts, age gates, access controls, or source-platform terms.
