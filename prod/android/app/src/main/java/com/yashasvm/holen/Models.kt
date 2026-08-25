@@ -150,6 +150,12 @@ internal fun resolvePublicHttpsEndpoint(raw: String): PublicHttpsEndpoint {
  * Returns a client that can only resolve this endpoint's hostname to the
  * already-validated address bytes. TLS still receives the hostname, preserving
  * SNI and normal certificate verification.
+ *
+ * [PinnedDns] has value equality so separately-created clients for the same
+ * validated host/address set can reuse sockets from [publicConnectionPool].
+ * An anonymous Dns instance here would make OkHttp consider each Address
+ * different, forcing avoidable TCP/TLS handshakes for repeated metadata and
+ * direct-download requests.
  */
 internal fun pinnedPublicHttpsClient(
     endpoint: PublicHttpsEndpoint,
@@ -157,19 +163,26 @@ internal fun pinnedPublicHttpsClient(
 ): OkHttpClient {
     return OkHttpClient.Builder()
         .connectionPool(publicConnectionPool)
-        .dns(object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> {
-                if (!hostname.trimEnd('.').equals(endpoint.host.trimEnd('.'), ignoreCase = true)) {
-                    throw UnknownHostException("Unexpected hostname: $hostname")
-                }
-                return endpoint.addresses
-            }
-        })
+        .dns(PinnedDns(endpoint.host, endpoint.addresses))
         .connectTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
         .readTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
+}
+
+private data class PinnedDns(
+    private val expectedHost: String,
+    private val addresses: List<InetAddress>,
+) : Dns {
+    private val normalizedHost = expectedHost.trimEnd('.').lowercase()
+
+    override fun lookup(hostname: String): List<InetAddress> {
+        if (hostname.trimEnd('.').lowercase() != normalizedHost) {
+            throw UnknownHostException("Unexpected hostname: $hostname")
+        }
+        return addresses
+    }
 }
 
 private val publicConnectionPool = ConnectionPool(5, 5, TimeUnit.MINUTES)
@@ -192,126 +205,45 @@ internal fun isPublicAddress(address: InetAddress): Boolean {
 }
 
 private fun isPublicIpv4(bytes: ByteArray): Boolean {
-    val first = bytes[0].toInt() and 0xff
-    val second = bytes[1].toInt() and 0xff
-    val third = bytes[2].toInt() and 0xff
+    if (bytes.size != 4) return false
+    val a = bytes[0].toInt() and 0xff
+    val b = bytes[1].toInt() and 0xff
+    val c = bytes[2].toInt() and 0xff
     return when {
-        first == 0 || first == 10 || first == 127 -> false
-        first == 100 && second in 64..127 -> false
-        first == 169 && second == 254 -> false
-        first == 172 && second in 16..31 -> false
-        first == 192 && second == 0 && third in setOf(0, 2) -> false
-        first == 192 && second == 88 && third == 99 -> false
-        first == 192 && second == 168 -> false
-        first == 198 && second in setOf(18, 19) -> false
-        first == 198 && second == 51 && third == 100 -> false
-        first == 203 && second == 0 && third == 113 -> false
-        first >= 224 -> false
+        a == 0 -> false
+        a == 10 -> false
+        a == 100 && b in 64..127 -> false
+        a == 127 -> false
+        a == 169 && b == 254 -> false
+        a == 172 && b in 16..31 -> false
+        a == 192 && b == 0 && c == 0 -> false
+        a == 192 && b == 0 && c == 2 -> false
+        a == 192 && b == 88 && c == 99 -> false
+        a == 192 && b == 168 -> false
+        a == 198 && b in 18..19 -> false
+        a == 198 && b == 51 && c == 100 -> false
+        a == 203 && b == 0 && c == 113 -> false
+        a >= 224 -> false
         else -> true
     }
 }
 
 private fun isPublicIpv6(bytes: ByteArray): Boolean {
+    if (bytes.size != 16) return false
+    if (bytes.all { it == 0.toByte() }) return false
+    if (bytes.dropLast(1).all { it == 0.toByte() } && bytes.last() == 1.toByte()) return false
     val first = bytes[0].toInt() and 0xff
     val second = bytes[1].toInt() and 0xff
-    val isMappedIpv4 = bytes.take(10).all { it == 0.toByte() } &&
-        bytes[10] == 0xff.toByte() &&
-        bytes[11] == 0xff.toByte()
-    if (isMappedIpv4) return isPublicIpv4(bytes.copyOfRange(12, 16))
-    val isDocumentation = first == 0x20 &&
-        second == 0x01 &&
-        bytes[2] == 0x0d.toByte() &&
-        bytes[3] == 0xb8.toByte()
-    return first !in 0xfc..0xff && !isDocumentation
-}
-
-fun JobStatus.canTransitionTo(next: JobStatus): Boolean = when (this) {
-    JobStatus.QUEUED -> next in setOf(JobStatus.RUNNING, JobStatus.CANCELLED)
-    JobStatus.RUNNING -> next in setOf(
-        JobStatus.QUEUED,
-        JobStatus.FINALIZING,
-        JobStatus.FAILED,
-        JobStatus.CANCELLED,
-    )
-    JobStatus.FINALIZING -> next in setOf(
-        JobStatus.QUEUED,
-        JobStatus.COMPLETED,
-        JobStatus.FAILED,
-        JobStatus.CANCELLED,
-    )
-    JobStatus.FAILED, JobStatus.CANCELLED -> next == JobStatus.QUEUED
-    JobStatus.COMPLETED -> false
-}
-
-fun friendlyFailure(error: Throwable): String {
-    val message = error.message.orEmpty()
-    val normalized = message.lowercase()
-    return when {
-        normalized.contains("drm") -> "This source is DRM-protected and cannot be downloaded."
-        normalized.contains("confirm you're not a bot") ||
-            normalized.contains("confirm you’re not a bot") ||
-            normalized.contains("verify you are human") ||
-            normalized.contains("unusual traffic") ||
-            normalized.contains("http error 429") ->
-            "The source asked for a bot check. Wait a little, then retry; valid cookies may help for content you can access."
-        isAgeRestrictedFailure(normalized) ->
-            "This video needs age verification. Use fresh cookies from an account permitted to watch it, then retry."
-        isLoginRequiredFailure(normalized) ->
-            "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry."
-        normalized.contains("unsupported") -> "This URL is not supported by the current engine."
-        message.startsWith("Network response ", true) -> {
-            val status = message.substringAfter("Network response ").takeWhile(Char::isDigit)
-            if (status.isNotBlank()) {
-                "The server returned HTTP $status. Check the link and try again."
-            } else {
-                "The server rejected the request. Check the link and try again."
-            }
-        }
-        message.contains("space", true) ||
-            message.contains("ENOSPC", true) -> "There is not enough storage space."
-        error is StorageException -> message.lineSequence()
-            .firstOrNull { it.isNotBlank() }
-            ?.take(180)
-            ?: "The selected download folder could not be written."
-        message.contains("permission", true) ||
-            message.contains("denied", true) -> "Download folder access was revoked. Choose the folder again."
-        message.contains("timed out", true) ||
-            message.contains("timeout", true) -> "The network timed out. Retry to continue the partial download."
-        message.contains("media engine startup failed", true) ||
-            message.contains("engine failed to initialize", true) ||
-            message.contains("could not initialize youtubedl", true) ||
-            message.contains("dlopen failed", true) ||
-            message.contains("libpython", true) ->
-            "The media engine could not start. Reset or update it in Settings."
-        message.contains("network", true) ||
-            error is java.io.IOException -> "The network transfer failed. Retry to continue the partial download."
-        else -> message.lineSequence()
-            .firstOrNull { it.isNotBlank() }
-            ?.removePrefix("ERROR: ")
-            ?.take(180)
-            ?: "The download failed. Try again."
+    if (first and 0xfe == 0xfc) return false // fc00::/7 unique local
+    if (first == 0xfe && second and 0xc0 == 0x80) return false // fe80::/10 link local
+    if (first == 0xff) return false // multicast
+    if (first == 0x20 && second == 0x01) {
+        val third = bytes[2].toInt() and 0xff
+        val fourth = bytes[3].toInt() and 0xff
+        if (third == 0x0d && fourth == 0xb8) return false // 2001:db8::/32 documentation
     }
+    return true
 }
-
-private fun isAgeRestrictedFailure(message: String): Boolean = listOf(
-    "age-restricted",
-    "age restricted",
-    "age verification",
-    "verify your age",
-    "confirm your age",
-    "age-confirmation",
-).any(message::contains)
-
-private fun isLoginRequiredFailure(message: String): Boolean = listOf(
-    "login required",
-    "sign in required",
-    "sign in to confirm",
-    "please sign in",
-    "authentication required",
-    "members-only",
-    "members only",
-    "this video is private",
-).any(message::contains)
 
 fun sanitizeFileName(value: String, fallback: String = "download"): String {
     val clean = value
@@ -428,24 +360,26 @@ fun mergeTransferProgress(
     if (previous == null) return candidate
     return TransferProgress(
         percent = maxOf(previous.percent, candidate.percent).coerceIn(0, 100),
-        bytesDownloaded = listOfNotNull(previous.bytesDownloaded, candidate.bytesDownloaded).maxOrNull(),
+        bytesDownloaded = candidate.bytesDownloaded ?: previous.bytesDownloaded,
         totalBytes = candidate.totalBytes ?: previous.totalBytes,
         speedBytesPerSecond = candidate.speedBytesPerSecond ?: previous.speedBytesPerSecond,
         etaSeconds = candidate.etaSeconds ?: previous.etaSeconds,
     )
 }
 
-private fun parseByteAmount(number: String, unit: String): Long {
+private fun parseByteAmount(value: String, unit: String): Long? {
+    val number = value.replace(",", "").toDoubleOrNull() ?: return null
     val multiplier = when (unit.uppercase()) {
-        "KB" -> 1_000L
-        "KIB" -> 1_024L
-        "MB" -> 1_000_000L
-        "MIB" -> 1_048_576L
-        "GB" -> 1_000_000_000L
-        "GIB" -> 1_073_741_824L
-        "TB" -> 1_000_000_000_000L
-        "TIB" -> 1_099_511_627_776L
-        else -> 1L
+        "B" -> 1.0
+        "KB" -> 1_000.0
+        "KIB" -> 1_024.0
+        "MB" -> 1_000_000.0
+        "MIB" -> 1_048_576.0
+        "GB" -> 1_000_000_000.0
+        "GIB" -> 1_073_741_824.0
+        "TB" -> 1_000_000_000_000.0
+        "TIB" -> 1_099_511_627_776.0
+        else -> return null
     }
-    return (number.replace(",", "").toDouble() * multiplier).toLong()
+    return (number * multiplier).toLong()
 }
