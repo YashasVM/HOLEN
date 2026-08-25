@@ -24,17 +24,61 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android SDK
         run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
+
+      # Main-branch artifacts are meant to update an already-installed HOLEN release,
+      # so they must use the same production certificate as tagged releases.
+      - name: Restore release signing for main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          HOLEN_KEYSTORE_BASE64: ${{ secrets.HOLEN_KEYSTORE_BASE64 }}
+          HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
+          HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
+          HOLEN_KEY_PASSWORD: ${{ secrets.HOLEN_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in HOLEN_KEYSTORE_BASE64 HOLEN_KEYSTORE_PASSWORD HOLEN_KEY_ALIAS HOLEN_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || { echo "Required release signing material is missing." >&2; exit 1; }
+          done
+          key_path="$RUNNER_TEMP/holen-release.jks"
+          printf '%s' "$HOLEN_KEYSTORE_BASE64" | base64 --decode > "$key_path"
+          [[ -s "$key_path" ]] || { echo "Release keystore is empty." >&2; exit 1; }
+          keytool -list -keystore "$key_path" -storepass "$HOLEN_KEYSTORE_PASSWORD" -alias "$HOLEN_KEY_ALIAS" >/dev/null
+
       - name: Lint, test, and build
         working-directory: prod/android
+        shell: bash
+        env:
+          HOLEN_KEYSTORE_PATH: ${{ runner.temp }}/holen-release.jks
+          HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
+          HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
+          HOLEN_KEY_PASSWORD: ${{ secrets.HOLEN_KEY_PASSWORD }}
         run: |
+          set -euo pipefail
+          signing_args=()
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            signing_args+=("-PholenRequireReleaseSigning=true")
+          fi
           ./gradlew \
+            "${signing_args[@]}" \
             lintEmulatorDebug \
             testEmulatorDebugUnitTest \
             assembleEmulatorDebug \
             assembleArm64Release \
             assembleArmv7Release \
             assembleUniversalRelease
+
+      - name: Upload signed ARM64 update
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: HOLEN-android-arm64-signed-update
+          path: prod/android/app/build/outputs/apk/arm64/release/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload ARM64 test APK
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: HOLEN-android-arm64-test
