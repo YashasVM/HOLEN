@@ -185,9 +185,9 @@ class YtDlpEngine private constructor(private val context: Context) {
         }
     }
 
-    /** Prepares the Python/yt-dlp runtime during app idle time without starting a transfer. */
+    /** Prepares Python, yt-dlp, and FFmpeg during app idle time before the first transfer. */
     suspend fun warmup() = withContext(Dispatchers.IO) {
-        operationGate.withOperation { ensureInitialized(needsFfmpeg = false) }
+        operationGate.withOperation { ensureInitialized(needsFfmpeg = true) }
         // A stable update check is intentionally rate-limited and runs only from the
         // non-interactive warm-up path. withMaintenance waits for any active transfer
         // instead of terminating it, so an update can never interrupt a download.
@@ -225,7 +225,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                             "--windows-filenames",
                             "--no-overwrites",
                             "--embed-metadata",
-                            "--concurrent-fragments", "2",
+                            "--concurrent-fragments", "4",
                             "--retries", "3",
                             "--fragment-retries", "3",
                             "--socket-timeout", "20",
@@ -625,9 +625,9 @@ class YtDlpEngine private constructor(private val context: Context) {
         }
 
         private companion object {
-            const val MAX_ENTRIES = 32
-            const val QUICK_CACHE_TTL_MS = 90_000L
-            const val FULL_CACHE_TTL_MS = 45_000L
+            const val MAX_ENTRIES = 64
+            const val QUICK_CACHE_TTL_MS = 5 * 60_000L
+            const val FULL_CACHE_TTL_MS = 10 * 60_000L
         }
     }
 }
