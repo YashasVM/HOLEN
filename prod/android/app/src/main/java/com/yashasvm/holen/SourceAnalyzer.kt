@@ -1,5 +1,6 @@
 package com.yashasvm.holen
 
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -69,7 +70,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
     }
 
     private fun quickYoutubeMetadata(url: String): SourceAnalysis.Media? {
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
         synchronized(quickYoutubeCache) {
             quickYoutubeCache[url]?.let { cached ->
                 if (cached.expiresAt > now) return cached.media
@@ -110,7 +111,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         synchronized(quickYoutubeCache) {
             quickYoutubeCache[url] = CachedQuickYoutube(
                 media = fresh,
-                expiresAt = System.currentTimeMillis() + if (fresh == null) {
+                expiresAt = SystemClock.elapsedRealtime() + if (fresh == null) {
                     QUICK_YOUTUBE_NEGATIVE_CACHE_TTL_MS
                 } else {
                     QUICK_YOUTUBE_CACHE_TTL_MS
