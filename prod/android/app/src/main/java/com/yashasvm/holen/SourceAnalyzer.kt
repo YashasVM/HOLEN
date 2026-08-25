@@ -123,7 +123,10 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         var method = "HEAD"
         while (true) {
             val result = request(rawUrl, method, deadlineNanos)
-            if (method == "HEAD" && result.status in setOf(405, 501)) {
+            // Some CDNs allow the file GET but reject HEAD with 403. Retry with
+            // the existing one-byte range GET so metadata discovery still works
+            // without downloading the body or weakening URL/IP validation.
+            if (method == "HEAD" && result.status in setOf(403, 405, 501)) {
                 method = "GET"
                 continue
             }
