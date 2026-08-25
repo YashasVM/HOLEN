@@ -7,9 +7,20 @@ import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.LinkedHashMap
 import okhttp3.Request
 
 class SourceAnalyzer(private val engine: YtDlpEngine) {
+    private val quickYoutubeCache = object : LinkedHashMap<String, CachedQuickYoutube>(
+        QUICK_YOUTUBE_CACHE_MAX_ENTRIES,
+        0.75f,
+        true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, CachedQuickYoutube>,
+        ): Boolean = size > QUICK_YOUTUBE_CACHE_MAX_ENTRIES
+    }
+
     suspend fun analyze(
         rawUrl: String,
         mode: AnalysisMode = AnalysisMode.FULL,
@@ -55,35 +66,55 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         }
     }
 
-    private fun quickYoutubeMetadata(url: String): SourceAnalysis.Media? = runCatching {
-        val encoded = URLEncoder.encode(url, StandardCharsets.UTF_8.name())
-        val endpoint = resolvePublicHttpsEndpoint(
-            "https://www.youtube.com/oembed?url=$encoded&format=json",
-        )
-        val request = Request.Builder()
-            .url(endpoint.url)
-            .header("User-Agent", USER_AGENT)
-            .build()
-        pinnedPublicHttpsClient(endpoint, QUICK_YOUTUBE_TIMEOUT_MS)
-            .newCall(request)
-            .execute()
-            .use { response ->
-                if (!response.isSuccessful) return@runCatching null
-                val body = response.body?.string()?.takeIf { it.isNotBlank() }
-                    ?: return@runCatching null
-                val json = JSONObject(body)
-                val title = json.optString("title").takeIf { it.isNotBlank() }
-                    ?: return@runCatching null
-                SourceAnalysis.Media(
-                    sourceUrl = url,
-                    title = title,
-                    uploader = json.optString("author_name").takeIf { it.isNotBlank() },
-                    durationSeconds = null,
-                    thumbnailUrl = json.optString("thumbnail_url").takeIf { it.isNotBlank() },
-                    estimatedSizes = emptyMap(),
+    private fun quickYoutubeMetadata(url: String): SourceAnalysis.Media? {
+        val now = System.currentTimeMillis()
+        synchronized(quickYoutubeCache) {
+            quickYoutubeCache[url]?.let { cached ->
+                if (cached.expiresAt > now) return cached.media
+                quickYoutubeCache.remove(url)
+            }
+        }
+
+        val fresh = runCatching {
+            val encoded = URLEncoder.encode(url, StandardCharsets.UTF_8.name())
+            val endpoint = resolvePublicHttpsEndpoint(
+                "https://www.youtube.com/oembed?url=$encoded&format=json",
+            )
+            val request = Request.Builder()
+                .url(endpoint.url)
+                .header("User-Agent", USER_AGENT)
+                .build()
+            pinnedPublicHttpsClient(endpoint, QUICK_YOUTUBE_TIMEOUT_MS)
+                .newCall(request)
+                .execute()
+                .use { response ->
+                    if (!response.isSuccessful) return@runCatching null
+                    val body = response.body?.string()?.takeIf { it.isNotBlank() }
+                        ?: return@runCatching null
+                    val json = JSONObject(body)
+                    val title = json.optString("title").takeIf { it.isNotBlank() }
+                        ?: return@runCatching null
+                    SourceAnalysis.Media(
+                        sourceUrl = url,
+                        title = title,
+                        uploader = json.optString("author_name").takeIf { it.isNotBlank() },
+                        durationSeconds = null,
+                        thumbnailUrl = json.optString("thumbnail_url").takeIf { it.isNotBlank() },
+                        estimatedSizes = emptyMap(),
+                    )
+                }
+        }.getOrNull()
+
+        if (fresh != null) {
+            synchronized(quickYoutubeCache) {
+                quickYoutubeCache[url] = CachedQuickYoutube(
+                    media = fresh,
+                    expiresAt = System.currentTimeMillis() + QUICK_YOUTUBE_CACHE_TTL_MS,
                 )
             }
-    }.getOrNull()
+        }
+        return fresh
+    }
 
     private fun probe(rawUrl: String): ProbeResult {
         val deadlineNanos = System.nanoTime() + PROBE_BUDGET_MS * 1_000_000L
@@ -150,11 +181,18 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         val contentLength: Long?,
     )
 
+    private data class CachedQuickYoutube(
+        val media: SourceAnalysis.Media,
+        val expiresAt: Long,
+    )
+
     companion object {
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 3_000
         private const val PROBE_BUDGET_MS = 4_000
         private const val QUICK_YOUTUBE_TIMEOUT_MS = 2_500L
+        private const val QUICK_YOUTUBE_CACHE_MAX_ENTRIES = 32
+        private const val QUICK_YOUTUBE_CACHE_TTL_MS = 5 * 60_000L
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
 
