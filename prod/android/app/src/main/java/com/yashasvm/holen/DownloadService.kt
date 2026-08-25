@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +30,7 @@ class DownloadService : Service() {
     private lateinit var outputStore: OutputStore
     private lateinit var engine: YtDlpEngine
     private val directDownloader = DirectDownloader()
+    private val notificationUpdateLock = Any()
 
     @Volatile
     private var currentJobId: String? = null
@@ -40,6 +42,8 @@ class DownloadService : Service() {
     private var stopping = false
 
     private var blockedPublicationIds: Set<String> = emptySet()
+    private var lastProgressNotificationJobId: String? = null
+    private var lastProgressNotificationAt = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -171,6 +175,7 @@ class DownloadService : Service() {
                 updateNotification(
                     job.copy(status = JobStatus.FINALIZING),
                     TransferProgress(99, staged.file.length(), staged.file.length(), null, null),
+                    force = true,
                 )
                 val published = outputStore.publish(job.id, staged) { shouldAbort(job.id) }
                 publishedOutput = published
@@ -259,7 +264,23 @@ class DownloadService : Service() {
         return blockedFinalizingIds
     }
 
-    private fun updateNotification(job: DownloadJob, progress: TransferProgress) {
+    private fun updateNotification(
+        job: DownloadJob,
+        progress: TransferProgress,
+        force: Boolean = false,
+    ) {
+        val now = SystemClock.elapsedRealtime()
+        synchronized(notificationUpdateLock) {
+            if (
+                !force &&
+                lastProgressNotificationJobId == job.id &&
+                now - lastProgressNotificationAt < NOTIFICATION_UPDATE_INTERVAL_MS
+            ) {
+                return
+            }
+            lastProgressNotificationJobId = job.id
+            lastProgressNotificationAt = now
+        }
         startTransferForeground(
             notification(
                 title = job.title,
@@ -400,6 +421,7 @@ class DownloadService : Service() {
         private const val COMPLETION_CHANNEL_ID = "download_completions"
         private const val NOTIFICATION_ID = 410
         private const val COMPLETION_NOTIFICATION_BASE = 10_000
+        private const val NOTIFICATION_UPDATE_INTERVAL_MS = 1_000L
 
         @Volatile
         internal var isRunning = false
