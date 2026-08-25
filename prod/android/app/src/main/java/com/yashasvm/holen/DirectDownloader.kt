@@ -149,7 +149,9 @@ class DirectDownloader {
     }
 
     companion object {
-        private const val COPY_BUFFER_SIZE = 64 * 1024
+        // Larger reads reduce Java/Kotlin stream overhead on fast mobile connections while
+        // remaining small enough to avoid meaningful memory pressure on older devices.
+        private const val COPY_BUFFER_SIZE = 256 * 1024
         // Keep the established name so installs upgrading from earlier builds
         // can continue an existing direct download.
         private const val PART_FILE_NAME = "download.part"
