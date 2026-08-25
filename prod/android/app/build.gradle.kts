@@ -139,6 +139,7 @@ dependencies {
     implementation(libs.coil.network)
     implementation(libs.youtubedl.library)
     implementation(libs.youtubedl.ffmpeg)
+    implementation(libs.youtubedl.aria2c)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)

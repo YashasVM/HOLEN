@@ -226,7 +226,11 @@ class YtDlpEngine private constructor(private val context: Context) {
                             "--windows-filenames",
                             "--no-overwrites",
                             "--embed-metadata",
-                            "--concurrent-fragments", "4",
+                            // aria2c keeps segmented streams busy while the app
+                            // remains responsive; eight concurrent fragments is
+                            // the same default used by the faster reference client.
+                            "--downloader", "libaria2c.so",
+                            "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
                             "--socket-timeout", "20",

@@ -376,7 +376,7 @@ class OutputStore(private val context: Context) {
         // Finalization copies completed media from private staging into a SAF document.
         // Larger chunks reduce stream and binder overhead for large files without changing
         // publication semantics or meaningfully increasing memory usage.
-        private const val COPY_BUFFER_SIZE = 256 * 1024
+        private const val COPY_BUFFER_SIZE = 1024 * 1024
         private const val ORPHAN_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000
         private const val PREF_PENDING_PUBLICATIONS = "pending_publications"
         private val journalLock = Any()

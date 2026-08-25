@@ -33,6 +33,7 @@ coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" 
 coil-network = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
 youtubedl-library = { module = "io.github.junkfood02.youtubedl-android:library", version.ref = "youtubedl" }
 youtubedl-ffmpeg = { module = "io.github.junkfood02.youtubedl-android:ffmpeg", version.ref = "youtubedl" }
+youtubedl-aria2c = { module = "io.github.junkfood02.youtubedl-android:aria2c", version.ref = "youtubedl" }
 junit = { module = "junit:junit", version.ref = "junit" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test" }
 androidx-test-rules = { module = "androidx.test:rules", version.ref = "androidx-test" }
