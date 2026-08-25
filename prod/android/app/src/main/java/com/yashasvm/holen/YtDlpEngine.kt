@@ -1,6 +1,7 @@
 package com.yashasvm.holen
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.core.content.edit
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
@@ -251,7 +252,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                     if (isCancelled()) {
                         YoutubeDL.destroyProcessById(job.id)
                     } else {
-                        val now = System.currentTimeMillis()
+                        val now = SystemClock.elapsedRealtime()
                         val progress = transferProgressFromCallback(
                             line = line,
                             wrapperPercent = wrapperPercent,
@@ -613,7 +614,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         @Synchronized
         fun get(key: Key): SourceAnalysis? {
             val value = values[key] ?: return null
-            if (value.expiresAt > System.currentTimeMillis()) return value.analysis
+            if (value.expiresAt > SystemClock.elapsedRealtime()) return value.analysis
             values.remove(key)
             return null
         }
@@ -621,7 +622,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         @Synchronized
         fun put(key: Key, analysis: SourceAnalysis, mode: AnalysisMode) {
             val ttl = if (mode == AnalysisMode.QUICK) QUICK_CACHE_TTL_MS else FULL_CACHE_TTL_MS
-            values[key] = Value(analysis, System.currentTimeMillis() + ttl)
+            values[key] = Value(analysis, SystemClock.elapsedRealtime() + ttl)
         }
 
         private companion object {
