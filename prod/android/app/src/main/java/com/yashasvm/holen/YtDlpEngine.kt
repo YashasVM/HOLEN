@@ -16,7 +16,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -203,7 +205,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         isCancelled: () -> Boolean = { false },
         onProgress: (TransferProgress) -> Unit,
     ): StagedDownload = withContext(Dispatchers.IO) {
-        downloadMutex.withLock {
+        downloadMutex.withPermit {
             operationGate.withOperation {
                 validatePublicHttpsUrl(job.sourceUrl)
                 ensureInitialized(needsFfmpeg = true)
@@ -461,6 +463,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         const val PLAYLIST_PREVIEW_LIMIT = 100
         const val QUICK_PLAYLIST_PREVIEW_LIMIT = 3
         const val PLAYLIST_QUEUE_LIMIT = 25
+        const val MAX_ACTIVE_DOWNLOADS = 2
         const val QUICK_ANALYSIS_TIMEOUT_MS = 12_000L
         const val METADATA_TIMEOUT_MESSAGE = "Metadata lookup timed out. Check the link or try again."
         internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
@@ -602,7 +605,7 @@ class YtDlpEngine private constructor(private val context: Context) {
             now: Long = System.currentTimeMillis(),
         ): Boolean = lastCheckAt <= 0L || now - lastCheckAt >= ENGINE_CHECK_INTERVAL_MS
 
-        private val downloadMutex = Mutex()
+        private val downloadMutex = Semaphore(MAX_ACTIVE_DOWNLOADS)
 
         @Volatile
         private var instance: YtDlpEngine? = null
