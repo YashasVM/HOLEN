@@ -491,6 +491,9 @@ private class StagingProgressSampler(
     @Volatile
     private var floorPercent = 0
 
+    @Volatile
+    private var lastExtractorProgressAt = 0L
+
     private var previousBytes = 0L
     private var previousAt = 0L
 
@@ -506,9 +509,14 @@ private class StagingProgressSampler(
     fun observeExtractor(progress: TransferProgress) {
         progress.totalBytes?.let { knownTotalBytes = it }
         floorPercent = maxOf(floorPercent, progress.percent)
+        lastExtractorProgressAt = System.currentTimeMillis()
     }
 
     private fun sample() {
+        val now = System.currentTimeMillis()
+        val extractorAt = lastExtractorProgressAt
+        if (extractorAt > 0L && now - extractorAt < EXTRACTOR_SILENCE_MS) return
+
         val bytes = directory.takeIf(java.io.File::isDirectory)
             ?.walkTopDown()
             ?.filter { file ->
@@ -516,7 +524,6 @@ private class StagingProgressSampler(
             }
             ?.maxOfOrNull(java.io.File::length)
             ?: return
-        val now = System.currentTimeMillis()
         if (bytes <= previousBytes) return
         val elapsed = (now - previousAt).takeIf { previousAt > 0L && it > 0L }
         val total = knownTotalBytes
@@ -545,5 +552,6 @@ private class StagingProgressSampler(
 
     private companion object {
         const val SAMPLE_INTERVAL_MS = 500L
+        const val EXTRACTOR_SILENCE_MS = 2_000L
     }
 }
