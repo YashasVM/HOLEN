@@ -63,13 +63,16 @@ class CookieStore(context: Context) {
 
     /**
      * A non-reversible state marker for metadata caching. A changed cookie file must never reuse
-     * a result fetched with the previous account/session.
+     * a result fetched with the previous account/session. Hash the exact bytes that passed
+     * validation so cache-key generation performs one file read and cannot race a second read of
+     * different cookie contents.
      */
     internal fun cacheKey(): String = runCatching {
-        validFile()?.let { file ->
-            val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
-            digest.joinToString("") { byte -> "%02x".format(byte) }
-        } ?: "no-cookies"
+        if (!cookieFile.isFile) return@runCatching "no-cookies"
+        val bytes = cookieFile.readBytes()
+        if (!validateCookieBytes(bytes)) return@runCatching "no-cookies"
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        digest.joinToString("") { byte -> "%02x".format(byte) }
     }.getOrDefault("no-cookies")
 
     companion object {
