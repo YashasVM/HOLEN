@@ -34,3 +34,10 @@ jobs:
             assembleArm64Release \
             assembleArmv7Release \
             assembleUniversalRelease
+      - name: Upload ARM64 test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: HOLEN-android-arm64-test
+          path: prod/android/app/build/outputs/apk/arm64/release/*.apk
+          if-no-files-found: error
+          retention-days: 7
