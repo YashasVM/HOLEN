@@ -26,9 +26,11 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         mode: AnalysisMode = AnalysisMode.FULL,
         processId: String? = null,
     ): SourceAnalysis = withContext(Dispatchers.IO) {
-        // Validate before handing an extractor-first URL to the media engine too.
-        // The direct probe below additionally pins its actual network sockets.
-        val url = validatePublicHttpsUrl(rawUrl)
+        // Resolve and validate once up front. Direct-file probes reuse this exact
+        // validated endpoint so metadata discovery does not repeat DNS lookups
+        // before HEAD/range-GET requests or reopen a DNS-rebinding window.
+        val endpoint = resolvePublicHttpsEndpoint(rawUrl)
+        val url = endpoint.url
         if (isExtractorFirstHost(URI(url).host)) {
             // A share-sheet preview only needs title/channel/thumbnail before the user can
             // choose a format. YouTube's oEmbed response is dramatically lighter than
@@ -44,7 +46,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
                 engine.analyze(url, mode, processId)
             }
         }
-        val probe = probe(url)
+        val probe = probe(endpoint)
         if (isDirectFile(probe.contentDisposition, probe.mimeType)) {
             val name = sanitizeFileName(
                 DirectDownloader.fileNameFromDisposition(probe.contentDisposition)
@@ -118,11 +120,11 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         return fresh
     }
 
-    private fun probe(rawUrl: String): ProbeResult {
+    private fun probe(endpoint: PublicHttpsEndpoint): ProbeResult {
         val deadlineNanos = System.nanoTime() + PROBE_BUDGET_MS * 1_000_000L
         var method = "HEAD"
         while (true) {
-            val result = request(rawUrl, method, deadlineNanos)
+            val result = request(endpoint, method, deadlineNanos)
             // Some CDNs allow the file GET but reject HEAD with 403. Retry with
             // the existing one-byte range GET so metadata discovery still works
             // without downloading the body or weakening URL/IP validation.
@@ -137,8 +139,12 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         }
     }
 
-    private fun request(rawUrl: String, method: String, deadlineNanos: Long): ProbeResult {
-        var endpoint = resolvePublicHttpsEndpoint(rawUrl)
+    private fun request(
+        initialEndpoint: PublicHttpsEndpoint,
+        method: String,
+        deadlineNanos: Long,
+    ): ProbeResult {
+        var endpoint = initialEndpoint
         repeat(MAX_REDIRECTS + 1) { redirect ->
             val request = Request.Builder().url(endpoint.url).method(method, null)
                 .header("User-Agent", USER_AGENT)
