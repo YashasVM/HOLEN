@@ -5,6 +5,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -117,25 +118,33 @@ class AppUpdateManager(private val context: Context) {
             val total = connection.contentLengthLong.takeIf { it >= 0L }
             if (total != null && total > MAX_APK_BYTES) throw IOException("The update is too large.")
             var downloaded = 0L
-            val deadline = System.currentTimeMillis() + DOWNLOAD_TIMEOUT_MS
+            var lastProgressAt = 0L
+            var lastReportedBytes = 0L
+            val deadline = SystemClock.elapsedRealtime() + DOWNLOAD_TIMEOUT_MS
             connection.inputStream.use { input ->
                 target.outputStream().buffered().use { output ->
                     val buffer = ByteArray(BUFFER_BYTES)
                     while (true) {
                         coroutineContext.ensureActive()
-                        if (System.currentTimeMillis() > deadline) throw IOException("Update download timed out.")
+                        val now = SystemClock.elapsedRealtime()
+                        if (now > deadline) throw IOException("Update download timed out.")
                         val count = input.read(buffer)
                         if (count < 0) break
                         downloaded += count
                         if (downloaded > MAX_APK_BYTES) throw IOException("The update is too large.")
                         output.write(buffer, 0, count)
-                        onProgress(downloaded, total)
+                        if (now - lastProgressAt >= PROGRESS_INTERVAL_MS || downloaded == total) {
+                            onProgress(downloaded, total)
+                            lastProgressAt = now
+                            lastReportedBytes = downloaded
+                        }
                     }
                 }
             }
             if (downloaded == 0L || (total != null && downloaded != total)) {
                 throw IOException("The update download was incomplete.")
             }
+            if (downloaded != lastReportedBytes) onProgress(downloaded, total)
         } finally {
             connection.disconnect()
         }
@@ -215,6 +224,7 @@ class AppUpdateManager(private val context: Context) {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val DOWNLOAD_TIMEOUT_MS = 10 * 60_000L
+        private const val PROGRESS_INTERVAL_MS = 250L
         private const val MAX_REDIRECTS = 5
         private const val MAX_METADATA_BYTES = 1_000_000
         private const val MAX_NOTES_CHARS = 3_000
