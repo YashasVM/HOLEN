@@ -500,7 +500,9 @@ class YtDlpEngine private constructor(private val context: Context) {
             )
         }
 
-        private fun estimateSize(formats: JSONArray, target: DownloadFormat): Long? {
+        internal fun estimateSize(formats: JSONArray, target: DownloadFormat): Long? {
+            data class Candidate(val bytes: Long, val video: Boolean, val audio: Boolean)
+
             val matching = buildList {
                 for (index in 0 until formats.length()) {
                     val item = formats.optJSONObject(index) ?: continue
@@ -508,8 +510,10 @@ class YtDlpEngine private constructor(private val context: Context) {
                         ?: item.optLong("filesize_approx").takeIf { it > 0 }
                         ?: continue
                     val height = item.optInt("height")
-                    val video = item.optString("vcodec") != "none"
-                    val audio = item.optString("acodec") != "none"
+                    val video = item.optString("vcodec").isNotBlank() &&
+                        item.optString("vcodec") != "none"
+                    val audio = item.optString("acodec").isNotBlank() &&
+                        item.optString("acodec") != "none"
                     val ext = item.optString("ext")
                     val match = when (target) {
                         DownloadFormat.BEST_MP4 -> video
@@ -519,10 +523,18 @@ class YtDlpEngine private constructor(private val context: Context) {
                         DownloadFormat.AUDIO_MP3 -> audio && !video
                         DownloadFormat.ORIGINAL -> false
                     }
-                    if (match) add(size)
+                    if (match) add(Candidate(size, video, audio))
                 }
             }
-            return matching.maxOrNull()
+            if (matching.isEmpty()) return null
+            if (target.isAudio) return matching.maxOf(Candidate::bytes)
+
+            val videoOnly = matching.filter { it.video && !it.audio }.maxOfOrNull(Candidate::bytes)
+            val audioOnly = matching.filter { it.audio && !it.video }.maxOfOrNull(Candidate::bytes)
+            return when {
+                videoOnly != null -> videoOnly + (audioOnly ?: 0L)
+                else -> matching.maxOf(Candidate::bytes)
+            }
         }
 
         private fun String.toJsonObject(): JSONObject {

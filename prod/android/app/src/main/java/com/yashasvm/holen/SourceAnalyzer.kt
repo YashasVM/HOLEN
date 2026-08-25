@@ -208,6 +208,17 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         private const val QUICK_YOUTUBE_NEGATIVE_CACHE_TTL_MS = 30_000L
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+        private val BINARY_MIME_TYPES = setOf(
+            "application/gzip",
+            "application/pdf",
+            "application/vnd.android.package-archive",
+            "application/x-7z-compressed",
+            "application/x-bzip2",
+            "application/x-rar-compressed",
+            "application/x-tar",
+            "application/x-xz",
+            "application/zip",
+        )
 
         fun isExtractorFirstHost(host: String?): Boolean {
             val normalized = host?.trimEnd('.')?.lowercase() ?: return false
@@ -230,7 +241,11 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         fun isDirectFile(contentDisposition: String?, mimeType: String?): Boolean {
             if (contentDisposition?.contains("attachment", ignoreCase = true) == true) return true
             val type = mimeType?.substringBefore(';')?.trim()?.lowercase() ?: return false
-            return type !in setOf("text/html", "application/xhtml+xml")
+            return type.startsWith("audio/") ||
+                type.startsWith("video/") ||
+                type.startsWith("image/") ||
+                type == "application/octet-stream" ||
+                type in BINARY_MIME_TYPES
         }
     }
 }

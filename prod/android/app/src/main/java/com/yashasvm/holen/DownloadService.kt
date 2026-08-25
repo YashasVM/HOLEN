@@ -544,7 +544,7 @@ private class StagingProgressSampler(
             ?.filter { file ->
                 file.isFile && !file.name.endsWith(".ytdl") && !file.name.endsWith(".part-Frag")
             }
-            ?.maxOfOrNull(java.io.File::length)
+            ?.sumOf(java.io.File::length)
             ?: return
         if (bytes <= previousBytes) return
         val elapsed = (now - previousAt).takeIf { previousAt > 0L && it > 0L }

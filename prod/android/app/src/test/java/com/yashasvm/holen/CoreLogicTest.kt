@@ -84,6 +84,8 @@ class CoreLogicTest {
         assertTrue(SourceAnalyzer.isDirectFile(null, "video/mp4"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "text/html; charset=utf-8"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "application/xhtml+xml"))
+        assertFalse(SourceAnalyzer.isDirectFile(null, "application/json"))
+        assertFalse(SourceAnalyzer.isDirectFile(null, "text/plain"))
         assertFalse(SourceAnalyzer.isDirectFile(null, null))
     }
 
