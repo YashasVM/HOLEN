@@ -1,5 +1,6 @@
 package com.yashasvm.holen
 
+import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -64,7 +65,7 @@ class DirectDownloader {
             val mimeType = OutputStore.mimeTypeFor(fileName, connection.header("Content-Type")?.substringBefore(';'))
             var downloaded = existing
             var lastBytes = existing
-            var lastWrite = System.currentTimeMillis()
+            var lastWrite = SystemClock.elapsedRealtime()
 
             requireNotNull(connection.body).byteStream().use { input ->
                 FileOutputStream(part, existing > 0).use { output ->
@@ -78,7 +79,7 @@ class DirectDownloader {
                         if (read < 0) break
                         output.write(buffer, 0, read)
                         downloaded += read
-                        val now = System.currentTimeMillis()
+                        val now = SystemClock.elapsedRealtime()
                         if (now - lastWrite >= 1_000) {
                             val speed = ((downloaded - lastBytes) * 1_000L / (now - lastWrite))
                                 .coerceAtLeast(0)
