@@ -2,8 +2,11 @@ package com.yashasvm.holen
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.IOException
 import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import okhttp3.Request
 
 class SourceAnalyzer(private val engine: YtDlpEngine) {
@@ -16,6 +19,14 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         // The direct probe below additionally pins its actual network sockets.
         val url = validatePublicHttpsUrl(rawUrl)
         if (isExtractorFirstHost(URI(url).host)) {
+            // A share-sheet preview only needs title/channel/thumbnail before the user can
+            // choose a format. YouTube's oEmbed response is dramatically lighter than
+            // starting the Python + yt-dlp extractor and enumerating every media format.
+            // Private/age-restricted/unsupported links automatically fall back to yt-dlp,
+            // preserving cookies and the existing extractor behavior.
+            if (mode == AnalysisMode.QUICK && !isYoutubePlaylist(url)) {
+                quickYoutubeMetadata(url)?.let { return@withContext it }
+            }
             return@withContext if (processId == null) {
                 engine.analyze(url, mode)
             } else {
@@ -43,6 +54,36 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
             }
         }
     }
+
+    private fun quickYoutubeMetadata(url: String): SourceAnalysis.Media? = runCatching {
+        val encoded = URLEncoder.encode(url, StandardCharsets.UTF_8.name())
+        val endpoint = resolvePublicHttpsEndpoint(
+            "https://www.youtube.com/oembed?url=$encoded&format=json",
+        )
+        val request = Request.Builder()
+            .url(endpoint.url)
+            .header("User-Agent", USER_AGENT)
+            .build()
+        pinnedPublicHttpsClient(endpoint, QUICK_YOUTUBE_TIMEOUT_MS)
+            .newCall(request)
+            .execute()
+            .use { response ->
+                if (!response.isSuccessful) return@runCatching null
+                val body = response.body?.string()?.takeIf { it.isNotBlank() }
+                    ?: return@runCatching null
+                val json = JSONObject(body)
+                val title = json.optString("title").takeIf { it.isNotBlank() }
+                    ?: return@runCatching null
+                SourceAnalysis.Media(
+                    sourceUrl = url,
+                    title = title,
+                    uploader = json.optString("author_name").takeIf { it.isNotBlank() },
+                    durationSeconds = null,
+                    thumbnailUrl = json.optString("thumbnail_url").takeIf { it.isNotBlank() },
+                    estimatedSizes = emptyMap(),
+                )
+            }
+    }.getOrNull()
 
     private fun probe(rawUrl: String): ProbeResult {
         val deadlineNanos = System.nanoTime() + PROBE_BUDGET_MS * 1_000_000L
@@ -113,6 +154,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 3_000
         private const val PROBE_BUDGET_MS = 4_000
+        private const val QUICK_YOUTUBE_TIMEOUT_MS = 2_500L
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
 
@@ -123,6 +165,15 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
                 normalized.endsWith(".youtube.com") ||
                 normalized == "youtube-nocookie.com" ||
                 normalized.endsWith(".youtube-nocookie.com")
+        }
+
+        private fun isYoutubePlaylist(url: String): Boolean {
+            val uri = runCatching { URI(url) }.getOrNull() ?: return false
+            if (uri.path.equals("/playlist", ignoreCase = true)) return true
+            return uri.rawQuery
+                ?.split('&')
+                ?.any { parameter -> parameter.substringBefore('=') == "list" }
+                ?: false
         }
 
         fun isDirectFile(contentDisposition: String?, mimeType: String?): Boolean {
