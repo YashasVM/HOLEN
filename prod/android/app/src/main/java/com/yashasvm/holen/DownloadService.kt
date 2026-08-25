@@ -531,11 +531,11 @@ private class StagingProgressSampler(
     fun observeExtractor(progress: TransferProgress) {
         progress.totalBytes?.let { knownTotalBytes = it }
         floorPercent = maxOf(floorPercent, progress.percent)
-        lastExtractorProgressAt = System.currentTimeMillis()
+        lastExtractorProgressAt = SystemClock.elapsedRealtime()
     }
 
     private fun sample() {
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
         val extractorAt = lastExtractorProgressAt
         if (extractorAt > 0L && now - extractorAt < EXTRACTOR_SILENCE_MS) return
 
