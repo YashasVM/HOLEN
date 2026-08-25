@@ -530,7 +530,9 @@ class YtDlpEngine private constructor(private val context: Context) {
                 }
             }
             if (matching.isEmpty()) return null
-            if (target.isAudio) return matching.maxOf(Candidate::bytes)
+            if (target == DownloadFormat.AUDIO_M4A || target == DownloadFormat.AUDIO_MP3) {
+                return matching.maxOf(Candidate::bytes)
+            }
 
             val videoOnly = matching.filter { it.video && !it.audio }.maxOfOrNull(Candidate::bytes)
             val audioOnly = matching.filter { it.audio && !it.video }.maxOfOrNull(Candidate::bytes)

@@ -235,6 +235,9 @@ class DownloadService : Service() {
         }
     }
 
+    private fun shouldAbort(jobId: String): Boolean =
+        stopping || jobId in cancelledIds || jobId in timedOutIds
+
     /** Reconciles SAF files copied just before an unexpected process death. */
     private suspend fun recoverPublishedFiles(): Set<String> {
         val blockedFinalizingIds = mutableSetOf<String>()
