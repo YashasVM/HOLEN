@@ -105,13 +105,15 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
                 }
         }.getOrNull()
 
-        if (fresh != null) {
-            synchronized(quickYoutubeCache) {
-                quickYoutubeCache[url] = CachedQuickYoutube(
-                    media = fresh,
-                    expiresAt = System.currentTimeMillis() + QUICK_YOUTUBE_CACHE_TTL_MS,
-                )
-            }
+        synchronized(quickYoutubeCache) {
+            quickYoutubeCache[url] = CachedQuickYoutube(
+                media = fresh,
+                expiresAt = System.currentTimeMillis() + if (fresh == null) {
+                    QUICK_YOUTUBE_NEGATIVE_CACHE_TTL_MS
+                } else {
+                    QUICK_YOUTUBE_CACHE_TTL_MS
+                },
+            )
         }
         return fresh
     }
@@ -182,7 +184,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
     )
 
     private data class CachedQuickYoutube(
-        val media: SourceAnalysis.Media,
+        val media: SourceAnalysis.Media?,
         val expiresAt: Long,
     )
 
@@ -193,6 +195,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         private const val QUICK_YOUTUBE_TIMEOUT_MS = 2_500L
         private const val QUICK_YOUTUBE_CACHE_MAX_ENTRIES = 32
         private const val QUICK_YOUTUBE_CACHE_TTL_MS = 5 * 60_000L
+        private const val QUICK_YOUTUBE_NEGATIVE_CACHE_TTL_MS = 30_000L
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
 
