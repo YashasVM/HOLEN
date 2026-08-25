@@ -40,7 +40,12 @@ class DirectDownloader {
         val part = File(directory, PART_FILE_NAME)
         var existing = part.takeIf(File::exists)?.length() ?: 0L
         var connection = open(job.sourceUrl, existing.takeIf { it > 0 })
-        if (existing > 0 && !shouldAppend(
+        val completedResume = existing > 0 && isCompletedRangeResponse(
+            existing,
+            connection.code,
+            connection.header("Content-Range"),
+        )
+        if (existing > 0 && !completedResume && !shouldAppend(
                 existing,
                 connection.code,
                 connection.header("Content-Range"),
@@ -54,10 +59,10 @@ class DirectDownloader {
 
         try {
             val responseCode = connection.code
-            if (responseCode !in setOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
+            if (!completedResume && responseCode !in setOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
                 throw IOException("Network response $responseCode")
             }
-            val total = totalLength(connection, existing)
+            val total = if (completedResume) existing else totalLength(connection, existing)
             val disposition = connection.header("Content-Disposition")
             val suggested = fileNameFromDisposition(disposition)
                 ?: URI(job.sourceUrl).path.substringAfterLast('/').ifBlank { job.title }
@@ -67,39 +72,41 @@ class DirectDownloader {
             var lastBytes = existing
             var lastWrite = SystemClock.elapsedRealtime()
 
-            requireNotNull(connection.body).byteStream().use { input ->
-                FileOutputStream(part, existing > 0).use { output ->
-                    val buffer = ByteArray(COPY_BUFFER_SIZE)
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-                        if (cancelled.get() || isCancelled()) {
-                            throw CancellationException("Download cancelled")
+            if (!completedResume) {
+                requireNotNull(connection.body).byteStream().use { input ->
+                    FileOutputStream(part, existing > 0).use { output ->
+                        val buffer = ByteArray(COPY_BUFFER_SIZE)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            if (cancelled.get() || isCancelled()) {
+                                throw CancellationException("Download cancelled")
+                            }
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastWrite >= 1_000) {
+                                val speed = ((downloaded - lastBytes) * 1_000L / (now - lastWrite))
+                                    .coerceAtLeast(0)
+                                val remaining = total?.minus(downloaded)?.coerceAtLeast(0)
+                                onProgress(
+                                    TransferProgress(
+                                        percent = total?.let {
+                                            (downloaded * 100 / it.coerceAtLeast(1)).toInt()
+                                        } ?: 0,
+                                        bytesDownloaded = downloaded,
+                                        totalBytes = total,
+                                        speedBytesPerSecond = speed,
+                                        etaSeconds = remaining?.let { if (speed > 0) it / speed else null },
+                                    ),
+                                )
+                                lastWrite = now
+                                lastBytes = downloaded
+                            }
                         }
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        val now = SystemClock.elapsedRealtime()
-                        if (now - lastWrite >= 1_000) {
-                            val speed = ((downloaded - lastBytes) * 1_000L / (now - lastWrite))
-                                .coerceAtLeast(0)
-                            val remaining = total?.minus(downloaded)?.coerceAtLeast(0)
-                            onProgress(
-                                TransferProgress(
-                                    percent = total?.let {
-                                        (downloaded * 100 / it.coerceAtLeast(1)).toInt()
-                                    } ?: 0,
-                                    bytesDownloaded = downloaded,
-                                    totalBytes = total,
-                                    speedBytesPerSecond = speed,
-                                    etaSeconds = remaining?.let { if (speed > 0) it / speed else null },
-                                ),
-                            )
-                            lastWrite = now
-                            lastBytes = downloaded
-                        }
+                        output.fd.sync()
                     }
-                    output.fd.sync()
                 }
             }
             if (total != null && downloaded != total) {
@@ -176,6 +183,20 @@ class DirectDownloader {
                 ?.get(1)
                 ?.toLongOrNull()
             return start == existingBytes
+        }
+
+        internal fun isCompletedRangeResponse(
+            existingBytes: Long,
+            responseCode: Int,
+            contentRange: String?,
+        ): Boolean {
+            if (existingBytes <= 0 || responseCode != 416) return false
+            val total = Regex("""^\s*bytes\s+\*/(\d+)\s*$""", RegexOption.IGNORE_CASE)
+                .matchEntire(contentRange.orEmpty())
+                ?.groupValues
+                ?.get(1)
+                ?.toLongOrNull()
+            return total == existingBytes
         }
 
         fun totalLength(response: Response, existingBytes: Long): Long? {
