@@ -35,13 +35,13 @@ class DirectDownloader {
         check(directory.isDirectory || directory.mkdirs()) {
             "Could not prepare private download storage."
         }
-        // This name is deliberately not derived from the response. A hostile
-        // Content-Disposition value must never collide with the resumable part.
+        // These names are deliberately not derived from the response. A hostile
+        // Content-Disposition value must never collide with resumable state.
         val part = File(directory, PART_FILE_NAME)
         val validatorFile = File(directory, RESUME_VALIDATOR_FILE_NAME)
         var existing = part.takeIf(File::exists)?.length() ?: 0L
-        var resumeValidator = if (existing > 0) readResumeValidator(validatorFile) else null
-        if (existing > 0 && resumeValidator == null) {
+        var resumeState = if (existing > 0) readResumeState(validatorFile) else null
+        if (existing > 0 && resumeState == null) {
             // Legacy or incomplete state cannot be resumed safely because a changed remote
             // object could otherwise be appended to stale bytes.
             part.delete()
@@ -51,31 +51,33 @@ class DirectDownloader {
         var connection = open(
             job.sourceUrl,
             existing.takeIf { it > 0 },
-            resumeValidator,
+            resumeState,
         )
-        var completedResume = existing > 0 && isCompletedRangeResponse(
+        var attemptedResume = connection.request.header("Range") != null
+        var completedResume = existing > 0 && attemptedResume && isCompletedRangeResponse(
             existing,
             connection.code,
             connection.header("Content-Range"),
         )
-        if (existing > 0 && !completedResume && !shouldAppend(
+        if (existing > 0 && !completedResume && !(attemptedResume && shouldAppend(
                 existing,
                 connection.code,
                 connection.header("Content-Range"),
-            )
+            ))
         ) {
             if (connection.code == HttpURLConnection.HTTP_OK) {
-                // A failed If-Range condition returns the complete new representation. Reuse
-                // that response and restart locally instead of issuing a second request.
+                // A failed If-Range condition, or a redirect to a different resource, returns
+                // the complete representation. Reuse it and restart locally.
                 part.delete()
                 existing = 0
-                resumeValidator = null
+                resumeState = null
             } else {
                 connection.close()
                 part.delete()
                 existing = 0
-                resumeValidator = null
+                resumeState = null
                 connection = open(job.sourceUrl, null, null)
+                attemptedResume = false
             }
             completedResume = false
         }
@@ -96,9 +98,12 @@ class DirectDownloader {
             var lastWrite = SystemClock.elapsedRealtime()
 
             if (!completedResume) {
-                val validator = selectResumeValidator(connection.header("ETag"))
-                if (validator != null) {
-                    validatorFile.writeText(validator)
+                val state = createResumeState(
+                    connection.request.url.toString(),
+                    connection.header("ETag"),
+                )
+                if (state != null) {
+                    validatorFile.writeText(encodeResumeState(state))
                 } else {
                     validatorFile.delete()
                 }
@@ -160,13 +165,16 @@ class DirectDownloader {
         activeCall?.cancel()
     }
 
-    private fun open(rawUrl: String, rangeStart: Long?, ifRange: String?): Response {
+    private fun open(rawUrl: String, rangeStart: Long?, resumeState: ResumeState?): Response {
         var endpoint = resolvePublicHttpsEndpoint(rawUrl)
         repeat(MAX_REDIRECTS + 1) { redirect ->
             val request = Request.Builder().url(endpoint.url).header("User-Agent", USER_AGENT)
                 .apply {
-                    rangeStart?.let { header("Range", "bytes=$it-") }
-                    if (rangeStart != null && ifRange != null) header("If-Range", ifRange)
+                    val target = endpoint.url.toString()
+                    if (rangeStart != null && resumeState != null && resumeTargetMatches(resumeState.resourceUrl, target)) {
+                        header("Range", "bytes=$rangeStart-")
+                        header("If-Range", resumeState.validator)
+                    }
                 }
                 .build()
             val call = pinnedPublicHttpsClient(endpoint, TIMEOUT_MS.toLong()).newCall(request)
@@ -191,11 +199,13 @@ class DirectDownloader {
     }
 
     companion object {
+        internal data class ResumeState(val resourceUrl: String, val validator: String)
+
         // Larger reads reduce Java/Kotlin stream overhead on fast mobile connections while
         // remaining small enough to avoid meaningful memory pressure on older devices.
         private const val COPY_BUFFER_SIZE = 256 * 1024
-        // Keep the established name so installs upgrading from earlier builds
-        // can continue an existing direct download when a validator is available.
+        // Keep the established name so installs upgrading from earlier builds can detect and
+        // safely discard old unscoped resume metadata rather than trusting it.
         private const val PART_FILE_NAME = "download.part"
         private const val RESUME_VALIDATOR_FILE_NAME = "download.resume"
         private const val MAX_REDIRECTS = 5
@@ -222,13 +232,29 @@ class DirectDownloader {
 
         internal fun selectResumeValidator(etag: String?): String? = etag
             ?.trim()
-            ?.takeIf { it.startsWith('"') && it.endsWith('"') && !it.startsWith("W/") }
+            ?.takeIf {
+                it.length <= 256 && '\r' !in it && '\n' !in it &&
+                    it.startsWith('"') && it.endsWith('"') && !it.startsWith("W/")
+            }
 
-        private fun readResumeValidator(file: File): String? = runCatching {
-            file.takeIf(File::isFile)
-                ?.readText()
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() && it.length <= 256 && '\r' !in it && '\n' !in it }
+        internal fun createResumeState(resourceUrl: String, etag: String?): ResumeState? {
+            val validator = selectResumeValidator(etag) ?: return null
+            val target = resourceUrl.trim().takeIf {
+                it.length <= 2_048 && it.startsWith("https://") && '\r' !in it && '\n' !in it
+            } ?: return null
+            return ResumeState(target, validator)
+        }
+
+        internal fun resumeTargetMatches(savedTarget: String, requestTarget: String): Boolean =
+            savedTarget == requestTarget
+
+        private fun encodeResumeState(state: ResumeState): String =
+            "${state.resourceUrl}\n${state.validator}"
+
+        private fun readResumeState(file: File): ResumeState? = runCatching {
+            val lines = file.takeIf(File::isFile)?.readLines() ?: return@runCatching null
+            if (lines.size != 2) return@runCatching null
+            createResumeState(lines[0], lines[1])
         }.getOrNull()
 
         internal fun isCompletedRangeResponse(
@@ -268,7 +294,11 @@ class DirectDownloader {
 
         internal fun completionFileName(suggested: String): String {
             val sanitized = sanitizeFileName(suggested)
-            return if (sanitized == PART_FILE_NAME) "download-$sanitized" else sanitized
+            return if (sanitized == PART_FILE_NAME || sanitized == RESUME_VALIDATOR_FILE_NAME) {
+                "download-$sanitized"
+            } else {
+                sanitized
+            }
         }
     }
 }
