@@ -231,12 +231,15 @@ jobs:
           verify_apk "release/HOLEN-v${VERSION_NAME}-armeabi-v7a.apk" "armeabi-v7a" true
           verify_apk "release/HOLEN-v${VERSION_NAME}-universal.apk" "arm64-v8a,armeabi-v7a,x86,x86_64" false
           (cd release && sha256sum HOLEN-v*.apk > SHA256SUMS)
-      - name: Publish HOLEN V3
+      - name: Publish Android release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          notes_file="docs/releases/HOLEN-V${VERSION_NAME}.md"
+          [[ -s "$notes_file" ]] || { echo "Missing release notes: $notes_file" >&2; exit 1; }
           gh release create "$GITHUB_REF_NAME" release/* \
             --verify-tag \
-            --title "HOLEN V3" \
-            --notes-file docs/releases/HOLEN-V3.md \
+            --title "HOLEN V${VERSION_NAME}" \
+            --notes-file "$notes_file" \
             --latest
