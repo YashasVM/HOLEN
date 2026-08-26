@@ -238,8 +238,16 @@ jobs:
           set -euo pipefail
           notes_file="docs/releases/HOLEN-V${VERSION_NAME}.md"
           [[ -s "$notes_file" ]] || { echo "Missing release notes: $notes_file" >&2; exit 1; }
-          gh release create "$GITHUB_REF_NAME" release/* \
-            --verify-tag \
-            --title "HOLEN V${VERSION_NAME}" \
-            --notes-file "$notes_file" \
-            --latest
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "HOLEN V${VERSION_NAME}" \
+              --notes-file "$notes_file" \
+              --latest
+          else
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --verify-tag \
+              --title "HOLEN V${VERSION_NAME}" \
+              --notes-file "$notes_file" \
+              --latest
+          fi
