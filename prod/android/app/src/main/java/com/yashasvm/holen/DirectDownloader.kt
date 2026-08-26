@@ -38,9 +38,22 @@ class DirectDownloader {
         // This name is deliberately not derived from the response. A hostile
         // Content-Disposition value must never collide with the resumable part.
         val part = File(directory, PART_FILE_NAME)
+        val validatorFile = File(directory, RESUME_VALIDATOR_FILE_NAME)
         var existing = part.takeIf(File::exists)?.length() ?: 0L
-        var connection = open(job.sourceUrl, existing.takeIf { it > 0 })
-        val completedResume = existing > 0 && isCompletedRangeResponse(
+        var resumeValidator = if (existing > 0) readResumeValidator(validatorFile) else null
+        if (existing > 0 && resumeValidator == null) {
+            // Legacy or incomplete state cannot be resumed safely because a changed remote
+            // object could otherwise be appended to stale bytes.
+            part.delete()
+            existing = 0
+        }
+
+        var connection = open(
+            job.sourceUrl,
+            existing.takeIf { it > 0 },
+            resumeValidator,
+        )
+        var completedResume = existing > 0 && isCompletedRangeResponse(
             existing,
             connection.code,
             connection.header("Content-Range"),
@@ -51,10 +64,20 @@ class DirectDownloader {
                 connection.header("Content-Range"),
             )
         ) {
-            connection.close()
-            part.delete()
-            existing = 0
-            connection = open(job.sourceUrl, null)
+            if (connection.code == HttpURLConnection.HTTP_OK) {
+                // A failed If-Range condition returns the complete new representation. Reuse
+                // that response and restart locally instead of issuing a second request.
+                part.delete()
+                existing = 0
+                resumeValidator = null
+            } else {
+                connection.close()
+                part.delete()
+                existing = 0
+                resumeValidator = null
+                connection = open(job.sourceUrl, null, null)
+            }
+            completedResume = false
         }
 
         try {
@@ -73,6 +96,15 @@ class DirectDownloader {
             var lastWrite = SystemClock.elapsedRealtime()
 
             if (!completedResume) {
+                val validator = selectResumeValidator(
+                    connection.header("ETag"),
+                    connection.header("Last-Modified"),
+                )
+                if (validator != null) {
+                    validatorFile.writeText(validator)
+                } else {
+                    validatorFile.delete()
+                }
                 requireNotNull(connection.body).byteStream().use { input ->
                     FileOutputStream(part, existing > 0).use { output ->
                         val buffer = ByteArray(COPY_BUFFER_SIZE)
@@ -118,6 +150,7 @@ class DirectDownloader {
             if (!part.renameTo(completed)) {
                 throw StorageException("Could not finalize the staged file.")
             }
+            validatorFile.delete()
             StagedDownload(completed, fileName, mimeType)
         } finally {
             activeCall = null
@@ -130,11 +163,15 @@ class DirectDownloader {
         activeCall?.cancel()
     }
 
-    private fun open(rawUrl: String, rangeStart: Long?): Response {
+    private fun open(rawUrl: String, rangeStart: Long?, ifRange: String?): Response {
         var endpoint = resolvePublicHttpsEndpoint(rawUrl)
         repeat(MAX_REDIRECTS + 1) { redirect ->
             val request = Request.Builder().url(endpoint.url).header("User-Agent", USER_AGENT)
-                .apply { rangeStart?.let { header("Range", "bytes=$it-") } }.build()
+                .apply {
+                    rangeStart?.let { header("Range", "bytes=$it-") }
+                    if (rangeStart != null && ifRange != null) header("If-Range", ifRange)
+                }
+                .build()
             val call = pinnedPublicHttpsClient(endpoint, TIMEOUT_MS.toLong()).newCall(request)
             activeCall = call
             val response = call.execute()
@@ -161,8 +198,9 @@ class DirectDownloader {
         // remaining small enough to avoid meaningful memory pressure on older devices.
         private const val COPY_BUFFER_SIZE = 256 * 1024
         // Keep the established name so installs upgrading from earlier builds
-        // can continue an existing direct download.
+        // can continue an existing direct download when a validator is available.
         private const val PART_FILE_NAME = "download.part"
+        private const val RESUME_VALIDATOR_FILE_NAME = "download.resume"
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 20_000
         private const val USER_AGENT = "Holen Android/1"
@@ -184,6 +222,23 @@ class DirectDownloader {
                 ?.toLongOrNull()
             return start == existingBytes
         }
+
+        internal fun selectResumeValidator(etag: String?, lastModified: String?): String? {
+            val strongEtag = etag
+                ?.trim()
+                ?.takeIf { it.startsWith('"') && it.endsWith('"') && !it.startsWith("W/") }
+            if (strongEtag != null) return strongEtag
+            return lastModified
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() && '\r' !in it && '\n' !in it }
+        }
+
+        private fun readResumeValidator(file: File): String? = runCatching {
+            file.takeIf(File::isFile)
+                ?.readText()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() && it.length <= 256 && '\r' !in it && '\n' !in it }
+        }.getOrNull()
 
         internal fun isCompletedRangeResponse(
             existingBytes: Long,
