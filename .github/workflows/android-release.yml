@@ -255,7 +255,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             backup_dir="$RUNNER_TEMP/release-backup"
             mkdir -p "$backup_dir"
-            gh release download "$GITHUB_REF_NAME" --dir "$backup_dir" || true
+            gh release download "$GITHUB_REF_NAME" --dir "$backup_dir"
 
             rollback_release_assets() {
               local file name
