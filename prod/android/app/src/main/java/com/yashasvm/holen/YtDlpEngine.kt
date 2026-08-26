@@ -341,7 +341,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         }
 
     private suspend fun ensureInitialized(needsFfmpeg: Boolean, needsAria2c: Boolean = false) {
-        if (initialized && (!needsFfmpeg || ffmpegInitialized)) return
+        if (initialized && (!needsFfmpeg || ffmpegInitialized) && (!needsAria2c || aria2cInitialized)) return
         initMutex.withLock {
             if (!initialized) {
                 try {
