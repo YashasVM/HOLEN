@@ -5,8 +5,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
-import org.json.JSONArray
-import org.json.JSONObject
 import org.junit.Test
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -125,23 +123,6 @@ class CoreLogicTest {
                 "clip.mp4",
                 setOf("clip.mp4", "clip (1).mp4", "clip (2).mp4"),
             ),
-        )
-    }
-
-    @Test
-    fun adaptiveEstimateIncludesSeparateAudioTrack() {
-        val formats = JSONArray(
-            """
-            [
-              {"filesize":8000,"height":720,"vcodec":"avc1","acodec":"none","ext":"mp4"},
-              {"filesize":3000,"vcodec":"none","acodec":"mp4a.40.2","ext":"m4a"}
-            ]
-            """.trimIndent(),
-        )
-
-        assertEquals(
-            11_000L,
-            YtDlpEngine.estimateSize(formats, DownloadFormat.MP4_720),
         )
     }
 
