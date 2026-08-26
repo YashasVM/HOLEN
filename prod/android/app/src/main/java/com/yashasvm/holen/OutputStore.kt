@@ -400,15 +400,6 @@ private data class DocumentDetails(
     val byteCount: Long,
 )
 
-internal fun sanitizeFileName(name: String): String {
-    val sanitized = name
-        .replace(Regex("[\\/:*?\"<>|\\p{Cntrl}]"), "_")
-        .trim()
-        .trimEnd('.', ' ')
-        .take(180)
-    return sanitized.ifBlank { "download" }
-}
-
 internal fun destinationName(fileName: String, existing: Set<String>): String {
     if (fileName !in existing) return fileName
     val dot = fileName.lastIndexOf('.')
