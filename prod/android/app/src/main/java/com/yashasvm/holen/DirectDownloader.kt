@@ -211,8 +211,10 @@ class DirectDownloader {
         fun fileNameFromDisposition(header: String?): String? {
             if (header.isNullOrBlank()) return null
             Regex("""filename\*=UTF-8''([^;]+)""", RegexOption.IGNORE_CASE)
-                .find(header)?.groupValues?.get(1)?.let {
-                    return URLDecoder.decode(it, StandardCharsets.UTF_8.name())
+                .find(header)?.groupValues?.get(1)?.let { encoded ->
+                    runCatching {
+                        URLDecoder.decode(encoded, StandardCharsets.UTF_8.name())
+                    }.getOrNull()?.let { return it }
                 }
             return Regex("""filename="?([^";]+)"?""", RegexOption.IGNORE_CASE)
                 .find(header)?.groupValues?.get(1)
