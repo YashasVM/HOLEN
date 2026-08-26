@@ -238,11 +238,60 @@ jobs:
           set -euo pipefail
           notes_file="docs/releases/HOLEN-V${VERSION_NAME}.md"
           [[ -s "$notes_file" ]] || { echo "Missing release notes: $notes_file" >&2; exit 1; }
+
+          upload_with_retry() {
+            local file="$1"
+            local attempt
+            for attempt in 1 2 3; do
+              if gh release upload "$GITHUB_REF_NAME" "$file" --clobber; then
+                return 0
+              fi
+              echo "Upload attempt $attempt failed for $file." >&2
+              sleep $((attempt * 2))
+            done
+            return 1
+          }
+
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+            backup_dir="$RUNNER_TEMP/release-backup"
+            mkdir -p "$backup_dir"
+            gh release download "$GITHUB_REF_NAME" --dir "$backup_dir" || true
+
+            rollback_release_assets() {
+              local file name
+              for file in release/*; do
+                name="$(basename "$file")"
+                if [[ -f "$backup_dir/$name" ]]; then
+                  gh release upload "$GITHUB_REF_NAME" "$backup_dir/$name" --clobber || true
+                else
+                  gh release delete-asset "$GITHUB_REF_NAME" "$name" --yes >/dev/null 2>&1 || true
+                fi
+              done
+            }
+
+            for file in release/*; do
+              if ! upload_with_retry "$file"; then
+                echo "Replacement upload failed; restoring previous release assets." >&2
+                rollback_release_assets
+                exit 1
+              fi
+            done
+
+            mapfile -t expected_assets < <(for file in release/*; do basename "$file"; done | sort)
+            mapfile -t published_assets < <(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+            for expected in "${expected_assets[@]}"; do
+              printf '%s\n' "${published_assets[@]}" | grep -Fxq "$expected" || {
+                echo "Published release is missing expected asset $expected; restoring previous assets." >&2
+                rollback_release_assets
+                exit 1
+              }
+            done
+
             gh release edit "$GITHUB_REF_NAME" \
               --title "HOLEN V${VERSION_NAME}" \
               --notes-file "$notes_file" \
+              --draft=false \
+              --prerelease=false \
               --latest
           else
             gh release create "$GITHUB_REF_NAME" release/* \
