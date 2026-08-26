@@ -141,7 +141,7 @@ class CoreLogicTest {
 
         assertEquals(
             11_000L,
-            YtDlpEngine.estimateSize(formats, DownloadFormat.MP4_720),
+            YtDlpEngine.estimateSize(formats, DownloadFormat.BEST_MP4),
         )
     }
 
