@@ -6,30 +6,20 @@ import org.junit.Test
 
 class DirectDownloaderResumeTest {
     @Test
-    fun strongEtagIsPreferredForIfRange() {
+    fun strongEtagIsAcceptedForIfRange() {
         assertEquals(
             "\"abc123\"",
-            DirectDownloader.selectResumeValidator(
-                "\"abc123\"",
-                "Wed, 21 Oct 2015 07:28:00 GMT",
-            ),
+            DirectDownloader.selectResumeValidator("\"abc123\""),
         )
     }
 
     @Test
-    fun weakEtagFallsBackToLastModified() {
-        assertEquals(
-            "Wed, 21 Oct 2015 07:28:00 GMT",
-            DirectDownloader.selectResumeValidator(
-                "W/\"abc123\"",
-                "Wed, 21 Oct 2015 07:28:00 GMT",
-            ),
-        )
+    fun weakEtagDoesNotEnableResume() {
+        assertNull(DirectDownloader.selectResumeValidator("W/\"abc123\""))
     }
 
     @Test
     fun resumeIsDisabledWithoutAUsableValidator() {
-        assertNull(DirectDownloader.selectResumeValidator("W/\"abc123\"", null))
-        assertNull(DirectDownloader.selectResumeValidator(null, null))
+        assertNull(DirectDownloader.selectResumeValidator(null))
     }
 }
