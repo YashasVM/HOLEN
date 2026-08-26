@@ -318,81 +318,37 @@ class OutputStore(private val context: Context) {
         }
     }
 
-    private data class PendingPublication(
-        val jobId: String,
-        val treeUri: String,
-        val fileName: String,
-        val mimeType: String,
-        val byteCount: Long,
-        val documentUri: String?,
-    )
-
-    private data class DocumentDetails(val fileName: String, val byteCount: Long)
-
-    private sealed interface LocatedDocument {
-        data class Found(val uri: Uri) : LocatedDocument
-        data object NotFound : LocatedDocument
-        data object Unavailable : LocatedDocument
-    }
-
-    private sealed interface DocumentInspection {
-        data class Found(val details: DocumentDetails) : DocumentInspection
-        data object NotFound : DocumentInspection
-        data object Unavailable : DocumentInspection
-    }
-
     private fun childNames(tree: Uri): Set<String> {
-        val resolver = context.contentResolver
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(
             tree,
             DocumentsContract.getTreeDocumentId(tree),
         )
-        return resolver.query(
-            children,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null,
-        )?.use { cursor ->
-            buildSet {
-                while (cursor.moveToNext()) add(cursor.getString(0))
+        return try {
+            val cursor = context.contentResolver.query(
+                children,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            ) ?: throw StorageException("The selected folder could not be read.")
+            cursor.use {
+                val nameIndex = it.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)
+                buildSet {
+                    while (it.moveToNext()) add(it.getString(nameIndex))
+                }
             }
-        }.orEmpty()
-    }
-
-    data class PublishedFile(
-        val uri: Uri,
-        val fileName: String,
-        val mimeType: String,
-        val byteCount: Long,
-    )
-
-    sealed interface PublicationRecovery {
-        data class Complete(val file: PublishedFile) : PublicationRecovery
-        data class Partial(val uri: Uri) : PublicationRecovery
-        data object NotCreated : PublicationRecovery
-        data object Unavailable : PublicationRecovery
-        data object NoJournal : PublicationRecovery
+        } catch (error: StorageException) {
+            throw error
+        } catch (error: Throwable) {
+            throw StorageException("The selected folder could not be read.", error)
+        }
     }
 
     companion object {
-        // Finalization copies completed media from private staging into a SAF document.
-        // Larger chunks reduce stream and binder overhead for large files without changing
-        // publication semantics or meaningfully increasing memory usage.
-        private const val COPY_BUFFER_SIZE = 256 * 1024
-        private const val ORPHAN_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000
         private const val PREF_PENDING_PUBLICATIONS = "pending_publications"
+        private const val COPY_BUFFER_SIZE = 1024 * 1024
+        private const val ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private val journalLock = Any()
-
-        fun destinationName(requested: String, existing: Set<String>): String {
-            if (requested !in existing) return requested
-            val dot = requested.lastIndexOf('.').takeIf { it > 0 } ?: requested.length
-            val base = requested.substring(0, dot)
-            val extension = requested.substring(dot)
-            var index = 1
-            while ("$base ($index)$extension" in existing) index++
-            return "$base ($index)$extension"
-        }
 
         fun mimeTypeFor(fileName: String, fallback: String? = null): String {
             val extension = fileName.substringAfterLast('.', "").lowercase()
@@ -400,22 +356,77 @@ class OutputStore(private val context: Context) {
                 ?: fallback
                 ?: "application/octet-stream"
         }
-
-        internal fun publicationMatch(
-            expectedName: String,
-            expectedBytes: Long,
-            actualName: String,
-            actualBytes: Long?,
-        ): PublicationMatch = when {
-            actualName != expectedName -> PublicationMatch.PARTIAL
-            actualBytes == null -> PublicationMatch.UNAVAILABLE
-            actualBytes != expectedBytes -> PublicationMatch.PARTIAL
-            else -> PublicationMatch.COMPLETE
-        }
     }
 }
 
-internal enum class PublicationMatch {
+data class PublishedFile(
+    val uri: Uri,
+    val fileName: String,
+    val mimeType: String,
+    val byteCount: Long,
+)
+
+sealed interface PublicationRecovery {
+    data object NoJournal : PublicationRecovery
+    data object NotCreated : PublicationRecovery
+    data object Unavailable : PublicationRecovery
+    data class Partial(val uri: Uri) : PublicationRecovery
+    data class Complete(val file: PublishedFile) : PublicationRecovery
+}
+
+private data class PendingPublication(
+    val jobId: String,
+    val treeUri: String,
+    val fileName: String,
+    val mimeType: String,
+    val byteCount: Long,
+    val documentUri: String?,
+)
+
+private sealed interface LocatedDocument {
+    data class Found(val uri: Uri) : LocatedDocument
+    data object NotFound : LocatedDocument
+    data object Unavailable : LocatedDocument
+}
+
+private sealed interface DocumentInspection {
+    data class Found(val details: DocumentDetails) : DocumentInspection
+    data object NotFound : DocumentInspection
+    data object Unavailable : DocumentInspection
+}
+
+private data class DocumentDetails(
+    val fileName: String,
+    val byteCount: Long,
+)
+
+internal fun destinationName(fileName: String, existing: Set<String>): String {
+    if (fileName !in existing) return fileName
+    val dot = fileName.lastIndexOf('.')
+    val hasExtension = dot > 0 && dot < fileName.lastIndex
+    val base = if (hasExtension) fileName.substring(0, dot) else fileName
+    val extension = if (hasExtension) fileName.substring(dot) else ""
+    var suffix = 1
+    while (true) {
+        val candidate = "$base ($suffix)$extension"
+        if (candidate !in existing) return candidate
+        suffix += 1
+    }
+}
+
+internal fun publicationMatch(
+    expectedName: String,
+    expectedBytes: Long,
+    actualName: String,
+    actualBytes: Long?,
+): PublicationMatch = when {
+    expectedName != actualName -> PublicationMatch.PARTIAL
+    actualBytes == null -> PublicationMatch.UNAVAILABLE
+    actualBytes != expectedBytes -> PublicationMatch.PARTIAL
+    else -> PublicationMatch.COMPLETE
+}
+
+enum class PublicationMatch {
     COMPLETE,
     PARTIAL,
     UNAVAILABLE,

@@ -26,15 +26,15 @@ class DownloadPipelineTest {
     fun publicationRecoveryNeverTreatsUnknownOrPartialOutputAsComplete() {
         assertEquals(
             PublicationMatch.COMPLETE,
-            OutputStore.publicationMatch("video.mp4", 100, "video.mp4", 100),
+            publicationMatch("video.mp4", 100, "video.mp4", 100),
         )
         assertEquals(
             PublicationMatch.PARTIAL,
-            OutputStore.publicationMatch("video.mp4", 100, "video.mp4", 99),
+            publicationMatch("video.mp4", 100, "video.mp4", 99),
         )
         assertEquals(
             PublicationMatch.UNAVAILABLE,
-            OutputStore.publicationMatch("video.mp4", 100, "video.mp4", null),
+            publicationMatch("video.mp4", 100, "video.mp4", null),
         )
     }
 }

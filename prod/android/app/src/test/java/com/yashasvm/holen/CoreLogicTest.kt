@@ -81,9 +81,14 @@ class CoreLogicTest {
     fun sourceClassificationFollowsAttachmentAndMimeRules() {
         assertTrue(SourceAnalyzer.isDirectFile("attachment; filename=a.zip", "text/html"))
         assertTrue(SourceAnalyzer.isDirectFile(null, "application/pdf"))
+        assertTrue(SourceAnalyzer.isDirectFile(null, "application/vnd.rar"))
+        assertTrue(SourceAnalyzer.isDirectFile(null, "application/x-gzip"))
+        assertTrue(SourceAnalyzer.isDirectFile(null, "application/x-zip-compressed"))
         assertTrue(SourceAnalyzer.isDirectFile(null, "video/mp4"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "text/html; charset=utf-8"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "application/xhtml+xml"))
+        assertFalse(SourceAnalyzer.isDirectFile(null, "application/json"))
+        assertFalse(SourceAnalyzer.isDirectFile(null, "text/plain"))
         assertFalse(SourceAnalyzer.isDirectFile(null, null))
     }
 
@@ -114,7 +119,7 @@ class CoreLogicTest {
         assertEquals("download", sanitizeFileName(".."))
         assertEquals(
             "clip (3).mp4",
-            OutputStore.destinationName(
+            destinationName(
                 "clip.mp4",
                 setOf("clip.mp4", "clip (1).mp4", "clip (2).mp4"),
             ),

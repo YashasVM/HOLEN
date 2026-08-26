@@ -49,10 +49,11 @@ jobs:
         working-directory: prod/android
         shell: bash
         env:
-          HOLEN_KEYSTORE_PATH: ${{ runner.temp }}/holen-release.jks
-          HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
-          HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
-          HOLEN_KEY_PASSWORD: ${{ secrets.HOLEN_KEY_PASSWORD }}
+          # Keep PR builds unsigned; production signing is restored only on main.
+          HOLEN_KEYSTORE_PATH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}/holen-release.jks', runner.temp) || '' }}
+          HOLEN_KEYSTORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEYSTORE_PASSWORD || '' }}
+          HOLEN_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEY_ALIAS || '' }}
+          HOLEN_KEY_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEY_PASSWORD || '' }}
         run: |
           set -euo pipefail
           signing_args=()
