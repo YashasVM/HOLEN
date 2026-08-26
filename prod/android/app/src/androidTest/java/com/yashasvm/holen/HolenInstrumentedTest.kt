@@ -49,6 +49,11 @@ class HolenInstrumentedTest {
 
     @Test
     fun firstLaunchRunsCinematicOnboardingInOrder() {
+        composeRule.waitUntil(5_000) {
+            runCatching {
+                composeRule.onNodeWithText("Welcome to\nHOLEN.").assertIsDisplayed()
+            }.isSuccess
+        }
         composeRule.onNodeWithText("Welcome to\nHOLEN.").assertIsDisplayed()
         composeRule.onAllNodesWithText("Made by @yashas.vm").assertCountEquals(1)
         composeRule.onNodeWithText("Made by @yashas.vm").assertIsDisplayed()
