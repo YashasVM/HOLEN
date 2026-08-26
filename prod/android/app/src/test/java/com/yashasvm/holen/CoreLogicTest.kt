@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Test
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -81,6 +83,9 @@ class CoreLogicTest {
     fun sourceClassificationFollowsAttachmentAndMimeRules() {
         assertTrue(SourceAnalyzer.isDirectFile("attachment; filename=a.zip", "text/html"))
         assertTrue(SourceAnalyzer.isDirectFile(null, "application/pdf"))
+        assertTrue(SourceAnalyzer.isDirectFile(null, "application/vnd.rar"))
+        assertTrue(SourceAnalyzer.isDirectFile(null, "application/x-gzip"))
+        assertTrue(SourceAnalyzer.isDirectFile(null, "application/x-zip-compressed"))
         assertTrue(SourceAnalyzer.isDirectFile(null, "video/mp4"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "text/html; charset=utf-8"))
         assertFalse(SourceAnalyzer.isDirectFile(null, "application/xhtml+xml"))
@@ -120,6 +125,31 @@ class CoreLogicTest {
                 "clip.mp4",
                 setOf("clip.mp4", "clip (1).mp4", "clip (2).mp4"),
             ),
+        )
+    }
+
+    @Test
+    fun adaptiveEstimateIncludesSeparateAudioTrack() {
+        val formats = JSONArray()
+            .put(
+                JSONObject()
+                    .put("filesize", 8_000)
+                    .put("height", 720)
+                    .put("vcodec", "avc1")
+                    .put("acodec", "none")
+                    .put("ext", "mp4"),
+            )
+            .put(
+                JSONObject()
+                    .put("filesize", 3_000)
+                    .put("vcodec", "none")
+                    .put("acodec", "mp4a.40.2")
+                    .put("ext", "m4a"),
+            )
+
+        assertEquals(
+            11_000L,
+            YtDlpEngine.estimateSize(formats, DownloadFormat.MP4_720),
         )
     }
 

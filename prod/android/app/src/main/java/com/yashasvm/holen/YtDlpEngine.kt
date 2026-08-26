@@ -3,6 +3,7 @@ package com.yashasvm.holen
 import android.content.Context
 import android.os.SystemClock
 import androidx.core.content.edit
+import com.yausername.aria2c.Aria2c
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -117,6 +118,9 @@ class YtDlpEngine private constructor(private val context: Context) {
     @Volatile
     private var ffmpegInitialized = false
 
+    @Volatile
+    private var aria2cInitialized = false
+
     val bundledVersion: String = "youtubedl-android $WRAPPER_VERSION"
 
     val activeVersion: String
@@ -208,7 +212,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         downloadMutex.withPermit {
             operationGate.withOperation {
                 validatePublicHttpsUrl(job.sourceUrl)
-                ensureInitialized(needsFfmpeg = true)
+                ensureInitialized(needsFfmpeg = true, needsAria2c = true)
                 if (isCancelled()) throw CancellationException("Download cancelled")
                 directory.mkdirs()
                 val existingFiles = completedFiles(directory).mapTo(mutableSetOf()) { it.canonicalPath }
@@ -336,7 +340,7 @@ class YtDlpEngine private constructor(private val context: Context) {
             "Bundled runtime cleared. Close and reopen HOLEN to rebuild it."
         }
 
-    private suspend fun ensureInitialized(needsFfmpeg: Boolean) {
+    private suspend fun ensureInitialized(needsFfmpeg: Boolean, needsAria2c: Boolean = false) {
         if (initialized && (!needsFfmpeg || ffmpegInitialized)) return
         initMutex.withLock {
             if (!initialized) {
@@ -373,6 +377,14 @@ class YtDlpEngine private constructor(private val context: Context) {
                     throw IOException("Media engine startup failed. The media tools could not load.", error)
                 }
             }
+            if (needsAria2c && !aria2cInitialized) {
+                try {
+                    Aria2c.init(context)
+                    aria2cInitialized = true
+                } catch (error: Throwable) {
+                    throw IOException("Media engine startup failed. The aria2c downloader could not load.", error)
+                }
+            }
         }
     }
 
@@ -390,6 +402,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         }
         initialized = false
         ffmpegInitialized = false
+        aria2cInitialized = false
     }
 
     private fun validateVersion(): String {
@@ -506,7 +519,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         internal fun estimateSize(formats: JSONArray, target: DownloadFormat): Long? {
             data class Candidate(val bytes: Long, val video: Boolean, val audio: Boolean)
 
-            val matching = buildList {
+            val candidates = buildList {
                 for (index in 0 until formats.length()) {
                     val item = formats.optJSONObject(index) ?: continue
                     val size = item.optLong("filesize").takeIf { it > 0 }
@@ -526,16 +539,21 @@ class YtDlpEngine private constructor(private val context: Context) {
                         DownloadFormat.AUDIO_MP3 -> audio && !video
                         DownloadFormat.ORIGINAL -> false
                     }
-                    if (match) add(Candidate(size, video, audio))
+                    add(Candidate(size, video, audio) to match)
                 }
             }
+            val matching = candidates.filter { it.second }.map { it.first }
             if (matching.isEmpty()) return null
             if (target == DownloadFormat.AUDIO_M4A || target == DownloadFormat.AUDIO_MP3) {
                 return matching.maxOf(Candidate::bytes)
             }
 
             val videoOnly = matching.filter { it.video && !it.audio }.maxOfOrNull(Candidate::bytes)
-            val audioOnly = matching.filter { it.audio && !it.video }.maxOfOrNull(Candidate::bytes)
+            // Audio-only streams never satisfy a video target's match test, so
+            // read them from the full candidate set.
+            val audioOnly = candidates.map { it.first }
+                .filter { it.audio && !it.video }
+                .maxOfOrNull(Candidate::bytes)
             return when {
                 videoOnly != null -> videoOnly + (audioOnly ?: 0L)
                 else -> matching.maxOf(Candidate::bytes)

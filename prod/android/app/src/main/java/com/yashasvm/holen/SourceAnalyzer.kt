@@ -211,13 +211,16 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         private val BINARY_MIME_TYPES = setOf(
             "application/gzip",
             "application/pdf",
+            "application/vnd.rar",
             "application/vnd.android.package-archive",
             "application/x-7z-compressed",
             "application/x-bzip2",
+            "application/x-gzip",
             "application/x-rar-compressed",
             "application/x-tar",
             "application/x-xz",
             "application/zip",
+            "application/x-zip-compressed",
         )
 
         fun isExtractorFirstHost(host: String?): Boolean {

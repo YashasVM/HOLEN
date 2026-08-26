@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -25,6 +27,11 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 class DownloadService : Service() {
+    private data class NotificationState(
+        val job: DownloadJob,
+        val progress: TransferProgress,
+    )
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processorMutex = Mutex()
     private val cancelledIds = Collections.synchronizedSet(mutableSetOf<String>())
@@ -33,8 +40,10 @@ class DownloadService : Service() {
     private lateinit var outputStore: OutputStore
     private lateinit var engine: YtDlpEngine
     private val directDownloaders = ConcurrentHashMap<String, DirectDownloader>()
-    private val activeJobIds = Collections.synchronizedSet(mutableSetOf<String>())
+    private val activeJobIds = ConcurrentHashMap.newKeySet<String>()
     private val notificationUpdateLock = Any()
+    private val notificationStates = mutableMapOf<String, NotificationState>()
+    private var primaryNotificationJobId: String? = null
 
 
     @Volatile
@@ -44,7 +53,6 @@ class DownloadService : Service() {
     private var stopping = false
 
     private var blockedPublicationIds: Set<String> = emptySet()
-    private var lastProgressNotificationJobId: String? = null
     private var lastProgressNotificationAt = 0L
 
     override fun onCreate() {
@@ -78,6 +86,11 @@ class DownloadService : Service() {
             directDownloaders[id]?.cancel()
             engine.cancel(id)
         }
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        activeJobIds.toList().forEach { id ->
+            notificationManager.cancel(progressNotificationId(id))
+        }
+        notificationManager.cancel(NOTIFICATION_ID)
         scope.cancel()
         super.onDestroy()
     }
@@ -133,7 +146,19 @@ class DownloadService : Service() {
         }
         coroutineScope {
             List(YtDlpEngine.MAX_ACTIVE_DOWNLOADS) {
-                launch { processJobs() }
+                launch {
+                    supervisorScope {
+                        try {
+                            processJobs()
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: Throwable) {
+                            // Individual job failures are handled by processJob. This
+                            // guard keeps an unexpected worker failure from cancelling
+                            // the sibling download.
+                        }
+                    }
+                }
             }.joinAll()
         }
         if (stopSelfResult(startId)) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -153,6 +178,7 @@ class DownloadService : Service() {
             } finally {
                 directDownloaders.remove(job.id)
                 activeJobIds -= job.id
+                clearJobNotification(job.id)
             }
         }
     }
@@ -283,28 +309,127 @@ class DownloadService : Service() {
         force: Boolean = false,
     ) {
         val now = SystemClock.elapsedRealtime()
+        val states: List<NotificationState>
+        val primary: NotificationState
+        val activeCount: Int
         synchronized(notificationUpdateLock) {
+            notificationStates[job.id] = NotificationState(job, progress)
+            if (primaryNotificationJobId == null || primaryNotificationJobId !in activeJobIds) {
+                primaryNotificationJobId = activeJobIds.firstOrNull() ?: job.id
+            }
             if (
                 !force &&
-                lastProgressNotificationJobId == job.id &&
                 now - lastProgressNotificationAt < NOTIFICATION_UPDATE_INTERVAL_MS
             ) {
                 return
             }
-            lastProgressNotificationJobId = job.id
             lastProgressNotificationAt = now
+            activeCount = activeJobIds.size.coerceAtLeast(1)
+            states = activeJobIds.mapNotNull { notificationStates[it] }
+            primary = primaryNotificationJobId
+                ?.let { notificationStates[it] }
+                ?: notificationStates[job.id]
+                ?: NotificationState(job, progress)
+        }
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        if (activeCount > 1) {
+            states.forEach { state ->
+                notificationManager.notify(
+                    progressNotificationId(state.job.id),
+                    notification(
+                        title = state.job.title,
+                        progress = state.progress.percent,
+                        speed = state.progress.speedBytesPerSecond,
+                        eta = state.progress.etaSeconds,
+                        jobId = state.job.id,
+                        totalBytes = state.progress.totalBytes,
+                    ),
+                )
+            }
+        } else {
+            states.forEach { state ->
+                notificationManager.cancel(progressNotificationId(state.job.id))
+            }
+        }
+
+        val summaryTitle = if (activeCount > 1) {
+            "${primary.job.title} (+${activeCount - 1} more)"
+        } else {
+            primary.job.title
         }
         startTransferForeground(
             notification(
-                title = job.title,
-                progress = progress.percent,
-                speed = progress.speedBytesPerSecond,
-                eta = progress.etaSeconds,
-                jobId = job.id,
-                totalBytes = progress.totalBytes,
+                title = summaryTitle,
+                progress = primary.progress.percent,
+                speed = primary.progress.speedBytesPerSecond,
+                eta = primary.progress.etaSeconds,
+                jobId = primary.job.id.takeIf { activeCount == 1 },
+                totalBytes = primary.progress.totalBytes,
             ),
         )
     }
+
+    private fun clearJobNotification(jobId: String) {
+        var remaining = emptyList<NotificationState>()
+        var primary: NotificationState? = null
+        synchronized(notificationUpdateLock) {
+            notificationStates.remove(jobId)
+            if (primaryNotificationJobId == jobId) {
+                primaryNotificationJobId = activeJobIds.firstOrNull()
+            }
+            remaining = activeJobIds.mapNotNull { notificationStates[it] }
+            primary = primaryNotificationJobId?.let { notificationStates[it] }
+                ?: remaining.firstOrNull()
+        }
+
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.cancel(progressNotificationId(jobId))
+        if (remaining.isEmpty()) {
+            notificationManager.cancel(NOTIFICATION_ID)
+            return
+        }
+
+        if (remaining.size > 1) {
+            remaining.forEach { state ->
+                notificationManager.notify(
+                    progressNotificationId(state.job.id),
+                    notification(
+                        title = state.job.title,
+                        progress = state.progress.percent,
+                        speed = state.progress.speedBytesPerSecond,
+                        eta = state.progress.etaSeconds,
+                        jobId = state.job.id,
+                        totalBytes = state.progress.totalBytes,
+                    ),
+                )
+            }
+        } else {
+            remaining.forEach { state ->
+                notificationManager.cancel(progressNotificationId(state.job.id))
+            }
+        }
+
+        val summary = primary ?: return
+        val summaryTitle = if (remaining.size > 1) {
+            "${summary.job.title} (+${remaining.size - 1} more)"
+        } else {
+            summary.job.title
+        }
+        startTransferForeground(
+            notification(
+                title = summaryTitle,
+                progress = summary.progress.percent,
+                speed = summary.progress.speedBytesPerSecond,
+                eta = summary.progress.etaSeconds,
+                jobId = summary.job.id.takeIf { remaining.size == 1 },
+                totalBytes = summary.progress.totalBytes,
+            ),
+        )
+    }
+
+    private fun progressNotificationId(jobId: String): Int =
+        PROGRESS_NOTIFICATION_BASE + Math.floorMod(jobId.hashCode(), 100_000)
 
     private fun notification(
         title: String,
@@ -433,6 +558,7 @@ class DownloadService : Service() {
         private const val CHANNEL_ID = "downloads"
         private const val COMPLETION_CHANNEL_ID = "download_completions"
         private const val NOTIFICATION_ID = 410
+        private const val PROGRESS_NOTIFICATION_BASE = 100_000
         private const val COMPLETION_NOTIFICATION_BASE = 10_000
         private const val NOTIFICATION_UPDATE_INTERVAL_MS = 1_000L
 
