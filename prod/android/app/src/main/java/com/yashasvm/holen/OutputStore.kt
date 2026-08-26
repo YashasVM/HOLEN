@@ -40,9 +40,12 @@ class OutputStore(private val context: Context) {
         }
     }
 
-    fun stagingDirectory(jobId: String): File {
+    fun stagingDirectory(jobId: String): File =
+        File(stagingRootDirectory(), jobId).apply { mkdirs() }
+
+    private fun stagingRootDirectory(): File {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
-        return File(File(base, "downloads"), jobId).apply { mkdirs() }
+        return File(base, "downloads")
     }
 
     /**
@@ -188,8 +191,8 @@ class OutputStore(private val context: Context) {
     suspend fun cleanOrphanStaging(now: Long = System.currentTimeMillis()) {
         val knownJobIds = HolenStore.get(context).knownJobIds()
         withContext(Dispatchers.IO) {
-            val root = stagingDirectory("_probe").parentFile ?: return@withContext
-            File(root, "_probe").delete()
+            val root = stagingRootDirectory()
+            if (!root.isDirectory) return@withContext
             root.listFiles()
                 ?.filter {
                     it.isDirectory &&
