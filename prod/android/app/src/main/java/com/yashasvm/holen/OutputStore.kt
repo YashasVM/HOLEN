@@ -204,7 +204,7 @@ class OutputStore(private val context: Context) {
     }
 
     fun clearStaging(jobId: String) {
-        stagingDirectory(jobId).deleteRecursively()
+        File(stagingRootDirectory(), jobId).deleteRecursively()
     }
 
     private fun findChildDocument(rawTree: String, fileName: String): LocatedDocument {
