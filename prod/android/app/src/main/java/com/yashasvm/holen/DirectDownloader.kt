@@ -96,10 +96,7 @@ class DirectDownloader {
             var lastWrite = SystemClock.elapsedRealtime()
 
             if (!completedResume) {
-                val validator = selectResumeValidator(
-                    connection.header("ETag"),
-                    connection.header("Last-Modified"),
-                )
+                val validator = selectResumeValidator(connection.header("ETag"))
                 if (validator != null) {
                     validatorFile.writeText(validator)
                 } else {
@@ -223,15 +220,9 @@ class DirectDownloader {
             return start == existingBytes
         }
 
-        internal fun selectResumeValidator(etag: String?, lastModified: String?): String? {
-            val strongEtag = etag
-                ?.trim()
-                ?.takeIf { it.startsWith('"') && it.endsWith('"') && !it.startsWith("W/") }
-            if (strongEtag != null) return strongEtag
-            return lastModified
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() && '\r' !in it && '\n' !in it }
-        }
+        internal fun selectResumeValidator(etag: String?): String? = etag
+            ?.trim()
+            ?.takeIf { it.startsWith('"') && it.endsWith('"') && !it.startsWith("W/") }
 
         private fun readResumeValidator(file: File): String? = runCatching {
             file.takeIf(File::isFile)
