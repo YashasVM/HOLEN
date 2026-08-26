@@ -133,7 +133,7 @@ class CoreLogicTest {
         val formats = JSONArray()
             .put(
                 JSONObject()
-                    .put("filesize", 8_000)
+                    .put("filesize", 8_000L)
                     .put("height", 720)
                     .put("vcodec", "avc1")
                     .put("acodec", "none")
@@ -141,7 +141,7 @@ class CoreLogicTest {
             )
             .put(
                 JSONObject()
-                    .put("filesize", 3_000)
+                    .put("filesize", 3_000L)
                     .put("vcodec", "none")
                     .put("acodec", "mp4a.40.2")
                     .put("ext", "m4a"),
