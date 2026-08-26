@@ -526,10 +526,14 @@ class YtDlpEngine private constructor(private val context: Context) {
                         ?: item.optLong("filesize_approx").takeIf { it > 0 }
                         ?: continue
                     val height = item.optInt("height")
-                    val video = item.optString("vcodec").isNotBlank() &&
-                        item.optString("vcodec") != "none"
-                    val audio = item.optString("acodec").isNotBlank() &&
-                        item.optString("acodec") != "none"
+                    fun codecPresent(name: String): Boolean {
+                        val value = item.opt(name) ?: return false
+                        if (value === JSONObject.NULL) return false
+                        val codec = value.toString().trim()
+                        return codec.isNotEmpty() && !codec.equals("none", ignoreCase = true)
+                    }
+                    val video = codecPresent("vcodec")
+                    val audio = codecPresent("acodec")
                     val ext = item.optString("ext")
                     val match = when (target) {
                         DownloadFormat.BEST_MP4 -> video
