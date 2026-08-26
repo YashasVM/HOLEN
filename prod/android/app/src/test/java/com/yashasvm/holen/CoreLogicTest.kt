@@ -130,22 +130,14 @@ class CoreLogicTest {
 
     @Test
     fun adaptiveEstimateIncludesSeparateAudioTrack() {
-        val formats = JSONArray()
-            .put(
-                JSONObject()
-                    .put("filesize", 8_000L)
-                    .put("height", 720)
-                    .put("vcodec", "avc1")
-                    .put("acodec", "none")
-                    .put("ext", "mp4"),
-            )
-            .put(
-                JSONObject()
-                    .put("filesize", 3_000L)
-                    .put("vcodec", "none")
-                    .put("acodec", "mp4a.40.2")
-                    .put("ext", "m4a"),
-            )
+        val formats = JSONArray(
+            """
+            [
+              {"filesize":8000,"height":720,"vcodec":"avc1","acodec":"none","ext":"mp4"},
+              {"filesize":3000,"vcodec":"none","acodec":"mp4a.40.2","ext":"m4a"}
+            ]
+            """.trimIndent(),
+        )
 
         assertEquals(
             11_000L,
