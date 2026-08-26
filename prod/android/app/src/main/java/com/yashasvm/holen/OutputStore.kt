@@ -349,14 +349,15 @@ class OutputStore(private val context: Context) {
         private const val COPY_BUFFER_SIZE = 1024 * 1024
         private const val ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private val journalLock = Any()
+
+        fun mimeTypeFor(fileName: String, fallback: String? = null): String {
+            val extension = fileName.substringAfterLast('.', "").lowercase()
+            return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+                ?: fallback
+                ?: "application/octet-stream"
+        }
     }
 }
-
-data class StagedDownload(
-    val file: File,
-    val fileName: String,
-    val mimeType: String,
-)
 
 data class PublishedFile(
     val uri: Uri,
@@ -398,8 +399,6 @@ private data class DocumentDetails(
     val fileName: String,
     val byteCount: Long,
 )
-
-class StorageException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 internal fun sanitizeFileName(name: String): String {
     val sanitized = name
