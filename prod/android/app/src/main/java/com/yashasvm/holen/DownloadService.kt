@@ -158,7 +158,7 @@ class DownloadService : Service() {
     }
 
     private suspend fun processJob(job: DownloadJob, directDownloader: DirectDownloader?) {
-        var publishedOutput: OutputStore.PublishedFile? = null
+        var publishedOutput: PublishedFile? = null
         val progressWriter = ProgressWriter(store, job.id)
         try {
             updateNotification(job, TransferProgress(0, null, null, null, null))
@@ -243,7 +243,7 @@ class DownloadService : Service() {
         val blockedFinalizingIds = mutableSetOf<String>()
         for (jobId in outputStore.pendingPublicationIds()) {
             when (val recovery = outputStore.recoverPublication(jobId)) {
-                is OutputStore.PublicationRecovery.Complete -> {
+                is PublicationRecovery.Complete -> {
                     val published = recovery.file
                     val completed = store.complete(
                         jobId,
@@ -262,16 +262,16 @@ class DownloadService : Service() {
                         else blockedFinalizingIds += jobId
                     }
                 }
-                is OutputStore.PublicationRecovery.Partial -> {
+                is PublicationRecovery.Partial -> {
                     val deleted = runCatching { outputStore.deleteDocument(recovery.uri) }
                         .getOrDefault(false)
                     if (deleted) outputStore.confirmPublication(jobId)
                     else blockedFinalizingIds += jobId
                 }
-                OutputStore.PublicationRecovery.NotCreated,
-                OutputStore.PublicationRecovery.NoJournal,
+                PublicationRecovery.NotCreated,
+                PublicationRecovery.NoJournal,
                 -> outputStore.confirmPublication(jobId)
-                OutputStore.PublicationRecovery.Unavailable -> blockedFinalizingIds += jobId
+                PublicationRecovery.Unavailable -> blockedFinalizingIds += jobId
             }
         }
         return blockedFinalizingIds
@@ -371,7 +371,7 @@ class DownloadService : Service() {
 
     private fun showCompletionNotification(
         job: DownloadJob,
-        published: OutputStore.PublishedFile,
+        published: PublishedFile,
     ) {
         val openFileIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(published.uri, published.mimeType)

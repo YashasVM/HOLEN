@@ -116,7 +116,7 @@ class CoreLogicTest {
         assertEquals("download", sanitizeFileName(".."))
         assertEquals(
             "clip (3).mp4",
-            OutputStore.destinationName(
+            destinationName(
                 "clip.mp4",
                 setOf("clip.mp4", "clip (1).mp4", "clip (2).mp4"),
             ),
