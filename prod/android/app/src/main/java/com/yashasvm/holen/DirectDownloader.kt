@@ -84,7 +84,7 @@ class DirectDownloader {
 
         try {
             val responseCode = connection.code
-            if (!completedResume && responseCode !in setOf(HttpURLConnection.HTTP_OK, HttpURLConnection.HTTP_PARTIAL)) {
+            if (!isAcceptedTransferResponse(completedResume, attemptedResume, responseCode)) {
                 throw IOException("Network response $responseCode")
             }
             val total = if (completedResume) existing else totalLength(connection, existing)
@@ -217,6 +217,14 @@ class DirectDownloader {
         private const val TIMEOUT_MS = 20_000
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+
+        internal fun isAcceptedTransferResponse(
+            completedResume: Boolean,
+            attemptedResume: Boolean,
+            responseCode: Int,
+        ): Boolean = completedResume ||
+            responseCode == HttpURLConnection.HTTP_OK ||
+            (attemptedResume && responseCode == HttpURLConnection.HTTP_PARTIAL)
 
         fun shouldAppend(existingBytes: Long, responseCode: Int): Boolean =
             existingBytes > 0 && responseCode == HttpURLConnection.HTTP_PARTIAL
