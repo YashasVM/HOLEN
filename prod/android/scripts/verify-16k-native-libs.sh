@@ -6,6 +6,17 @@ if [[ "$#" -eq 0 ]]; then
   exit 2
 fi
 
+is_wrapper_zip_payload() {
+  local file="$1"
+  local name
+  name="$(basename "$file")"
+  [[ "$name" == *.zip.so ]] || return 1
+
+  local magic
+  magic="$(od -An -tx1 -N4 "$file" 2>/dev/null | tr -d ' \n')"
+  [[ "$magic" == "504b0304" || "$magic" == "504b0506" || "$magic" == "504b0708" ]]
+}
+
 for apk in "$@"; do
   [[ -f "$apk" ]] || { echo "APK not found: $apk" >&2; exit 1; }
   tmp="$(mktemp -d)"
@@ -16,9 +27,16 @@ for apk in "$@"; do
     relative="${so#"$tmp"/lib/}"
     abi="${relative%%/*}"
     [[ "$abi" == "arm64-v8a" || "$abi" == "x86_64" ]] || continue
-    # youtubedl-android packages runtime ZIP payloads with a .so suffix.
-    # Only real ELF files have program-header alignment to verify.
-    readelf -h "$so" >/dev/null 2>&1 || continue
+
+    if ! readelf -h "$so" >/dev/null 2>&1; then
+      if is_wrapper_zip_payload "$so"; then
+        continue
+      fi
+      echo "$apk contains unreadable 64-bit native library ${relative}; refusing to skip it." >&2
+      rm -rf "$tmp"
+      exit 1
+    fi
+
     found_64_bit_elf=true
     found_load_segment=false
     headers="$tmp/program-headers.txt"
