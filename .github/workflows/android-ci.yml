@@ -83,6 +83,24 @@ jobs:
           }
           bash scripts/verify-16k-native-libs.sh "${arm64[0]}" "${universal[0]}"
 
+          # Regression: an arbitrary corrupt .so must fail closed even when valid
+          # aligned ELFs are present in the same APK. Only verified *.zip.so wrapper
+          # payloads are allowed to bypass ELF inspection.
+          corrupt_dir="$RUNNER_TEMP/holen-corrupt-native-apk"
+          rm -rf "$corrupt_dir"
+          mkdir -p "$corrupt_dir"
+          unzip -qq "${arm64[0]}" -d "$corrupt_dir"
+          printf 'not-an-elf' > "$corrupt_dir/lib/arm64-v8a/libcorrupt.so"
+          corrupt_apk="$RUNNER_TEMP/holen-corrupt-native.apk"
+          (
+            cd "$corrupt_dir"
+            zip -qr "$corrupt_apk" .
+          )
+          if bash scripts/verify-16k-native-libs.sh "$corrupt_apk"; then
+            echo "16 KB verifier accepted an arbitrary corrupt 64-bit .so." >&2
+            exit 1
+          fi
+
       - name: Upload signed ARM64 update
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
