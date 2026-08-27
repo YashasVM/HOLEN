@@ -16,9 +16,20 @@ for apk in "$@"; do
     relative="${so#"$tmp"/lib/}"
     abi="${relative%%/*}"
     [[ "$abi" == "arm64-v8a" || "$abi" == "x86_64" ]] || continue
-    readelf -h "$so" >/dev/null 2>&1 || continue
+    if ! readelf -h "$so" >/dev/null 2>&1; then
+      echo "$apk contains uninspectable 64-bit native library ${relative}." >&2
+      rm -rf "$tmp"
+      exit 1
+    fi
     found_64_bit_elf=true
     found_load_segment=false
+    headers="$tmp/program-headers.txt"
+
+    if ! readelf -lW "$so" >"$headers" 2>/dev/null; then
+      echo "$apk contains 64-bit native library ${relative} whose program headers could not be read completely." >&2
+      rm -rf "$tmp"
+      exit 1
+    fi
 
     while IFS= read -r alignment; do
       found_load_segment=true
@@ -27,7 +38,7 @@ for apk in "$@"; do
         rm -rf "$tmp"
         exit 1
       fi
-    done < <(readelf -lW "$so" | awk '$1 == "LOAD" { print $NF }')
+    done < <(awk '$1 == "LOAD" { print $NF }' "$headers")
 
     if [[ "$found_load_segment" != true ]]; then
       echo "$apk contains 64-bit native library ${relative} with no inspectable PT_LOAD segments." >&2
