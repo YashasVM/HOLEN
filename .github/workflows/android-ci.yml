@@ -14,6 +14,8 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -68,6 +70,38 @@ jobs:
             assembleArm64Release \
             assembleArmv7Release \
             assembleUniversalRelease
+
+      - name: Verify 16 KB native library compatibility
+        working-directory: prod/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          arm64=(app/build/outputs/apk/arm64/release/*.apk)
+          universal=(app/build/outputs/apk/universal/release/*.apk)
+          [[ ${#arm64[@]} -eq 1 && ${#universal[@]} -eq 1 ]] || {
+            echo "Expected one arm64 and one universal release APK for 16 KB verification." >&2
+            exit 1
+          }
+          bash scripts/verify-16k-native-libs.sh "${arm64[0]}" "${universal[0]}"
+
+          # Regression: an arbitrary corrupt .so must fail closed even when valid
+          # aligned ELFs are present in the same APK. Only verified *.zip.so wrapper
+          # payloads are allowed to bypass ELF inspection.
+          corrupt_dir="$RUNNER_TEMP/holen-corrupt-native-apk"
+          rm -rf "$corrupt_dir"
+          mkdir -p "$corrupt_dir"
+          unzip -qq "${arm64[0]}" -d "$corrupt_dir"
+          printf 'not-an-elf' > "$corrupt_dir/lib/arm64-v8a/libcorrupt.so"
+          corrupt_apk="$RUNNER_TEMP/holen-corrupt-native.apk"
+          (
+            cd "$corrupt_dir"
+            zip -qr "$corrupt_apk" .
+          )
+          if bash scripts/verify-16k-native-libs.sh "$corrupt_apk"; then
+            echo "16 KB verifier accepted an arbitrary corrupt 64-bit .so." >&2
+            exit 1
+          fi
 
       - name: Upload signed ARM64 update
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
