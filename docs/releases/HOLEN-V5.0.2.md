@@ -1,6 +1,7 @@
 ## HOLEN V5.0.2
 
 - Faster Android downloads with bundled aria2c and bounded concurrent transfers.
-- More reliable resume, cancellation, timeout recovery, and staging/publication handling.
-- Improved progress reporting, media detection, size estimates, and Android build/release hardening.
-- Fix aria2c initialization after app warmup so accelerated downloads start reliably.
+- Safer resume handling with strong ETag/resource validation, stable byte encoding, and protection against invalid partial responses.
+- Clearer direct-download errors for access, missing media, rate limits, and server failures.
+- More reliable cancellation, timeout recovery, staging/publication, and aria2c startup after app warmup.
+- Hardened Android release builds, including signed APK verification and 16 KB native-library alignment checks.
