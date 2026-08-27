@@ -69,6 +69,20 @@ jobs:
             assembleArmv7Release \
             assembleUniversalRelease
 
+      - name: Verify 16 KB native library compatibility
+        working-directory: prod/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          arm64=(app/build/outputs/apk/arm64/release/*.apk)
+          universal=(app/build/outputs/apk/universal/release/*.apk)
+          [[ ${#arm64[@]} -eq 1 && ${#universal[@]} -eq 1 ]] || {
+            echo "Expected one arm64 and one universal release APK for 16 KB verification." >&2
+            exit 1
+          }
+          bash scripts/verify-16k-native-libs.sh "${arm64[0]}" "${universal[0]}"
+
       - name: Upload signed ARM64 update
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
