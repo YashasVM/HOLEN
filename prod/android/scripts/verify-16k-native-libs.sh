@@ -16,11 +16,9 @@ for apk in "$@"; do
     relative="${so#"$tmp"/lib/}"
     abi="${relative%%/*}"
     [[ "$abi" == "arm64-v8a" || "$abi" == "x86_64" ]] || continue
-    if ! readelf -h "$so" >/dev/null 2>&1; then
-      echo "$apk contains uninspectable 64-bit native library ${relative}." >&2
-      rm -rf "$tmp"
-      exit 1
-    fi
+    # youtubedl-android packages runtime ZIP payloads with a .so suffix.
+    # Only real ELF files have program-header alignment to verify.
+    readelf -h "$so" >/dev/null 2>&1 || continue
     found_64_bit_elf=true
     found_load_segment=false
     headers="$tmp/program-headers.txt"
