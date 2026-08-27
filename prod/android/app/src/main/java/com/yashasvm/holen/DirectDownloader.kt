@@ -168,7 +168,12 @@ class DirectDownloader {
     private fun open(rawUrl: String, rangeStart: Long?, resumeState: ResumeState?): Response {
         var endpoint = resolvePublicHttpsEndpoint(rawUrl)
         repeat(MAX_REDIRECTS + 1) { redirect ->
-            val request = Request.Builder().url(endpoint.url).header("User-Agent", USER_AGENT)
+            val request = Request.Builder()
+                .url(endpoint.url)
+                .header("User-Agent", USER_AGENT)
+                // Keep persisted byte offsets in the same representation across the initial
+                // transfer and later Range requests; transparent gzip would make them differ.
+                .header("Accept-Encoding", "identity")
                 .apply {
                     val target = endpoint.url.toString()
                     if (rangeStart != null && resumeState != null && resumeTargetMatches(resumeState.resourceUrl, target)) {
