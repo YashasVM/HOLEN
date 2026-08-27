@@ -34,14 +34,7 @@ fun friendlyFailure(error: Throwable): String {
         isLoginRequiredFailure(normalized) ->
             "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry."
         normalized.contains("unsupported") -> "This URL is not supported by the current engine."
-        message.startsWith("Network response ", true) -> {
-            val status = message.substringAfter("Network response ").takeWhile(Char::isDigit)
-            if (status.isNotBlank()) {
-                "The server returned HTTP $status. Check the link and try again."
-            } else {
-                "The server rejected the request. Check the link and try again."
-            }
-        }
+        message.startsWith("Network response ", true) -> directHttpFailure(message)
         message.contains("space", true) ||
             message.contains("ENOSPC", true) -> "There is not enough storage space."
         error is StorageException -> message.lineSequence()
@@ -65,6 +58,18 @@ fun friendlyFailure(error: Throwable): String {
             ?.removePrefix("ERROR: ")
             ?.take(180)
             ?: "The download failed. Try again."
+    }
+}
+
+private fun directHttpFailure(message: String): String {
+    val status = message.substringAfter("Network response ").takeWhile(Char::isDigit).toIntOrNull()
+        ?: return "The server rejected the request. Check the link and try again."
+    return when (status) {
+        401, 403 -> "The server denied access (HTTP $status). Check that the link is still valid and that you have access to the file."
+        404, 410 -> "The file is no longer available (HTTP $status). Check the link or get a fresh download URL."
+        429 -> "The server is rate-limiting downloads (HTTP 429). Wait a little, then retry."
+        in 500..599 -> "The server is temporarily unavailable (HTTP $status). Retry later."
+        else -> "The server returned HTTP $status. Check the link and try again."
     }
 }
 
