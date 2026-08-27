@@ -18,14 +18,22 @@ for apk in "$@"; do
     [[ "$abi" == "arm64-v8a" || "$abi" == "x86_64" ]] || continue
     readelf -h "$so" >/dev/null 2>&1 || continue
     found_64_bit_elf=true
+    found_load_segment=false
 
     while IFS= read -r alignment; do
+      found_load_segment=true
       if (( alignment < 0x4000 )); then
         echo "$apk contains 64-bit native library ${relative} with PT_LOAD alignment ${alignment}; 16 KB devices require at least 0x4000." >&2
         rm -rf "$tmp"
         exit 1
       fi
     done < <(readelf -lW "$so" | awk '$1 == "LOAD" { print $NF }')
+
+    if [[ "$found_load_segment" != true ]]; then
+      echo "$apk contains 64-bit native library ${relative} with no inspectable PT_LOAD segments." >&2
+      rm -rf "$tmp"
+      exit 1
+    fi
   done < <(find "$tmp/lib" -type f -name '*.so' -print 2>/dev/null | sort)
 
   rm -rf "$tmp"
