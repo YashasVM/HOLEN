@@ -3,11 +3,18 @@ package com.yashasvm.holen
 /** Small, dependency-free helpers used before an APK is downloaded. */
 internal object AppUpdateVersion {
     private val version = Regex("""^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$""")
+    private const val ANDROID_TAG_PREFIX = "android-"
 
-    /**
-     * GitHub's latest-release endpoint intentionally excludes prereleases. We only accept a
-     * conventional numeric release tag so an arbitrary tag can never trigger an update prompt.
-     */
+    /** Returns the numeric Android app version encoded by this repository's release tag. */
+    fun androidVersionFromTag(tag: String): String? {
+        val taggedVersion = tag.trim().takeIf { it.startsWith(ANDROID_TAG_PREFIX) }
+            ?.removePrefix(ANDROID_TAG_PREFIX)
+            ?: return null
+        if (parse(taggedVersion) == null) return null
+        return taggedVersion.removePrefix("v")
+    }
+
+    /** Only conventional numeric versions can participate in update comparisons. */
     fun isNewer(candidate: String, installed: String): Boolean {
         val candidateParts = parse(candidate) ?: return false
         val installedParts = parse(installed) ?: return false
