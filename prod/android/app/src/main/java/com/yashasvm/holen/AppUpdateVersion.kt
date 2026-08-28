@@ -14,9 +14,10 @@ internal object AppUpdateVersion {
         return taggedVersion.removePrefix("v")
     }
 
-    /** Only conventional numeric versions can participate in update comparisons. */
+    /** Only conventional numeric or project Android release versions can trigger updates. */
     fun isNewer(candidate: String, installed: String): Boolean {
-        val candidateParts = parse(candidate) ?: return false
+        val normalizedCandidate = androidVersionFromTag(candidate) ?: candidate
+        val candidateParts = parse(normalizedCandidate) ?: return false
         val installedParts = parse(installed) ?: return false
         return candidateParts.zip(installedParts).firstOrNull { it.first != it.second }
             ?.let { it.first > it.second }
