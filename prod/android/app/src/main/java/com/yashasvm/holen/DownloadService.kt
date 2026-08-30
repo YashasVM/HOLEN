@@ -204,7 +204,7 @@ class DownloadService : Service() {
                     }
                 }
                 if (directDownloader != null) {
-                    directDownloader.download(job, directory, { shouldAbort(job.id) }, reportProgress)
+                    directDownloader.downloadWithRetry(job, directory, { shouldAbort(job.id) }, reportProgress)
                 } else {
                     engine.download(job, directory, { shouldAbort(job.id) }, reportProgress)
                 }
