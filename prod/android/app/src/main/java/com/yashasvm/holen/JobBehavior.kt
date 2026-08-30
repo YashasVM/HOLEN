@@ -21,18 +21,19 @@ fun JobStatus.canTransitionTo(next: JobStatus): Boolean = when (this) {
 fun friendlyFailure(error: Throwable): String {
     val message = error.message.orEmpty()
     val normalized = message.lowercase()
+    val extractorHttpFailure = extractorHttpFailure(normalized)
     return when {
         normalized.contains("drm") -> "This source is DRM-protected and cannot be downloaded."
         normalized.contains("confirm you're not a bot") ||
             normalized.contains("confirm you’re not a bot") ||
             normalized.contains("verify you are human") ||
-            normalized.contains("unusual traffic") ||
-            normalized.contains("http error 429") ->
+            normalized.contains("unusual traffic") ->
             "The source asked for a bot check. Wait a little, then retry; valid cookies may help for content you can access."
         isAgeRestrictedFailure(normalized) ->
             "This video needs age verification. Use fresh cookies from an account permitted to watch it, then retry."
         isLoginRequiredFailure(normalized) ->
             "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry."
+        extractorHttpFailure != null -> extractorHttpFailure
         normalized.contains("unsupported") -> "This URL is not supported by the current engine."
         message.startsWith("Network response ", true) -> directHttpFailure(message)
         message.contains("space", true) ||
@@ -64,13 +65,33 @@ fun friendlyFailure(error: Throwable): String {
 private fun directHttpFailure(message: String): String {
     val status = message.substringAfter("Network response ").takeWhile(Char::isDigit).toIntOrNull()
         ?: return "The server rejected the request. Check the link and try again."
-    return when (status) {
-        401, 403 -> "The server denied access (HTTP $status). Check that the link is still valid and that you have access to the file."
-        404, 410 -> "The file is no longer available (HTTP $status). Check the link or get a fresh download URL."
-        429 -> "The server is rate-limiting downloads (HTTP 429). Wait a little, then retry."
-        in 500..599 -> "The server is temporarily unavailable (HTTP $status). Retry later."
-        else -> "The server returned HTTP $status. Check the link and try again."
+    return httpFailure(status, directFile = true)
+}
+
+private fun extractorHttpFailure(message: String): String? {
+    val status = Regex("""http error (\d{3})""")
+        .find(message)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+        ?: return null
+    return httpFailure(status, directFile = false)
+}
+
+private fun httpFailure(status: Int, directFile: Boolean): String = when (status) {
+    401, 403 -> if (directFile) {
+        "The server denied access (HTTP $status). Check that the link is still valid and that you have access to the file."
+    } else {
+        "The source denied access (HTTP $status). The link may have expired or the media may require fresh cookies/account access."
     }
+    404, 410 -> if (directFile) {
+        "The file is no longer available (HTTP $status). Check the link or get a fresh download URL."
+    } else {
+        "The media is no longer available (HTTP $status), or the source changed its URL. Refresh the link and retry."
+    }
+    429 -> "The source is rate-limiting downloads (HTTP 429). Wait before retrying; repeated retries can extend the limit."
+    in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
+    else -> "The source returned HTTP $status. Check the link and try again."
 }
 
 private fun isAgeRestrictedFailure(message: String): Boolean = listOf(

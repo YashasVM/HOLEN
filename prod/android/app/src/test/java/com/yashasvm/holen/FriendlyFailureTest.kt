@@ -15,4 +15,21 @@ class FriendlyFailureTest {
         assertTrue(friendlyFailure(IOException("Network response 503")).contains("temporarily unavailable"))
         assertTrue(friendlyFailure(IOException("Network response 418")).contains("HTTP 418"))
     }
+
+    @Test
+    fun extractorHttpFailuresAreClassifiedWithoutPretendingRateLimitsAreBotChecks() {
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden")).contains("fresh cookies"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 404: Not Found")).contains("no longer available"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("rate-limiting"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("repeated retries"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 503: Service Unavailable")).contains("temporarily unavailable"))
+    }
+
+    @Test
+    fun explicitBotChallengeStillTakesPriorityOverHttpStatus() {
+        assertTrue(
+            friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: confirm you're not a bot"))
+                .contains("bot check"),
+        )
+    }
 }
