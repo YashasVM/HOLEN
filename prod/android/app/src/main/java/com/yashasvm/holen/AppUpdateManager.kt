@@ -50,7 +50,7 @@ class AppUpdateManager(private val context: Context) {
         val release = JSONObject(body)
         if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@withContext null
         val tag = release.optString("tag_name").trim()
-        val versionName = tag.removePrefix("v")
+        val versionName = AppUpdateVersion.androidVersionFromTag(tag) ?: return@withContext null
         if (!AppUpdateVersion.isNewer(versionName, BuildConfig.VERSION_NAME)) return@withContext null
         val asset = selectArm64Asset(release.optJSONArray("assets")) ?: return@withContext null
         AppRelease(
