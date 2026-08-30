@@ -13,6 +13,8 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
 import okhttp3.Call
 import okhttp3.Request
@@ -101,6 +103,8 @@ class DirectDownloader {
                 val state = createResumeState(
                     connection.request.url.toString(),
                     connection.header("ETag"),
+                    connection.header("Last-Modified"),
+                    connection.header("Date"),
                 )
                 if (state != null) {
                     validatorFile.writeText(encodeResumeState(state))
@@ -243,19 +247,56 @@ class DirectDownloader {
             return start == existingBytes
         }
 
-        internal fun selectResumeValidator(etag: String?): String? = etag
-            ?.trim()
-            ?.takeIf {
-                it.length <= 256 && '\r' !in it && '\n' !in it &&
-                    it.startsWith('"') && it.endsWith('"') && !it.startsWith("W/")
-            }
+        internal fun selectResumeValidator(
+            etag: String?,
+            lastModified: String? = null,
+            responseDate: String? = null,
+        ): String? {
+            val trimmedEtag = etag?.trim()
+            val strongEtag = trimmedEtag?.takeIf(::isStrongEtag)
+            if (strongEtag != null) return strongEtag
+            // RFC 9110 only allows an HTTP-date If-Range validator when there is no entity tag
+            // for the representation. Do not silently replace a weak or malformed ETag.
+            if (!etag.isNullOrBlank()) return null
 
-        internal fun createResumeState(resourceUrl: String, etag: String?): ResumeState? {
-            val validator = selectResumeValidator(etag) ?: return null
+            val modified = lastModified?.trim()?.takeIf(::isSafeHeaderValue) ?: return null
+            val sent = responseDate?.trim()?.takeIf(::isSafeHeaderValue) ?: return null
+            val modifiedInstant = parseHttpDate(modified) ?: return null
+            val sentInstant = parseHttpDate(sent) ?: return null
+            // A cached Last-Modified value can be treated as a strong validator when the
+            // response Date is at least one second later (RFC 9110 section 8.8.2.2).
+            return modified.takeIf { sentInstant.epochSecond - modifiedInstant.epochSecond >= 1 }
+        }
+
+        private fun isStrongEtag(value: String): Boolean =
+            isSafeHeaderValue(value) && value.startsWith('"') && value.endsWith('"') &&
+                !value.startsWith("W/")
+
+        private fun isSafeHeaderValue(value: String): Boolean =
+            value.length <= 256 && '\r' !in value && '\n' !in value
+
+        private fun parseHttpDate(value: String) = runCatching {
+            ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+        }.getOrNull()
+
+        internal fun createResumeState(
+            resourceUrl: String,
+            etag: String?,
+            lastModified: String? = null,
+            responseDate: String? = null,
+        ): ResumeState? {
+            val validator = selectResumeValidator(etag, lastModified, responseDate) ?: return null
+            return createPersistedResumeState(resourceUrl, validator)
+        }
+
+        private fun createPersistedResumeState(resourceUrl: String, validator: String): ResumeState? {
             val target = resourceUrl.trim().takeIf {
                 it.length <= 2_048 && it.startsWith("https://") && '\r' !in it && '\n' !in it
             } ?: return null
-            return ResumeState(target, validator)
+            val safeValidator = validator.trim().takeIf {
+                isStrongEtag(it) || (isSafeHeaderValue(it) && parseHttpDate(it) != null)
+            } ?: return null
+            return ResumeState(target, safeValidator)
         }
 
         internal fun resumeTargetMatches(savedTarget: String, requestTarget: String): Boolean =
@@ -267,7 +308,7 @@ class DirectDownloader {
         private fun readResumeState(file: File): ResumeState? = runCatching {
             val lines = file.takeIf(File::isFile)?.readLines() ?: return@runCatching null
             if (lines.size != 2) return@runCatching null
-            createResumeState(lines[0], lines[1])
+            createPersistedResumeState(lines[0], lines[1])
         }.getOrNull()
 
         internal fun isCompletedRangeResponse(
