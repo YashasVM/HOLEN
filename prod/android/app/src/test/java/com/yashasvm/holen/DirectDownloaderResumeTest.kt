@@ -17,8 +17,61 @@ class DirectDownloaderResumeTest {
     }
 
     @Test
+    fun strongEtagIsPreferredOverLastModified() {
+        assertEquals(
+            "\"abc123\"",
+            DirectDownloader.selectResumeValidator(
+                "\"abc123\"",
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:10 GMT",
+            ),
+        )
+    }
+
+    @Test
     fun weakEtagDoesNotEnableResume() {
         assertNull(DirectDownloader.selectResumeValidator("W/\"abc123\""))
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                "W/\"abc123\"",
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:10 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun strongLastModifiedIsAcceptedWhenEtagIsAbsent() {
+        assertEquals(
+            "Sun, 30 Aug 2026 10:00:00 GMT",
+            DirectDownloader.selectResumeValidator(
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:01 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun lastModifiedIsRejectedWhenResponseDateIsNotLater() {
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun malformedLastModifiedDoesNotEnableResume() {
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                null,
+                "not-a-date",
+                "Sun, 30 Aug 2026 10:00:10 GMT",
+            ),
+        )
     }
 
     @Test
@@ -27,11 +80,19 @@ class DirectDownloaderResumeTest {
     }
 
     @Test
-    fun resumeStateRequiresHttpsResourceAndStrongEtag() {
+    fun resumeStateRequiresHttpsResourceAndStrongValidator() {
         assertNotNull(
             DirectDownloader.createResumeState(
                 "https://cdn.example.test/media.mp4",
                 "\"abc123\"",
+            ),
+        )
+        assertNotNull(
+            DirectDownloader.createResumeState(
+                "https://cdn.example.test/media.mp4",
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:01 GMT",
             ),
         )
         assertNull(
