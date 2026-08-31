@@ -21,8 +21,9 @@
 - The restart-guidance classification fix passed generic CI and full Android CI on commit `d5e18bf48804c317eca6eeab085bc8cb7ea54144`; Android CI run `33417196473` completed successfully.
 
 ## In progress
-- Execute the existing Android instrumentation suite in CI rather than merely assembling its APK. Commit `f9cc51b7d899eabe22c2da4bbd4baee3a02da13d` adds a bounded `macos-15-intel` emulator job using API 35/x86_64 because the current Linux-hosted emulator path has an unresolved upstream runner hang. Android CI run `33433424144` is validating the new job.
-- Investigate first yt-dlp-managed download startup latency. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
+- Execute the existing Android instrumentation suite in CI rather than merely assembling its APK. Commit `f9cc51b7d899eabe22c2da4bbd4baee3a02da13d` added a bounded `macos-15-intel` API 35/x86_64 emulator job. Android CI run `33433424144` proved the normal verify job still passes but the instrumentation job failed after entering the actual test step; the workflow did not retain Gradle instrumentation reports, so the failure cannot yet be classified as app/test versus emulator infrastructure.
+- Commit `a89b6a43d125943cbacce899aa2bf966e2eb9f89` now uploads connected-test HTML/XML outputs on every instrumentation run, including failures, so the next run is diagnosable without weakening the gate or guessing at the cause.
+- Investigate first yt-dlp-managed download startup latency after the instrumentation CI task is stable. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
 - Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, engine-reset guard, manifest-downloader hardening, and restart-guidance classification.
@@ -33,7 +34,7 @@
 - Latest measured Android ARM64 test artifact came from successful Android CI run 33343043276 on commit `289f071c07bf488eef4a4dd9737503aefcadde29`; its release APK measured 63,698,918 bytes.
 - The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
 - yt-dlp's documented downloader syntax supports a default downloader plus protocol-specific overrides; the security advisory explicitly recommends `--downloader dash,m3u8:native` for users unable to immediately upgrade an affected engine.
-- The instrumentation job is capped at 25 minutes so a runner/emulator regression cannot consume an unbounded CI slot. It remains pending until Android CI run `33433424144` completes successfully.
+- Android CI run `33433424144` passed lint, unit tests, emulator APK build, ARM release builds, and 16 KB verification in the normal verify job. Its instrumentation job reached `Run Android instrumentation tests` and then failed; no production-code regression has been attributed to that failure yet.
 
 ## Known risks
 - Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
@@ -44,7 +45,7 @@
 - The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
 - Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
 - The manifest safety override intentionally gives DASH/HLS transfers to yt-dlp's native fragment downloader, so those protocols do not receive aria2c's transfer behavior; this is the upstream-recommended security trade-off and ordinary HTTP transfers still use aria2c.
-- The new instrumentation job uses a GitHub-hosted Intel macOS runner to avoid the unresolved Linux emulator hang; if upstream runner availability changes, CI cost/reliability should be re-evaluated before changing platforms.
+- The new instrumentation job uses a GitHub-hosted Intel macOS runner to avoid the unresolved Linux emulator hang. The first run failed during the actual test step, so the gate remains under investigation; do not disable or mark it non-blocking until retained reports identify the cause.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
