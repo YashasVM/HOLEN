@@ -15,9 +15,10 @@
 - Removed FFmpeg extraction from the background metadata warm-up path. Fresh installs now prepare only Python/yt-dlp before analysis; FFmpeg remains lazily initialized at download time. This avoids letting the 35.6 MB FFmpeg payload hold the shared initialization mutex while the first metadata request waits for media tools it does not use.
 - Fixed same-process engine-reset recovery. After a manual bundled-engine reset or a failed stable-engine update clears extracted runtime files, analyze/download now fail with an explicit restart-required error instead of calling upstream singleton `init()` methods that may already believe they are initialized. The aria2 extraction-version marker is also cleared with Python/FFmpeg/yt-dlp markers. First-initialization fallback remains restart-free.
 - The engine-reset guard passed generic CI plus full Android CI (lint, unit tests, APK builds, and 16 KB native-library validation) on commit `771f6097f0eb9deca62370014dffa4c165887149`.
+- Hardened yt-dlp downloader selection for fragmented manifests in `41ae0d4e7b99d0a507f4650ffd554217e8eb0a4a`: aria2c remains the default external downloader for ordinary transfers, while `dash,m3u8` are explicitly forced to yt-dlp's native downloader. This matches yt-dlp's workaround for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574 and protects an older bundled engine even before the stable updater runs.
 
 ## In progress
-- Harden yt-dlp downloader selection for fragmented manifests. HOLEN currently selects aria2c globally. yt-dlp security advisory GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574 removed aria2c support for DASH/HLS in 2026.06.09 and recommends `--downloader dash,m3u8:native` when aria2 remains the normal HTTP downloader. Add that protocol-specific override and regression coverage so even an older bundled yt-dlp cannot send manifest fragments through aria2c.
+- Finish Android CI validation of the manifest-downloader safety change. Generic CI is already green on the exact code commit; Android CI is still running lint/unit/build/native-package checks.
 
 ## Validation
 - Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, and the engine-reset guard.
@@ -27,6 +28,7 @@
 - Current yt-dlp stable `2026.08.19` includes the merged aria2c resume fix (`yt-dlp/yt-dlp#11698`), including persisted aria2 control files for continued downloads and overwrite fallback when a partial transfer cannot be resumed.
 - Latest measured Android ARM64 test artifact came from successful Android CI run 33343043276 on commit `289f071c07bf488eef4a4dd9737503aefcadde29`; its release APK measured 63,698,918 bytes.
 - The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
+- yt-dlp's documented downloader syntax supports a default downloader plus protocol-specific overrides; the security advisory explicitly recommends `--downloader dash,m3u8:native` for users unable to immediately upgrade an affected engine.
 
 ## Known risks
 - Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
@@ -36,7 +38,7 @@
 - Deferring FFmpeg trades fresh-install metadata latency for one-time initialization immediately before the first yt-dlp-managed download. No numeric speedup is claimed until a device-side cold-install benchmark is available; the change only removes unnecessary FFmpeg work from the metadata critical path.
 - The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
 - Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
-- Until the manifest override above lands, an unexpectedly old bundled yt-dlp can still receive HOLEN's global aria2c selection for fragmented media; current stable yt-dlp is patched, but HOLEN should enforce the safe protocol split independently instead of relying only on updater success.
+- The manifest safety override intentionally gives DASH/HLS transfers to yt-dlp's native fragment downloader, so those protocols do not receive aria2c's transfer behavior; this is the upstream-recommended security trade-off and ordinary HTTP transfers still use aria2c.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
