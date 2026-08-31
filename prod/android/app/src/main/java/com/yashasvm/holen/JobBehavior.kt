@@ -24,6 +24,9 @@ fun friendlyFailure(error: Throwable): String {
     val extractorHttpFailure = extractorHttpFailure(normalized)
     return when {
         normalized.contains("drm") -> "This source is DRM-protected and cannot be downloaded."
+        normalized.contains("media engine reset is pending") ||
+            normalized.contains("close and reopen holen") ->
+            "The media engine was reset. Close and reopen HOLEN before analyzing or downloading media."
         normalized.contains("confirm you're not a bot") ||
             normalized.contains("confirm you’re not a bot") ||
             normalized.contains("verify you are human") ||

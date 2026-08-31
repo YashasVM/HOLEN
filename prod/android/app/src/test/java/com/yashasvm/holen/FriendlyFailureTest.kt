@@ -32,4 +32,14 @@ class FriendlyFailureTest {
                 .contains("bot check"),
         )
     }
+
+    @Test
+    fun pendingEngineResetRequiresRestartInsteadOfNetworkRetry() {
+        val result = friendlyFailure(
+            IOException("Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."),
+        )
+
+        assertTrue(result.contains("Close and reopen HOLEN"))
+        assertTrue(!result.contains("network transfer failed", ignoreCase = true))
+    }
 }
