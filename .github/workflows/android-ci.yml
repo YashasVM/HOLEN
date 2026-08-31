@@ -148,3 +148,14 @@ jobs:
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           working-directory: prod/android
           script: ./gradlew connectedEmulatorDebugAndroidTest
+
+      - name: Upload instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HOLEN-android-instrumentation-reports
+          path: |
+            prod/android/app/build/reports/androidTests/connected/**
+            prod/android/app/build/outputs/androidTest-results/connected/**
+          if-no-files-found: warn
+          retention-days: 7
