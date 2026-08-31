@@ -18,20 +18,20 @@
 - Hardened yt-dlp downloader selection for fragmented manifests in `41ae0d4e7b99d0a507f4650ffd554217e8eb0a4a`: aria2c remains the default external downloader for ordinary transfers, while `dash,m3u8` are explicitly forced to yt-dlp's native downloader. This matches yt-dlp's workaround for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574 and protects an older bundled engine even before the stable updater runs.
 - The manifest-downloader hardening passed generic CI and full Android CI, including lint, unit tests, APK assembly, and 16 KB native-library validation, on Android CI run `33406133219`.
 - Fixed restart-required engine-reset failures being misclassified as generic network failures. Download jobs now preserve the actionable “close and reopen HOLEN” guidance, with a regression test covering the `IOException` path in commit `d5e18bf48804c317eca6eeab085bc8cb7ea54144`.
+- The restart-guidance classification fix passed generic CI and full Android CI on commit `d5e18bf48804c317eca6eeab085bc8cb7ea54144`; Android CI run `33417196473` completed successfully.
 
 ## In progress
-- Validate the restart-guidance classification fix with generic and full Android CI. After that, continue investigating first yt-dlp-managed download startup latency; do not prewarm or parallelize extraction without device-side timing or another defensible structural benefit.
+- Investigate first yt-dlp-managed download startup latency. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
-- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, engine-reset guard, and manifest-downloader hardening.
+- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, engine-reset guard, manifest-downloader hardening, and restart-guidance classification.
 - Resume unit coverage includes strong ETag preference, weak ETag rejection, valid Last-Modified fallback, unsafe timestamp rejection, and HTTPS-only persisted resume state.
 - Direct retry policy tests cover transient transport/HTTP failures, retry-budget exhaustion, bounded backoff, permanent HTTP failures, rate limiting, TLS failures, malformed redirects, and protocol errors.
-- Friendly-failure tests cover yt-dlp-style HTTP 403/404/429/503 messages, verify that explicit bot challenges remain distinct from ordinary rate limiting, and now verify that an engine-reset restart requirement cannot fall through to generic network-retry guidance.
+- Friendly-failure tests cover yt-dlp-style HTTP 403/404/429/503 messages, verify that explicit bot challenges remain distinct from ordinary rate limiting, and verify that an engine-reset restart requirement cannot fall through to generic network-retry guidance.
 - Current yt-dlp stable `2026.08.19` includes the merged aria2c resume fix (`yt-dlp/yt-dlp#11698`), including persisted aria2 control files for continued downloads and overwrite fallback when a partial transfer cannot be resumed.
 - Latest measured Android ARM64 test artifact came from successful Android CI run 33343043276 on commit `289f071c07bf488eef4a4dd9737503aefcadde29`; its release APK measured 63,698,918 bytes.
 - The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
 - yt-dlp's documented downloader syntax supports a default downloader plus protocol-specific overrides; the security advisory explicitly recommends `--downloader dash,m3u8:native` for users unable to immediately upgrade an affected engine.
-- CI for `d5e18bf48804c317eca6eeab085bc8cb7ea54144` was queued when this progress note was written; do not treat the restart-guidance fix as fully validated until both workflows complete successfully.
 
 ## Known risks
 - Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
