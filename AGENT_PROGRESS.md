@@ -21,9 +21,9 @@
 - The restart-guidance classification fix passed generic CI and full Android CI on commit `d5e18bf48804c317eca6eeab085bc8cb7ea54144`; Android CI run `33417196473` completed successfully.
 
 ## In progress
-- Execute the existing Android instrumentation suite in CI rather than merely assembling its APK. Commit `f9cc51b7d899eabe22c2da4bbd4baee3a02da13d` added a bounded `macos-15-intel` API 35/x86_64 emulator job.
-- The first two instrumentation attempts entered `reactivecircus/android-emulator-runner` but produced no Gradle connected-test result files. The latest failed job spent about 13.5 minutes inside the emulator-runner action; its report-upload step executed successfully but found nothing to retain. That makes an app/test assertion unlikely and points to emulator setup/boot before Gradle test execution.
-- Commit `33da656b02e8aac80a6730211e7b2a8bca9d4eb6` keeps the gate blocking but raises only `emulator-boot-timeout` from the action default 600 seconds to 900 seconds. Android CI run `33443793903` is validating whether the Intel macOS cold boot simply needs more time; no tests or production code were weakened or changed.
+- Execute the existing Android instrumentation suite in CI rather than merely assembling its APK.
+- Three Intel-macOS attempts entered `reactivecircus/android-emulator-runner` but never produced Gradle connected-test results. Raising the boot timeout from 600s to 900s did not help: Android CI run `33443793903` still spent about 24 minutes in the emulator action before failing, while the normal Android verify job passed.
+- Commit `846a476bc5dea5636e4f252cc26c1718a9652e67` moves instrumentation to `ubuntu-latest`, explicitly enables KVM using the current android-emulator-runner-recommended setup, and returns to the default bounded emulator boot timeout. The blocking test gate and existing report upload remain unchanged. Validation is pending.
 - Investigate first yt-dlp-managed download startup latency after the instrumentation CI task is stable. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
@@ -35,7 +35,7 @@
 - Latest measured Android ARM64 test artifact came from successful Android CI run 33343043276 on commit `289f071c07bf488eef4a4dd9737503aefcadde29`; its release APK measured 63,698,918 bytes.
 - The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
 - yt-dlp's documented downloader syntax supports a default downloader plus protocol-specific overrides; the security advisory explicitly recommends `--downloader dash,m3u8:native` for users unable to immediately upgrade an affected engine.
-- Android CI run `33438795018` passed lint, unit tests, emulator APK build, ARM release builds, and 16 KB verification in the normal verify job. Its instrumentation job failed before any connected-test report files were generated, despite the always-run report upload step completing.
+- Android CI run `33443793903` passed lint, unit tests, emulator APK build, ARM release builds, and 16 KB verification in the normal verify job, but the instrumentation job failed before any connected-test report files were generated.
 
 ## Known risks
 - Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
@@ -46,7 +46,7 @@
 - The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
 - Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
 - The manifest safety override intentionally gives DASH/HLS transfers to yt-dlp's native fragment downloader, so those protocols do not receive aria2c's transfer behavior; this is the upstream-recommended security trade-off and ordinary HTTP transfers still use aria2c.
-- The instrumentation job remains experimental infrastructure until a run reaches and executes HOLEN's connected tests. The 900-second boot allowance stays inside the existing 25-minute job bound; if it still produces no Gradle reports, the macOS emulator configuration should be reconsidered rather than extending timeouts again.
+- The instrumentation job remains experimental infrastructure until a run reaches and executes HOLEN's connected tests. If the Linux KVM attempt also fails before Gradle produces reports, change emulator strategy rather than extending timeouts.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
