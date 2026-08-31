@@ -14,12 +14,13 @@
 - Measured the current ARM64 release APK rather than guessing at package-size bottlenecks. The APK is 63,698,918 bytes (~60.7 MiB); the dominant payloads are `libffmpeg.zip.so` 35,624,931 bytes, `libpython.zip.so` 14,305,904 bytes, and aria2 (`libaria2c.zip.so` + `libaria2c.so`) 6,842,837 bytes. These three required media-engine components account for ~89% of the APK, so ordinary R8/resource cleanup cannot produce a material size reduction.
 - Removed FFmpeg extraction from the background metadata warm-up path. Fresh installs now prepare only Python/yt-dlp before analysis; FFmpeg remains lazily initialized at download time. This avoids letting the 35.6 MB FFmpeg payload hold the shared initialization mutex while the first metadata request waits for media tools it does not use.
 - Fixed same-process engine-reset recovery. After a manual bundled-engine reset or a failed stable-engine update clears extracted runtime files, analyze/download now fail with an explicit restart-required error instead of calling upstream singleton `init()` methods that may already believe they are initialized. The aria2 extraction-version marker is also cleared with Python/FFmpeg/yt-dlp markers. First-initialization fallback remains restart-free.
+- The engine-reset guard passed generic CI plus full Android CI (lint, unit tests, APK builds, and 16 KB native-library validation) on commit `771f6097f0eb9deca62370014dffa4c165887149`.
 
 ## In progress
-- Validate the engine-reset guard through generic and full Android CI before starting another runtime/performance change.
+- Harden yt-dlp downloader selection for fragmented manifests. HOLEN currently selects aria2c globally. yt-dlp security advisory GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574 removed aria2c support for DASH/HLS in 2026.06.09 and recommends `--downloader dash,m3u8:native` when aria2 remains the normal HTTP downloader. Add that protocol-specific override and regression coverage so even an older bundled yt-dlp cannot send manifest fragments through aria2c.
 
 ## Validation
-- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, and lazy-FFmpeg initialization.
+- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, and the engine-reset guard.
 - Resume unit coverage includes strong ETag preference, weak ETag rejection, valid Last-Modified fallback, unsafe timestamp rejection, and HTTPS-only persisted resume state.
 - Direct retry policy tests cover transient transport/HTTP failures, retry-budget exhaustion, bounded backoff, permanent HTTP failures, rate limiting, TLS failures, malformed redirects, and protocol errors.
 - Friendly-failure tests cover yt-dlp-style HTTP 403/404/429/503 messages and verify that explicit bot challenges remain distinct from ordinary rate limiting.
@@ -35,6 +36,7 @@
 - Deferring FFmpeg trades fresh-install metadata latency for one-time initialization immediately before the first yt-dlp-managed download. No numeric speedup is claimed until a device-side cold-install benchmark is available; the change only removes unnecessary FFmpeg work from the metadata critical path.
 - The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
 - Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
+- Until the manifest override above lands, an unexpectedly old bundled yt-dlp can still receive HOLEN's global aria2c selection for fragmented media; current stable yt-dlp is patched, but HOLEN should enforce the safe protocol split independently instead of relying only on updater success.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
