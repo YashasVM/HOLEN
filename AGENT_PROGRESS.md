@@ -16,12 +16,13 @@
 - Fixed same-process engine-reset recovery. After a manual bundled-engine reset or a failed stable-engine update clears extracted runtime files, analyze/download now fail with an explicit restart-required error instead of calling upstream singleton `init()` methods that may already believe they are initialized. The aria2 extraction-version marker is also cleared with Python/FFmpeg/yt-dlp markers. First-initialization fallback remains restart-free.
 - The engine-reset guard passed generic CI plus full Android CI (lint, unit tests, APK builds, and 16 KB native-library validation) on commit `771f6097f0eb9deca62370014dffa4c165887149`.
 - Hardened yt-dlp downloader selection for fragmented manifests in `41ae0d4e7b99d0a507f4650ffd554217e8eb0a4a`: aria2c remains the default external downloader for ordinary transfers, while `dash,m3u8` are explicitly forced to yt-dlp's native downloader. This matches yt-dlp's workaround for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574 and protects an older bundled engine even before the stable updater runs.
+- The manifest-downloader hardening passed generic CI and full Android CI, including lint, unit tests, APK assembly, and 16 KB native-library validation, on Android CI run `33406133219`.
 
 ## In progress
-- Finish Android CI validation of the manifest-downloader safety change. Generic CI is already green on the exact code commit; Android CI is still running lint/unit/build/native-package checks.
+- Investigate first yt-dlp-managed download startup latency. The current path initializes FFmpeg and aria2 immediately before transfer start; do not prewarm or parallelize extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
-- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, and the engine-reset guard.
+- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, engine-reset guard, and manifest-downloader hardening.
 - Resume unit coverage includes strong ETag preference, weak ETag rejection, valid Last-Modified fallback, unsafe timestamp rejection, and HTTPS-only persisted resume state.
 - Direct retry policy tests cover transient transport/HTTP failures, retry-budget exhaustion, bounded backoff, permanent HTTP failures, rate limiting, TLS failures, malformed redirects, and protocol errors.
 - Friendly-failure tests cover yt-dlp-style HTTP 403/404/429/503 messages and verify that explicit bot challenges remain distinct from ordinary rate limiting.
