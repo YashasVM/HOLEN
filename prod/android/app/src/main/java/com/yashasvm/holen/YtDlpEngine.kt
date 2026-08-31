@@ -121,6 +121,9 @@ class YtDlpEngine private constructor(private val context: Context) {
     @Volatile
     private var aria2cInitialized = false
 
+    @Volatile
+    private var runtimeRestartRequired = false
+
     val bundledVersion: String = "youtubedl-android $WRAPPER_VERSION"
 
     val activeVersion: String
@@ -338,14 +341,16 @@ class YtDlpEngine private constructor(private val context: Context) {
 
     private suspend fun resetToBundledLocked(): String =
         initMutex.withLock {
-            clearRuntimeLocked()
+            clearRuntimeLocked(requiresRestart = true)
             preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, "Bundled (restores after restart)") }
             "Bundled runtime cleared. Close and reopen HOLEN to rebuild it."
         }
 
     private suspend fun ensureInitialized(needsFfmpeg: Boolean, needsAria2c: Boolean = false) {
+        if (runtimeRestartRequired) throw IOException(RESTART_REQUIRED_MESSAGE)
         if (initialized && (!needsFfmpeg || ffmpegInitialized) && (!needsAria2c || aria2cInitialized)) return
         initMutex.withLock {
+            if (runtimeRestartRequired) throw IOException(RESTART_REQUIRED_MESSAGE)
             if (!initialized) {
                 try {
                     YoutubeDL.init(context)
@@ -358,7 +363,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                     initialized = true
                 } catch (firstError: Throwable) {
                     try {
-                        clearRuntimeLocked()
+                        clearRuntimeLocked(requiresRestart = false)
                         YoutubeDL.init(context)
                         preferences.edit {
                             putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
@@ -392,20 +397,22 @@ class YtDlpEngine private constructor(private val context: Context) {
     }
 
     /**
-     * The wrapper extracts Python, yt-dlp, and FFmpeg into this directory. Clearing only
-     * yt-dlp leaves a broken Python/FFmpeg runtime behind, so recovery must remove all of it.
+     * The wrapper extracts Python, yt-dlp, FFmpeg, and aria2 into this directory. Clearing only
+     * yt-dlp leaves a broken runtime behind, so recovery must remove all extraction markers too.
      */
-    private fun clearRuntimeLocked() {
+    private fun clearRuntimeLocked(requiresRestart: Boolean) {
         File(context.noBackupFilesDir, YoutubeDL.baseName).deleteRecursively()
         context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
             remove("pythonLibVersion")
             remove("ffmpegLibVersion")
+            remove("aria2cLibVersion")
             remove("dlpVersion")
             remove("dlpVersionName")
         }
         initialized = false
         ffmpegInitialized = false
         aria2cInitialized = false
+        runtimeRestartRequired = requiresRestart
     }
 
     private fun validateVersion(): String {
@@ -484,6 +491,8 @@ class YtDlpEngine private constructor(private val context: Context) {
         const val METADATA_TIMEOUT_MESSAGE = "Metadata lookup timed out. Check the link or try again."
         internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
         private const val ANALYSIS_PROCESS_PREFIX = "analysis-"
+        private const val RESTART_REQUIRED_MESSAGE =
+            "Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."
 
         private fun playlistPreviewLimit(mode: AnalysisMode): Int = when (mode) {
             AnalysisMode.QUICK -> QUICK_PLAYLIST_PREVIEW_LIMIT
