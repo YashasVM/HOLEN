@@ -238,10 +238,11 @@ class YtDlpEngine private constructor(private val context: Context) {
                             "--windows-filenames",
                             "--no-overwrites",
                             "--embed-metadata",
-                            // aria2c keeps segmented streams busy while the app
-                            // remains responsive; eight concurrent fragments is
-                            // the same default used by the faster reference client.
+                            // Keep aria2c for ordinary HTTP transfers, but never hand HLS/DASH
+                            // fragment manifests to it. This is safe on patched yt-dlp and also
+                            // protects the bundled engine if a stable update has not run yet.
                             "--downloader", "libaria2c.so",
+                            "--downloader", "dash,m3u8:native",
                             "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
