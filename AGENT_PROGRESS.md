@@ -23,7 +23,8 @@
 ## In progress
 - Execute the existing Android instrumentation suite in CI rather than merely assembling its APK.
 - Three Intel-macOS attempts entered `reactivecircus/android-emulator-runner` but never produced Gradle connected-test results. Raising the boot timeout from 600s to 900s did not help: Android CI run `33443793903` still spent about 24 minutes in the emulator action before failing, while the normal Android verify job passed.
-- Commit `846a476bc5dea5636e4f252cc26c1718a9652e67` moves instrumentation to `ubuntu-latest`, explicitly enables KVM using the current android-emulator-runner-recommended setup, and returns to the default bounded emulator boot timeout. The blocking test gate and existing report upload remain unchanged. Validation is pending.
+- Linux KVM run `33448377292` improved the failure materially: it completed in under five minutes and uploaded a non-empty connected-test report artifact, while the normal verify job again passed. That proves the workflow is now reaching Gradle/instrumentation output instead of only stalling during emulator boot.
+- Commit `de390b6ebd785079cfe80468c245d181fc96e044` keeps the Linux-KVM setup but upgrades the emulator action from v2.36.0 to the current upstream v2.38.0 commit `a421e43855164a8197daf9d8d40fe71c6996bb0d`. Upstream v2.37 moved the action to Node 24/current SDK tooling and v2.38 is the latest release. Validation is pending; do not alter tests until the resulting report identifies a HOLEN-side assertion or setup failure.
 - Investigate first yt-dlp-managed download startup latency after the instrumentation CI task is stable. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
@@ -36,6 +37,7 @@
 - The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
 - yt-dlp's documented downloader syntax supports a default downloader plus protocol-specific overrides; the security advisory explicitly recommends `--downloader dash,m3u8:native` for users unable to immediately upgrade an affected engine.
 - Android CI run `33443793903` passed lint, unit tests, emulator APK build, ARM release builds, and 16 KB verification in the normal verify job, but the instrumentation job failed before any connected-test report files were generated.
+- Android CI run `33448377292` again passed lint, unit tests, APK builds, and 16 KB verification; its Linux-KVM instrumentation job failed but produced a 93,946-byte `HOLEN-android-instrumentation-reports` artifact, proving the runner progressed beyond the previous no-report boot failure mode.
 
 ## Known risks
 - Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
@@ -46,7 +48,7 @@
 - The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
 - Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
 - The manifest safety override intentionally gives DASH/HLS transfers to yt-dlp's native fragment downloader, so those protocols do not receive aria2c's transfer behavior; this is the upstream-recommended security trade-off and ordinary HTTP transfers still use aria2c.
-- The instrumentation job remains experimental infrastructure until a run reaches and executes HOLEN's connected tests. If the Linux KVM attempt also fails before Gradle produces reports, change emulator strategy rather than extending timeouts.
+- Instrumentation CI is still not trusted as a stable regression gate until a run executes the suite successfully. If v2.38.0 still fails, use the uploaded connected-test report to fix the precise app/test/runner issue rather than extending timeouts or making the gate non-blocking.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
