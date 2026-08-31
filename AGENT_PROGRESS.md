@@ -13,18 +13,19 @@
 - Re-verified yt-dlp/aria2 interrupted-download behavior against current upstream. yt-dlp PR #11698 fixed aria2c resume semantics and was merged before stable 2026.08.19, so no HOLEN-specific downloader fallback or throughput-reducing workaround is justified.
 - Measured the current ARM64 release APK rather than guessing at package-size bottlenecks. The APK is 63,698,918 bytes (~60.7 MiB); the dominant payloads are `libffmpeg.zip.so` 35,624,931 bytes, `libpython.zip.so` 14,305,904 bytes, and aria2 (`libaria2c.zip.so` + `libaria2c.so`) 6,842,837 bytes. These three required media-engine components account for ~89% of the APK, so ordinary R8/resource cleanup cannot produce a material size reduction.
 - Removed FFmpeg extraction from the background metadata warm-up path. Fresh installs now prepare only Python/yt-dlp before analysis; FFmpeg remains lazily initialized at download time. This avoids letting the 35.6 MB FFmpeg payload hold the shared initialization mutex while the first metadata request waits for media tools it does not use.
+- Fixed same-process engine-reset recovery. After a manual bundled-engine reset or a failed stable-engine update clears extracted runtime files, analyze/download now fail with an explicit restart-required error instead of calling upstream singleton `init()` methods that may already believe they are initialized. The aria2 extraction-version marker is also cleared with Python/FFmpeg/yt-dlp markers. First-initialization fallback remains restart-free.
 
 ## In progress
-- Validate the lazy-FFmpeg startup change through generic and full Android CI, then continue package/runtime work only where there is a material measured benefit.
+- Validate the engine-reset guard through generic and full Android CI before starting another runtime/performance change.
 
 ## Validation
-- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, and yt-dlp HTTP failure classification.
+- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, and lazy-FFmpeg initialization.
 - Resume unit coverage includes strong ETag preference, weak ETag rejection, valid Last-Modified fallback, unsafe timestamp rejection, and HTTPS-only persisted resume state.
 - Direct retry policy tests cover transient transport/HTTP failures, retry-budget exhaustion, bounded backoff, permanent HTTP failures, rate limiting, TLS failures, malformed redirects, and protocol errors.
 - Friendly-failure tests cover yt-dlp-style HTTP 403/404/429/503 messages and verify that explicit bot challenges remain distinct from ordinary rate limiting.
 - Current yt-dlp stable `2026.08.19` includes the merged aria2c resume fix (`yt-dlp/yt-dlp#11698`), including persisted aria2 control files for continued downloads and overwrite fallback when a partial transfer cannot be resumed.
 - Latest measured Android ARM64 test artifact came from successful Android CI run 33343043276 on commit `289f071c07bf488eef4a4dd9737503aefcadde29`; its release APK measured 63,698,918 bytes.
-- The lazy-FFmpeg change is structurally bounded: `analyze()` and engine updates already require only Python/yt-dlp, while `download()` still calls `ensureInitialized(needsFfmpeg = true, needsAria2c = true)` before starting yt-dlp, so merge/remux/audio extraction behavior is unchanged after initialization completes.
+- The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
 
 ## Known risks
 - Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
@@ -33,6 +34,7 @@
 - Network switching can still expose device/carrier/DNS-specific failures that cannot be proven from repository inspection alone; do not add a second process-level retry loop without a reproducible failure because that risks retry storms and duplicate work.
 - Deferring FFmpeg trades fresh-install metadata latency for one-time initialization immediately before the first yt-dlp-managed download. No numeric speedup is claimed until a device-side cold-install benchmark is available; the change only removes unnecessary FFmpeg work from the metadata critical path.
 - The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
+- Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
