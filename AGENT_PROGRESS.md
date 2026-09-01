@@ -17,14 +17,14 @@
 ## In progress
 - Measure and reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or adding speculative prewarming.
 - Added a test-only cold-start timing harness for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` subprocess launch. CI records the report without a performance threshold because hosted-emulator timing is diagnostic, not a stable product benchmark.
-- Initial timing run `33471554003` failed inside the new instrumentation path. The destructive probe is now explicitly opt-in and is skipped by the normal connected suite, preventing its runtime reset from interfering with functional tests. The timing report is also retained as a CI artifact for diagnosis.
+- The isolated timing run on `0021ca79` did not execute the probe: `android-emulator-runner` executes script lines independently, so shell continuation backslashes reached Gradle as a literal `\\` task and Gradle failed before instrumentation. Commit `2c839cdd` makes the targeted Gradle invocation and report-copy pipeline self-contained single-line commands.
 - Production startup behavior remains unchanged: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download then initializes FFmpeg and aria2c before launching yt-dlp.
 
 ## Validation
 - Android CI run `33464291010` completed successfully on `d0a24f7eb1cb44a3b9906055025ea2244689b459`.
 - The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification; Linux-KVM instrumentation passed.
-- Startup timing run `33471554003` reached the real emulator instrumentation step but the new timing path failed before producing usable benchmark evidence. No speed claim is based on that run.
-- Follow-up commits isolate the destructive probe from the normal suite and retain its text report; validation of that fix is pending in the new Android CI run.
+- Run `33471779703` passed normal Android verification but its timing/instrumentation job stopped before any test ran because Gradle received the literal task `\\`; therefore it produced no valid startup timing evidence.
+- The command-execution fix is now on `agent-dev`; fresh Android CI validation is pending. No startup speed claim is based on the failed harness run.
 
 ## Known risks
 - Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency claim is made until the corrected timing run completes.
