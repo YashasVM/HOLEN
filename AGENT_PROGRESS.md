@@ -17,17 +17,18 @@
 ## In progress
 - Measure and reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or adding speculative prewarming.
 - Added a test-only cold-start timing harness for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` subprocess launch. CI records the report without a performance threshold because hosted-emulator timing is diagnostic, not a stable product benchmark.
-- The isolated timing run on `0021ca79` did not execute the probe: `android-emulator-runner` executes script lines independently, so shell continuation backslashes reached Gradle as a literal `\\` task and Gradle failed before instrumentation. Commit `2c839cdd` makes the targeted Gradle invocation and report-copy pipeline self-contained single-line commands.
+- Android CI run `33475574071` validated the corrected probe end to end: normal verification passed and the Linux-KVM instrumentation job completed successfully with a retained startup timing report.
+- Commit `a5863403` also surfaces the timing report in the GitHub Actions step summary so phase evidence is reviewable directly from the run instead of only through a downloaded artifact.
 - Production startup behavior remains unchanged: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download then initializes FFmpeg and aria2c before launching yt-dlp.
 
 ## Validation
-- Android CI run `33464291010` completed successfully on `d0a24f7eb1cb44a3b9906055025ea2244689b459`.
-- The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification; Linux-KVM instrumentation passed.
-- Run `33471779703` passed normal Android verification but its timing/instrumentation job stopped before any test ran because Gradle received the literal task `\\`; therefore it produced no valid startup timing evidence.
-- The command-execution fix is now on `agent-dev`; fresh Android CI validation is pending. No startup speed claim is based on the failed harness run.
+- Android CI run `33475574071` completed successfully on `2c839cdd7d0815f000f11c98e68ccc0ed3706512`.
+- The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification; Linux-KVM instrumentation, including the isolated cold-start probe and the normal connected suite, passed.
+- The retained instrumentation artifact was produced successfully. Numeric phase timings are still treated as diagnostic emulator evidence and are not a user-facing Android speed claim.
+- Fresh Android CI validation of the step-summary reporting change is pending on `a5863403`.
 
 ## Known risks
-- Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency claim is made until the corrected timing run completes.
+- Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency improvement is claimed until a measured dominant phase is identified and optimized.
 - Hosted-emulator phase timings can identify a dominant extraction phase but are not a real-device performance claim and should be confirmed on representative ARM hardware before user-facing speed claims.
 - Moving media-tool initialization earlier could trade download-start latency for unnecessary CPU/storage work on sessions that only inspect links, so any prewarming change needs evidence and a bounded trigger.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
