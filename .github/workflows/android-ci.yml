@@ -149,7 +149,10 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_5
-          disable-animations: true
+          # HOLEN uses the system animator scale to select reduced-motion onboarding.
+          # Keep animations enabled so the cinematic onboarding-order test exercises
+          # the normal production path instead of auto-skipping the Welcome stage.
+          disable-animations: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           working-directory: prod/android
           script: ./gradlew connectedEmulatorDebugAndroidTest
