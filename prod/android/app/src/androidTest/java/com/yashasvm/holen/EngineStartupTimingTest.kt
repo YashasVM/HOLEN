@@ -44,6 +44,7 @@ class EngineStartupTimingTest {
             FFmpeg.init(context)
             Aria2c.init(context)
         }
+        var quickJsRuntimePath: String? = null
         val processLaunchMs = elapsedMs {
             val response = YoutubeDL.execute(
                 YoutubeDLRequest(emptyList()).addOption("--version"),
@@ -51,6 +52,13 @@ class EngineStartupTimingTest {
                 null,
             )
             check(response.out.isNotBlank()) { "yt-dlp version probe returned no output" }
+            quickJsRuntimePath = response.command
+                .windowed(2)
+                .firstOrNull { pair ->
+                    pair[0] == "--js-runtimes" && pair[1]?.startsWith("quickjs:") == true
+                }
+                ?.get(1)
+                ?.substringAfter("quickjs:")
         }
         val localExtractMs = LocalMediaServer().use { server ->
             elapsedMs {
@@ -69,6 +77,7 @@ class EngineStartupTimingTest {
         val storageTiming = measurePrivateStorageWrite(context)
         val transferTiming = measureLocalTransfers(context)
         val totalMs = youtubeDlMs + ffmpegMs + aria2cMs + processLaunchMs
+        val quickJsRuntimePresent = quickJsRuntimePath?.let(::File)?.isFile == true
 
         val report = buildString {
             appendLine("HOLEN Android engine/storage/transfer timing")
@@ -77,6 +86,8 @@ class EngineStartupTimingTest {
             appendLine("aria2c_ms=$aria2cMs")
             appendLine("post_prewarm_tool_reentry_ms=$postPrewarmToolReentryMs")
             appendLine("process_launch_ms=$processLaunchMs")
+            appendLine("quickjs_runtime_configured=${quickJsRuntimePath != null}")
+            appendLine("quickjs_runtime_present=$quickJsRuntimePresent")
             appendLine("local_extract_ms=$localExtractMs")
             appendLine("local_extract_overhead_ms=$localExtractOverheadMs")
             appendLine("storage_write_bytes=$STORAGE_PROBE_BYTES")
@@ -96,6 +107,8 @@ class EngineStartupTimingTest {
         assertTrue("aria2c initialization must complete", aria2cMs >= 0L)
         assertTrue("post-prewarm tool re-entry must complete", postPrewarmToolReentryMs >= 0L)
         assertTrue("yt-dlp process launch must complete", processLaunchMs >= 0L)
+        assertTrue("youtubedl-android must configure its bundled QuickJS runtime", quickJsRuntimePath != null)
+        assertTrue("configured QuickJS runtime must exist in the APK native library directory", quickJsRuntimePresent)
         assertTrue("localhost extraction must complete", localExtractMs >= processLaunchMs / 2)
         assertTrue("localhost extraction overhead must be non-negative", localExtractOverheadMs >= 0L)
         assertTrue("private-storage write must complete", storageTiming.writeMs >= 0L)
