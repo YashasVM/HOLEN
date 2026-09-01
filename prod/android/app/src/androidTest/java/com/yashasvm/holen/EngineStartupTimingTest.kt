@@ -9,10 +9,12 @@ import com.yausername.aria2c.Aria2c
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.SocketException
 import kotlin.concurrent.thread
 import org.junit.Assert.assertTrue
@@ -21,8 +23,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Measures deliberately cold Android media-engine and local-storage phases on CI. The destructive
- * runtime reset and write probe are opt-in so the normal connected suite remains lightweight.
+ * Measures deliberately cold Android media-engine and local transfer/storage phases on CI. The
+ * destructive runtime reset and probes are opt-in so the normal connected suite remains lightweight.
  */
 @RunWith(AndroidJUnit4::class)
 class EngineStartupTimingTest {
@@ -65,10 +67,11 @@ class EngineStartupTimingTest {
         }
         val localExtractOverheadMs = (localExtractMs - processLaunchMs).coerceAtLeast(0L)
         val storageTiming = measurePrivateStorageWrite(context)
+        val transferTiming = measureLocalTransfers(context)
         val totalMs = youtubeDlMs + ffmpegMs + aria2cMs + processLaunchMs
 
         val report = buildString {
-            appendLine("HOLEN Android engine/storage timing")
+            appendLine("HOLEN Android engine/storage/transfer timing")
             appendLine("youtube_dl_ms=$youtubeDlMs")
             appendLine("ffmpeg_ms=$ffmpegMs")
             appendLine("aria2c_ms=$aria2cMs")
@@ -79,6 +82,10 @@ class EngineStartupTimingTest {
             appendLine("storage_write_bytes=$STORAGE_PROBE_BYTES")
             appendLine("storage_write_ms=${storageTiming.writeMs}")
             appendLine("storage_fsync_ms=${storageTiming.fsyncMs}")
+            appendLine("transfer_bytes=$TRANSFER_PROBE_BYTES")
+            appendLine("transfer_fresh_ms=${transferTiming.freshMs}")
+            appendLine("transfer_resume_offset_bytes=$TRANSFER_RESUME_OFFSET")
+            appendLine("transfer_resume_ms=${transferTiming.resumeMs}")
             appendLine("total_ms=$totalMs")
         }
         Log.i(REPORT_TAG, report.trim().replace('\n', ' '))
@@ -93,6 +100,8 @@ class EngineStartupTimingTest {
         assertTrue("localhost extraction overhead must be non-negative", localExtractOverheadMs >= 0L)
         assertTrue("private-storage write must complete", storageTiming.writeMs >= 0L)
         assertTrue("private-storage fsync must complete", storageTiming.fsyncMs >= 0L)
+        assertTrue("fresh localhost transfer must complete", transferTiming.freshMs >= 0L)
+        assertTrue("Range resume transfer must complete", transferTiming.resumeMs >= 0L)
     }
 
     private fun measurePrivateStorageWrite(context: Context): StorageTiming {
@@ -121,6 +130,71 @@ class EngineStartupTimingTest {
         }
     }
 
+    private fun measureLocalTransfers(context: Context): TransferTiming {
+        val directory = File(context.cacheDir, "direct-transfer-timing").apply {
+            deleteRecursively()
+            check(mkdirs())
+        }
+        try {
+            return LocalRangeServer(TRANSFER_PROBE_BYTES).use { server ->
+                val fresh = File(directory, "fresh.part")
+                val freshMs = copyLocalTransfer(server.url, fresh, 0L)
+                check(fresh.length() == TRANSFER_PROBE_BYTES)
+
+                val resumed = File(directory, "resume.part")
+                FileOutputStream(resumed).use { output ->
+                    writePattern(output, TRANSFER_RESUME_OFFSET)
+                    output.fd.sync()
+                }
+                val resumeMs = copyLocalTransfer(server.url, resumed, TRANSFER_RESUME_OFFSET)
+                check(resumed.length() == TRANSFER_PROBE_BYTES)
+                check(server.sawExpectedRange) { "localhost transfer server did not observe Range resume" }
+                TransferTiming(freshMs, resumeMs)
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    private fun copyLocalTransfer(url: String, destination: File, offset: Long): Long {
+        val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 15_000
+        connection.setRequestProperty("Accept-Encoding", "identity")
+        if (offset > 0L) connection.setRequestProperty("Range", "bytes=$offset-")
+        val startedAt = SystemClock.elapsedRealtime()
+        try {
+            val expectedCode = if (offset > 0L) 206 else 200
+            check(connection.responseCode == expectedCode) {
+                "Unexpected localhost status ${connection.responseCode}, expected $expectedCode"
+            }
+            BufferedInputStream(connection.inputStream, STORAGE_BUFFER_BYTES).use { input ->
+                FileOutputStream(destination, offset > 0L).use { output ->
+                    val buffer = ByteArray(STORAGE_BUFFER_BYTES)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                    }
+                    output.fd.sync()
+                }
+            }
+            return SystemClock.elapsedRealtime() - startedAt
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun writePattern(output: FileOutputStream, bytes: Long) {
+        val buffer = ByteArray(STORAGE_BUFFER_BYTES) { index -> (index and 0xff).toByte() }
+        var remaining = bytes
+        while (remaining > 0L) {
+            val count = minOf(buffer.size.toLong(), remaining).toInt()
+            output.write(buffer, 0, count)
+            remaining -= count
+        }
+    }
+
     private fun resetBundledRuntime(context: Context) {
         File(context.noBackupFilesDir, YoutubeDL.baseName).deleteRecursively()
         context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE)
@@ -136,6 +210,7 @@ class EngineStartupTimingTest {
     }
 
     private data class StorageTiming(val writeMs: Long, val fsyncMs: Long)
+    private data class TransferTiming(val freshMs: Long, val resumeMs: Long)
 
     private class LocalMediaServer : AutoCloseable {
         private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
@@ -174,12 +249,72 @@ class EngineStartupTimingTest {
         }
     }
 
+    private class LocalRangeServer(private val totalBytes: Long) : AutoCloseable {
+        private val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
+        @Volatile private var closed = false
+        @Volatile var sawExpectedRange = false
+            private set
+        private val worker = thread(name = "holen-transfer-timing-http", isDaemon = true) {
+            while (!closed) {
+                try {
+                    server.accept().use(::serve)
+                } catch (error: SocketException) {
+                    if (!closed) throw error
+                }
+            }
+        }
+
+        val url: String = "http://127.0.0.1:${server.localPort}/transfer.bin"
+
+        private fun serve(socket: Socket) {
+            val reader = socket.getInputStream().bufferedReader()
+            var rangeStart = 0L
+            while (true) {
+                val line = reader.readLine() ?: return
+                if (line.isEmpty()) break
+                if (line.startsWith("Range:", ignoreCase = true)) {
+                    rangeStart = line.substringAfter("bytes=").substringBefore('-').trim().toLongOrNull() ?: 0L
+                }
+            }
+            val partial = rangeStart > 0L
+            if (rangeStart == TRANSFER_RESUME_OFFSET) sawExpectedRange = true
+            val bodyBytes = totalBytes - rangeStart
+            socket.getOutputStream().buffered(STORAGE_BUFFER_BYTES).use { output ->
+                if (partial) {
+                    output.write("HTTP/1.1 206 Partial Content\r\n".toByteArray())
+                    output.write("Content-Range: bytes $rangeStart-${totalBytes - 1}/$totalBytes\r\n".toByteArray())
+                } else {
+                    output.write("HTTP/1.1 200 OK\r\n".toByteArray())
+                }
+                output.write("Content-Type: application/octet-stream\r\n".toByteArray())
+                output.write("Content-Length: $bodyBytes\r\n".toByteArray())
+                output.write("Connection: close\r\n\r\n".toByteArray())
+                val buffer = ByteArray(STORAGE_BUFFER_BYTES) { index -> (index and 0xff).toByte() }
+                var remaining = bodyBytes
+                while (remaining > 0L) {
+                    val count = minOf(buffer.size.toLong(), remaining).toInt()
+                    output.write(buffer, 0, count)
+                    remaining -= count
+                }
+                output.flush()
+            }
+        }
+
+        override fun close() {
+            closed = true
+            server.close()
+            worker.join(1_000)
+        }
+    }
+
     private companion object {
         const val ENABLE_ARGUMENT = "holenStartupTiming"
         const val REPORT_FILE = "engine-startup-timing.txt"
         const val REPORT_TAG = "HOLENStartupTiming"
         const val STORAGE_BUFFER_BYTES = 256 * 1024
         const val STORAGE_PROBE_BYTES = 64L * 1024L * 1024L
+        const val TRANSFER_PROBE_BYTES = 64L * 1024L * 1024L
+        const val TRANSFER_RESUME_OFFSET = TRANSFER_PROBE_BYTES / 2
         val MINIMAL_MP4_BYTES = byteArrayOf(
             0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70,
             0x6D, 0x70, 0x34, 0x32, 0x00, 0x00, 0x00, 0x00,
