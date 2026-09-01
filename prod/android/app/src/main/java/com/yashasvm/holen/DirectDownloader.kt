@@ -87,7 +87,7 @@ class DirectDownloader {
         try {
             val responseCode = connection.code
             if (!isAcceptedTransferResponse(completedResume, attemptedResume, responseCode)) {
-                throw IOException("Network response $responseCode")
+                throw DirectHttpException(responseCode, connection.header("Retry-After"))
             }
             val total = if (completedResume) existing else totalLength(connection, existing)
             val disposition = connection.header("Content-Disposition")
