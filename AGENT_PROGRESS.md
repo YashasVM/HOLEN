@@ -15,25 +15,24 @@
 - Verified Android lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, 16 KB native-library compatibility, and the connected instrumentation suite for the completed changes above.
 
 ## In progress
-- Measure and reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or adding speculative prewarming.
-- The cold-start timing harness now produces durable, fail-closed evidence for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` process launch.
-- Android CI run `33484712612` passed normal verification and Linux-KVM instrumentation and retained a non-empty startup timing report.
-- Measured on the hosted API-35 x86_64 emulator: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
-- The largest measured phase is yt-dlp process launch (1.944 s). FFmpeg + aria2c one-time initialization together account for 1.461 s, about one third of the measured cold wrapper startup.
-- Production behavior is still unchanged: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download initializes FFmpeg and aria2c before launching yt-dlp.
-- The current candidate optimization is bounded post-analysis prewarming: after a successful FULL yt-dlp analysis (strong download intent), initialize FFmpeg then aria2c asynchronously while the user reviews download options. QUICK/shared-link analysis and ordinary app idle should remain lean. Upstream youtubedl-android still documents the same sequential YoutubeDL -> FFmpeg -> Aria2c initialization order, so do not parallelize these initializers without evidence.
+- Reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or doing generic app-start prewarming.
+- The cold-start timing harness produces fail-closed measurements for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` process launch.
+- Android CI run `33484712612` measured on the hosted API-35 x86_64 emulator: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
+- FFmpeg + aria2c one-time initialization therefore accounted for 1.461 s, about one third of measured cold wrapper startup, while yt-dlp process launch remained the largest individual phase.
+- Commit `94ab5caa` now starts FFmpeg then aria2c initialization asynchronously only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean, and the existing engine operation gate/init mutex still serialize initialization against updates, resets, and immediate downloads.
+- The prewarm is best-effort: failures are deliberately deferred to the real download path, where existing actionable startup errors are shown. This avoids surfacing a background error before the user has chosen to download.
 
 ## Validation
-- Android CI run `33484712612` succeeded end to end after the timing path was changed to fail closed when any phase is missing.
-- The retained `HOLEN-android-instrumentation-reports` artifact was 61,394 bytes; `reports/startup/engine-startup-timing.txt` was 204 bytes and contained all four expected phase values above.
-- The measurement is diagnostic evidence from a hosted x86_64 emulator, not a user-facing ARM-device benchmark or a claimed speedup.
-- No production startup optimization has been committed yet from these measurements; therefore there is no before/after performance claim.
+- Android CI run `33484712612` succeeded end to end for the timing harness and retained all four phase measurements.
+- The measurement is diagnostic evidence from a hosted x86_64 emulator, not a user-facing ARM-device benchmark.
+- Fresh CI for `94ab5caa` is pending. Do not claim a speedup until normal Android verification/instrumentation pass and a before/after first-download measurement confirms that the 1.461 s tool initialization is actually removed or overlapped in practice.
+- The code diff is intentionally narrow: one guarded background prewarm path in `YtDlpEngine`; no web/CLI behavior, format selection, downloader arguments, release metadata, or app-start warm-up changed.
 
 ## Known risks
-- Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path.
-- Hosted-emulator phase timings can identify a dominant extraction phase but are not a real-device performance claim and should be confirmed on representative ARM hardware before user-facing speed claims.
-- Moving media-tool initialization earlier could trade download-start latency for unnecessary CPU/storage work on sessions that only inspect links. Any prewarm should therefore be limited to successful FULL analysis, not generic app idle or QUICK analysis.
-- yt-dlp process launch remains the single largest measured startup component and may be mostly intrinsic to starting Python/yt-dlp; do not add a dummy process launch merely to warm caches unless a before/after measurement proves material benefit.
+- A user who performs a successful FULL analysis but never downloads will now pay the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis because that is the strongest existing download-intent signal.
+- If the user queues immediately after analysis, the download may still wait for some or all of initialization; the existing `initMutex` makes this a join rather than duplicate extraction.
+- Hosted-emulator timings can guide optimization but are not representative ARM-device performance claims; confirm on representative ARM hardware before advertising a user-facing speedup.
+- yt-dlp process launch remains the single largest measured startup component and may be mostly intrinsic to Python/yt-dlp startup; do not add a dummy warm process without measurement.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
 - `main` remains intentionally untouched by autonomous maintenance.
