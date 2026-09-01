@@ -22,14 +22,17 @@
 - FFmpeg + aria2c one-time initialization accounted for 1.417-1.461 s across those runs, roughly one third of measured cold wrapper startup, while yt-dlp process launch remained the largest individual phase.
 - Commit `94ab5caa` starts FFmpeg then aria2c initialization asynchronously only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean, and the existing engine operation gate/init mutex serialize initialization against updates, resets, and immediate downloads.
 - The prewarm is best-effort: failures are deliberately deferred to the real download path, where existing actionable startup errors are shown. This avoids surfacing a background error before the user has chosen to download.
-- The startup probe now also records `post_prewarm_tool_reentry_ms`: after one cold FFmpeg+aria2 initialization, it immediately measures invoking those wrapper initializers again. HOLEN's real post-prewarm `ensureInitialized` path returns even earlier because its in-memory flags avoid those calls entirely. CI is configured to fail if this new measurement is missing.
+- The startup probe records `post_prewarm_tool_reentry_ms`: after one cold FFmpeg+aria2 initialization, it immediately measures invoking those wrapper initializers again. HOLEN's real post-prewarm `ensureInitialized` path returns even earlier because its in-memory flags avoid those calls entirely.
+- Android CI run `33505212049` passed both verification and instrumentation with the new post-prewarm measurement required. Its numeric value is present in the retained report/step summary, but the autonomous maintainer interface cannot read artifact ZIP contents or step-summary text back through the GitHub API.
+- Commit `df057858` therefore exposes all startup timing values in the instrumentation artifact name. Artifact metadata is API-readable, allowing future runs to consume numeric evidence without weakening the fail-closed probe or touching production behavior.
 
 ## Validation
 - Android CI run `33494800377` passed the normal verification job and Linux-KVM instrumentation for the production prewarm commit. Lint/tests/APK builds/16 KB verification and the connected suite all remained green.
 - The same run retained a non-empty timing report and reproduced the earlier cold-start total within 4 ms (`4393` vs `4389` ms), so the diagnostic baseline is stable across these two hosted-emulator runs.
-- Fresh Android CI for commits `6905cfbc` / `f9a847ce` is pending and must produce a non-empty `post_prewarm_tool_reentry_ms` value before the prewarm benefit is considered measured at the wrapper boundary.
+- Android CI run `33505212049` also passed verification and instrumentation after making `post_prewarm_tool_reentry_ms` mandatory; this confirms the boundary probe executes and produces all required fields, but its numeric output was not programmatically retrievable in this maintainer environment.
+- Fresh Android CI run `33510436391` is validating the API-readable timing-metadata change. Do not treat it as validated until both jobs pass and the artifact name contains all five numeric fields.
 - The measurement is diagnostic evidence from a hosted x86_64 emulator, not a user-facing ARM-device benchmark.
-- Do not claim a user-visible speedup yet: the new boundary probe measures the remaining wrapper initialization cost after completed prewarm, but it does not include real user think-time or network/download launch latency.
+- Do not claim a user-visible speedup yet: the boundary probe measures the remaining wrapper initialization cost after completed prewarm, but it does not include real user think-time or network/download launch latency.
 - The production code diff remains intentionally narrow: one guarded background prewarm path in `YtDlpEngine`; no web/CLI behavior, format selection, downloader arguments, release metadata, or app-start warm-up changed.
 
 ## Known risks
