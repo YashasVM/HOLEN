@@ -169,6 +169,7 @@ jobs:
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
             mkdir -p app/build/reports/startup
             adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt | tee app/build/reports/startup/engine-startup-timing.txt
+            cat app/build/reports/startup/engine-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
             ./gradlew connectedEmulatorDebugAndroidTest
 
