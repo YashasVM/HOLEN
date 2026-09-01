@@ -18,6 +18,7 @@
 
 ## In progress
 - Move performance work from wrapper startup into measurable Android download/extractor/network throughput and reliability, where HOLEN can materially affect behavior without replacing the yt-dlp runtime architecture.
+- Direct-file HTTP 429 handling now preserves `Retry-After` and retries only when the server supplies a valid delay of at most 30 seconds; absent, malformed, or longer delays still surface the existing rate-limit failure rather than hammering the server. Android CI validation is pending.
 - Audit representative ordinary HTTP and fragmented download paths for bottlenecks, interruption/retry/resume behavior, progress overhead, and unnecessary storage/copy costs before changing concurrency or downloader flags.
 
 ## Validation
@@ -27,6 +28,7 @@
 - Restored-workflow/local-extractor run `33528825430` passed Android verification and Linux-KVM instrumentation. Artifact metadata reports `youtube_dl_ms=1088`, `ffmpeg_ms=1310`, `aria2c_ms=131`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1946`, `local_extract_ms=2225`, `local_extract_overhead_ms=279`.
 - The localhost probe uses a tiny loopback `video/mp4` and a real `YoutubeDL.execute` metadata path, removing public-network variance. Its 279 ms derived overhead is diagnostic decomposition from a hosted x86_64 emulator, not a representative ARM-device latency claim.
 - Android CI run `33523235345` remains invalid product-performance evidence because it failed before Android execution after the accidental workflow rewrite; it is superseded by the restored green run above.
+- Fresh Android CI run `33541067475` is validating the bounded `Retry-After` direct-download change; do not treat the change as validated until this run completes successfully.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -35,6 +37,7 @@
 - yt-dlp process launch remains structurally expensive under youtubedl-android because each execute call starts a fresh packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without representative-device evidence and a compatibility plan.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid extra process-level retries without evidence.
+- Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns; those cases remain actionable failures for the user to retry later.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
