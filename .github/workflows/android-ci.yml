@@ -27,6 +27,8 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
 
+      # Main-branch artifacts are meant to update an already-installed HOLEN release,
+      # so they must use the same production certificate as tagged releases.
       - name: Restore release signing for main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
@@ -49,6 +51,7 @@ jobs:
         working-directory: prod/android
         shell: bash
         env:
+          # Keep PR builds unsigned; production signing is restored only on main.
           HOLEN_KEYSTORE_PATH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}/holen-release.jks', runner.temp) || '' }}
           HOLEN_KEYSTORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEYSTORE_PASSWORD || '' }}
           HOLEN_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEY_ALIAS || '' }}
@@ -82,6 +85,9 @@ jobs:
           }
           bash scripts/verify-16k-native-libs.sh "${arm64[0]}" "${universal[0]}"
 
+          # Regression: an arbitrary corrupt .so must fail closed even when valid
+          # aligned ELFs are present in the same APK. Only verified *.zip.so wrapper
+          # payloads are allowed to bypass ELF inspection.
           corrupt_dir="$RUNNER_TEMP/holen-corrupt-native-apk"
           rm -rf "$corrupt_dir"
           mkdir -p "$corrupt_dir"
@@ -116,6 +122,8 @@ jobs:
           retention-days: 7
 
   instrumentation:
+    # android-emulator-runner now recommends Ubuntu runners with explicit KVM access;
+    # this avoids the repeated Intel-macOS cold-boot stalls seen on this repository.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -141,15 +149,23 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_5
+          # HOLEN uses the system animator scale to select reduced-motion onboarding.
+          # Keep animations enabled so the cinematic onboarding-order test exercises
+          # the normal production path instead of auto-skipping the Welcome stage.
           disable-animations: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           working-directory: prod/android
           script: |
+            # Some emulator images retain zero animation scales even when the runner
+            # does not disable them. Make the production-motion test environment
+            # explicit before MainActivity is launched by instrumentation.
             adb shell settings put global window_animation_scale 1.0
             adb shell settings put global transition_animation_scale 1.0
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
+            # android-emulator-runner executes script lines separately, so keep each
+            # command self-contained instead of relying on shell line continuations.
             adb logcat -c
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
             mkdir -p app/build/reports/startup
@@ -169,6 +185,9 @@ jobs:
 
             ./gradlew connectedEmulatorDebugAndroidTest
 
+      # Artifact metadata is readable through the GitHub API even when artifact ZIP
+      # contents are not. Publish the numeric probe values in the artifact name so
+      # autonomous follow-up runs can consume the evidence without guessing.
       - name: Expose startup timing metadata
         id: startup_timing
         working-directory: prod/android
