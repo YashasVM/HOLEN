@@ -166,9 +166,15 @@ jobs:
 
             # android-emulator-runner executes script lines separately, so keep each
             # command self-contained instead of relying on shell line continuations.
+            adb logcat -c
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
             mkdir -p app/build/reports/startup
-            adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt | tee app/build/reports/startup/engine-startup-timing.txt
+            adb logcat -d -s HOLENStartupTiming:I '*:S' | tee app/build/reports/startup/engine-startup-timing.txt
+            test -s app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'youtube_dl_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'ffmpeg_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'aria2c_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'process_launch_ms=' app/build/reports/startup/engine-startup-timing.txt
             cat app/build/reports/startup/engine-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
             ./gradlew connectedEmulatorDebugAndroidTest
