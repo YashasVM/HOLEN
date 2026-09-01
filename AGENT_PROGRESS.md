@@ -20,10 +20,11 @@
 - Repaired the localhost transfer probe with a debug-only cleartext manifest override; release cleartext policy remains unchanged.
 - Made transfer evidence fail-closed in Android CI and closed the Java copy/resume bottleneck investigation. Android CI run `33563442686` passed and measured a 64 MiB fresh localhost transfer at `364 ms` and a 32 MiB HTTP Range resume at `160 ms`. These emulator-local measurements show the copy/append/resume path itself is not a credible reason to tune the 256 KiB buffer or worker count.
 - Verified current yt-dlp aria2c integration already uses aggressive ordinary-HTTP defaults (`-x16 -j16 -s16`, 1 MiB minimum split), so HOLEN should not add redundant higher connection counts without real network evidence.
+- Corrected the YouTube JS-runtime assumption: HOLEN already uses `youtubedl-android 0.18.1`, whose library bundles QuickJS `2025-04-26` and automatically supplies `--js-runtimes quickjs:<native-path>` on every yt-dlp execution. Upstream yt-dlp lists QuickJS `2025-04-26` as the first version with the relevant performance optimizations, and official zipimport yt-dlp binaries bundle the matching EJS scripts. Added instrumentation assertions so CI fails if the wrapper stops configuring the packaged QuickJS runtime or its native file disappears.
 
 ## In progress
-- Investigate YouTube extractor correctness on Android as the next higher-value risk. Current yt-dlp warns that extraction without a supported JavaScript challenge runtime is deprecated and may omit formats; current Android downloader reports in the ecosystem show this can surface as missing formats, unavailable-video errors, or authentication-like failures.
-- Determine whether the maintained `youtubedl-android` runtime can safely provide a supported JS challenge runtime on Android. Do not bundle or invoke an extra runtime until upstream compatibility, ABI/package cost, security, and representative-device behavior are understood.
+- Validate the new QuickJS runtime-wiring assertions in Android CI. This proves packaging/command wiring without relying on public YouTube network behavior.
+- After that, investigate representative YouTube extractor failures only if they reproduce with the already-configured QuickJS runtime; do not add Deno/Node or duplicate JS-runtime dependencies unless the existing upstream-supported path is proven insufficient.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -35,12 +36,14 @@
 - Transfer run `33553165159`: verify job passed, instrumentation failed because debug localhost cleartext was initially blocked; no transfer timing from this run is valid evidence.
 - Repaired transfer run `33558047759`: verify and instrumentation passed; artifact metadata still omitted the transfer values.
 - Fail-closed transfer run `33563442686`: Android verification and instrumentation passed; `transfer_fresh_ms=364` for 64 MiB and `transfer_resume_ms=160` for the remaining 32 MiB after a real `Range`/206 resume.
+- QuickJS runtime-wiring instrumentation is awaiting the Android CI run triggered by commit `bdae938e`.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
 - Hosted-emulator timings guide optimization but are not representative ARM-device performance claims; confirm on representative ARM hardware before advertising user-facing speedups.
 - yt-dlp process launch remains structurally expensive under youtubedl-android because each execute call starts a fresh packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without representative-device evidence and a compatibility plan.
-- YouTube's JS challenge runtime requirements are evolving upstream. HOLEN currently suppresses routine yt-dlp warnings during analysis, so missing-runtime degradation can present indirectly as fewer formats or extractor failures; this needs upstream-compatible handling rather than speculative error-string hacks.
+- YouTube's challenge behavior continues to evolve upstream. The previously suspected missing-runtime problem does not apply to HOLEN's current wrapper because QuickJS is already packaged/configured; future failures must be reproduced before attributing them to JS challenge support.
+- The QuickJS instrumentation verifies wrapper command wiring and packaged native-file presence, not a live YouTube challenge, deliberately avoiding flaky public-network CI.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
 - The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise public HTTPS, mobile radios, server throttling, or end-to-end yt-dlp/aria2 behavior.
