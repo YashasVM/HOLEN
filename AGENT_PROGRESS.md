@@ -11,18 +11,19 @@
 - Kept aria2c as the ordinary-transfer downloader while forcing DASH/HLS through yt-dlp native downloading, matching the upstream mitigation for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574.
 - Fixed restart-required engine failures being misclassified as generic network failures.
 - Added a blocking Android instrumentation CI job on Ubuntu/KVM and verified lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, 16 KB native-library compatibility, and connected instrumentation for the maintained branch.
-- Reduced first-download tool initialization from the critical path by asynchronously prewarming FFmpeg then aria2c only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean.
+- Reduced first-download tool initialization from the critical path by asynchronously prewarming FFmpeg then aria2c only after a successful FULL yt-dlp analysis.
 - Proved the prewarm at the initialization boundary: Android CI run `33510436391` measured `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, and `process_launch_ms=1978`.
-- Restored the live pre-existing Android CI safeguards after the local-extractor observability edit accidentally replaced unrelated workflow sections from stale content. Signing enforcement, Android 37.1 setup, pinned emulator-runner, 16 KB verifier behavior, branch/path filters, and artifact behavior are restored.
-- Closed the remaining startup micro-optimization investigation with deterministic evidence: Android CI run `33528825430` measured `process_launch_ms=1946`, `local_extract_ms=2225`, and `local_extract_overhead_ms=279`, showing about 87% of the deterministic localhost extraction path is the wrapper subprocess baseline.
+- Restored the live pre-existing Android CI safeguards after the local-extractor observability edit accidentally replaced unrelated workflow sections from stale content.
+- Closed the startup micro-optimization investigation: Android CI run `33528825430` measured `process_launch_ms=1946`, `local_extract_ms=2225`, and `local_extract_overhead_ms=279`, showing about 87% of the deterministic localhost extraction path is the wrapper subprocess baseline.
 - Added server-directed handling for HTTP 429 on Android direct downloads. `Retry-After` is preserved and retried only when valid and at most 30 seconds; Android CI run `33541067475` passed.
-- Measured app-private storage in Android CI run `33546570973`: writing 64 MiB with the production 256 KiB copy buffer took `26 ms`, while the final `fsync` took `71 ms`. This hosted-emulator result is strong evidence not to tune copy-buffer size or worker concurrency around private-storage write cost.
-- Repaired the localhost transfer probe with a debug-only cleartext manifest override. Android CI run `33558047759` then passed both normal Android verification and instrumentation; release/network cleartext policy remains unchanged.
-- Made transfer evidence fail-closed in Android CI: `transfer_fresh_ms` and `transfer_resume_ms` are now required and exposed in artifact metadata so autonomous follow-up runs can consume the numbers without reading artifact ZIP contents.
+- Measured app-private storage in Android CI run `33546570973`: writing 64 MiB with the production 256 KiB copy buffer took `26 ms`, while the final `fsync` took `71 ms`.
+- Repaired the localhost transfer probe with a debug-only cleartext manifest override; release cleartext policy remains unchanged.
+- Made transfer evidence fail-closed in Android CI and closed the Java copy/resume bottleneck investigation. Android CI run `33563442686` passed and measured a 64 MiB fresh localhost transfer at `364 ms` and a 32 MiB HTTP Range resume at `160 ms`. These emulator-local measurements show the copy/append/resume path itself is not a credible reason to tune the 256 KiB buffer or worker count.
+- Verified current yt-dlp aria2c integration already uses aggressive ordinary-HTTP defaults (`-x16 -j16 -s16`, 1 MiB minimum split), so HOLEN should not add redundant higher connection counts without real network evidence.
 
 ## In progress
-- Validate the new CI metadata exposure, then consume the deterministic 64 MiB fresh-transfer and 32 MiB Range-resume timings from the next Android CI artifact.
-- Use those numbers only to decide whether HOLEN's Java copy/append/resume path is materially expensive. Do not tune buffers, worker count, or concurrency unless the measurement supports it.
+- Investigate YouTube extractor correctness on Android as the next higher-value risk. Current yt-dlp warns that extraction without a supported JavaScript challenge runtime is deprecated and may omit formats; current Android downloader reports in the ecosystem show this can surface as missing formats, unavailable-video errors, or authentication-like failures.
+- Determine whether the maintained `youtubedl-android` runtime can safely provide a supported JS challenge runtime on Android. Do not bundle or invoke an extra runtime until upstream compatibility, ABI/package cost, security, and representative-device behavior are understood.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -30,17 +31,19 @@
 - Prewarm proof `33510436391`: `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1978`.
 - Restored-workflow/local-extractor run `33528825430`: `youtube_dl_ms=1088`, `ffmpeg_ms=1310`, `aria2c_ms=131`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1946`, `local_extract_ms=2225`, `local_extract_overhead_ms=279`.
 - Android CI run `33541067475` passed the bounded `Retry-After` direct-download implementation.
-- Storage run `33546570973`: `storage_write_ms=26`, `storage_fsync_ms=71` for 64 MiB. The run passed normal Android verification and instrumentation.
-- Transfer run `33553165159`: verify job passed, instrumentation failed with `java.io.IOException: Cleartext HTTP traffic to 127.0.0.1 not permitted`; no transfer timing from this run is valid evidence.
-- Repaired transfer run `33558047759`: verify and instrumentation passed. Its existing artifact metadata still omitted transfer values, which is why CI metadata exposure was added next instead of guessing at the numbers.
+- Storage run `33546570973`: `storage_write_ms=26`, `storage_fsync_ms=71` for 64 MiB.
+- Transfer run `33553165159`: verify job passed, instrumentation failed because debug localhost cleartext was initially blocked; no transfer timing from this run is valid evidence.
+- Repaired transfer run `33558047759`: verify and instrumentation passed; artifact metadata still omitted the transfer values.
+- Fail-closed transfer run `33563442686`: Android verification and instrumentation passed; `transfer_fresh_ms=364` for 64 MiB and `transfer_resume_ms=160` for the remaining 32 MiB after a real `Range`/206 resume.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
 - Hosted-emulator timings guide optimization but are not representative ARM-device performance claims; confirm on representative ARM hardware before advertising user-facing speedups.
 - yt-dlp process launch remains structurally expensive under youtubedl-android because each execute call starts a fresh packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without representative-device evidence and a compatibility plan.
+- YouTube's JS challenge runtime requirements are evolving upstream. HOLEN currently suppresses routine yt-dlp warnings during analysis, so missing-runtime degradation can present indirectly as fewer formats or extractor failures; this needs upstream-compatible handling rather than speculative error-string hacks.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
-- Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns; those cases remain actionable failures for the user to retry later.
-- The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise HOLEN's public-HTTPS endpoint pinning or real mobile-network variability. It should prevent bad tuning decisions, not be presented as an end-to-end speed benchmark.
+- Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
+- The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise public HTTPS, mobile radios, server throttling, or end-to-end yt-dlp/aria2 behavior.
 - The debug-only cleartext override exists solely for localhost instrumentation. Release builds retain the normal cleartext prohibition.
 - `main` remains intentionally untouched by autonomous maintenance.
 
