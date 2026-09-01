@@ -17,16 +17,18 @@
 ## In progress
 - Reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or doing generic app-start prewarming.
 - The cold-start timing harness produces fail-closed measurements for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` process launch.
-- Android CI run `33484712612` measured on the hosted API-35 x86_64 emulator: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
-- FFmpeg + aria2c one-time initialization therefore accounted for 1.461 s, about one third of measured cold wrapper startup, while yt-dlp process launch remained the largest individual phase.
-- Commit `94ab5caa` now starts FFmpeg then aria2c initialization asynchronously only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean, and the existing engine operation gate/init mutex still serialize initialization against updates, resets, and immediate downloads.
+- Baseline Android CI run `33484712612` measured on the hosted API-35 x86_64 emulator: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
+- A second cold probe in Android CI run `33494800377` measured `youtube_dl_ms=1019`, `ffmpeg_ms=1283`, `aria2c_ms=134`, `process_launch_ms=1957`, `total_ms=4393`, showing the baseline is repeatable enough to guide this optimization.
+- FFmpeg + aria2c one-time initialization accounted for 1.417-1.461 s across those runs, roughly one third of measured cold wrapper startup, while yt-dlp process launch remained the largest individual phase.
+- Commit `94ab5caa` starts FFmpeg then aria2c initialization asynchronously only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean, and the existing engine operation gate/init mutex serialize initialization against updates, resets, and immediate downloads.
 - The prewarm is best-effort: failures are deliberately deferred to the real download path, where existing actionable startup errors are shown. This avoids surfacing a background error before the user has chosen to download.
 
 ## Validation
-- Android CI run `33484712612` succeeded end to end for the timing harness and retained all four phase measurements.
+- Android CI run `33494800377` passed the normal verification job and Linux-KVM instrumentation for the production prewarm commit. Lint/tests/APK builds/16 KB verification and the connected suite all remained green.
+- The same run retained a non-empty timing report and reproduced the earlier cold-start total within 4 ms (`4393` vs `4389` ms), so the diagnostic baseline is stable across these two hosted-emulator runs.
 - The measurement is diagnostic evidence from a hosted x86_64 emulator, not a user-facing ARM-device benchmark.
-- Fresh CI for `94ab5caa` is pending. Do not claim a speedup until normal Android verification/instrumentation pass and a before/after first-download measurement confirms that the 1.461 s tool initialization is actually removed or overlapped in practice.
-- The code diff is intentionally narrow: one guarded background prewarm path in `YtDlpEngine`; no web/CLI behavior, format selection, downloader arguments, release metadata, or app-start warm-up changed.
+- Do not claim a speedup yet: the next useful evidence is a targeted measurement of the download-start initialization cost after FULL analysis/prewarm has completed, not another cold-wrapper measurement.
+- The code diff remains intentionally narrow: one guarded background prewarm path in `YtDlpEngine`; no web/CLI behavior, format selection, downloader arguments, release metadata, or app-start warm-up changed.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads will now pay the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis because that is the strongest existing download-intent signal.
