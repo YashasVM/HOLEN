@@ -16,10 +16,11 @@
 - Restored the live pre-existing Android CI safeguards after the local-extractor observability edit accidentally replaced unrelated workflow sections from stale content. Signing enforcement, Android 37.1 setup, pinned emulator-runner, 16 KB verifier behavior, branch/path filters, and artifact behavior are restored.
 - Closed the remaining startup micro-optimization investigation with deterministic evidence: Android CI run `33528825430` measured `process_launch_ms=1946`, `local_extract_ms=2225`, and `local_extract_overhead_ms=279`, showing about 87% of the deterministic localhost extraction path is the wrapper subprocess baseline.
 - Added server-directed handling for HTTP 429 on Android direct downloads. `Retry-After` is preserved and retried only when valid and at most 30 seconds; Android CI run `33541067475` passed.
+- Measured app-private storage in Android CI run `33546570973`: writing 64 MiB with the production 256 KiB copy buffer took `26 ms`, while the final `fsync` took `71 ms`. This hosted-emulator result is strong evidence not to tune copy-buffer size or worker concurrency around private-storage write cost.
 
 ## In progress
-- Measure Android direct-transfer storage cost before changing buffers or concurrency. The opt-in emulator probe now writes 64 MiB using the production 256 KiB transfer buffer and records write time separately from the final `fsync`, with both values exposed in CI artifact metadata.
-- After storage timing is validated, extend the deterministic transfer work toward fresh-download and interrupted Range-resume paths without depending on public-network conditions.
+- Measure deterministic fresh and Range-resume transfer overhead without public-network noise. A test-only localhost server now serves a 64 MiB response and honors a resume from 32 MiB, while the client uses the production 256 KiB copy buffer and final `fsync` pattern.
+- The transfer benchmark is isolated in a narrow `agent-dev` workflow that runs only when the benchmark test/workflow itself changes, avoiding churn or cost on ordinary Android CI pushes.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -27,7 +28,8 @@
 - Prewarm proof `33510436391`: `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1978`.
 - Restored-workflow/local-extractor run `33528825430`: `youtube_dl_ms=1088`, `ffmpeg_ms=1310`, `aria2c_ms=131`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1946`, `local_extract_ms=2225`, `local_extract_overhead_ms=279`.
 - Android CI run `33541067475` passed the bounded `Retry-After` direct-download implementation.
-- The 64 MiB storage probe is diagnostic hosted-emulator evidence only. It does not represent ARM-device storage throughput and does not justify a speedup claim by itself.
+- Storage run `33546570973`: `storage_write_ms=26`, `storage_fsync_ms=71` for 64 MiB. The run passed normal Android verification and instrumentation.
+- The fresh/resume transfer probe is diagnostic hosted-emulator evidence only and is pending its first CI result; it does not represent real internet or ARM-device throughput.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -35,6 +37,7 @@
 - yt-dlp process launch remains structurally expensive under youtubedl-android because each execute call starts a fresh packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without representative-device evidence and a compatibility plan.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns; those cases remain actionable failures for the user to retry later.
+- The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise HOLEN's public-HTTPS endpoint pinning or real mobile-network variability. It should prevent bad tuning decisions, not be presented as an end-to-end speed benchmark.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
