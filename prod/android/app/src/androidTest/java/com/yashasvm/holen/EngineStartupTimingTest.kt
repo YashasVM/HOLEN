@@ -33,6 +33,14 @@ class EngineStartupTimingTest {
         val youtubeDlMs = elapsedMs { YoutubeDL.init(context) }
         val ffmpegMs = elapsedMs { FFmpeg.init(context) }
         val aria2cMs = elapsedMs { Aria2c.init(context) }
+        // A completed FULL-analysis prewarm leaves both download-only tools initialized.
+        // Measure the wrapper-level re-entry cost that remains at a later download boundary.
+        // HOLEN's own ensureInitialized path is even cheaper after prewarm because its in-memory
+        // flags return before invoking these wrapper init methods again.
+        val postPrewarmToolReentryMs = elapsedMs {
+            FFmpeg.init(context)
+            Aria2c.init(context)
+        }
         val processLaunchMs = elapsedMs {
             val response = YoutubeDL.execute(
                 YoutubeDLRequest(emptyList()).addOption("--version"),
@@ -48,6 +56,7 @@ class EngineStartupTimingTest {
             appendLine("youtube_dl_ms=$youtubeDlMs")
             appendLine("ffmpeg_ms=$ffmpegMs")
             appendLine("aria2c_ms=$aria2cMs")
+            appendLine("post_prewarm_tool_reentry_ms=$postPrewarmToolReentryMs")
             appendLine("process_launch_ms=$processLaunchMs")
             appendLine("total_ms=$totalMs")
         }
@@ -59,6 +68,7 @@ class EngineStartupTimingTest {
         assertTrue("yt-dlp initialization must complete", youtubeDlMs >= 0L)
         assertTrue("FFmpeg initialization must complete", ffmpegMs >= 0L)
         assertTrue("aria2c initialization must complete", aria2cMs >= 0L)
+        assertTrue("post-prewarm tool re-entry must complete", postPrewarmToolReentryMs >= 0L)
         assertTrue("yt-dlp process launch must complete", processLaunchMs >= 0L)
     }
 
