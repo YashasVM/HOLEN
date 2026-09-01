@@ -164,14 +164,11 @@ jobs:
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
-            # Run the destructive cold-start probe explicitly. In the normal suite the
-            # same test is skipped, so it cannot delete a runtime used by functional tests.
-            ./gradlew connectedEmulatorDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest \
-              -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
+            # android-emulator-runner executes script lines separately, so keep each
+            # command self-contained instead of relying on shell line continuations.
+            ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
             mkdir -p app/build/reports/startup
-            adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt \
-              | tee app/build/reports/startup/engine-startup-timing.txt
+            adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt | tee app/build/reports/startup/engine-startup-timing.txt
 
             ./gradlew connectedEmulatorDebugAndroidTest
 
