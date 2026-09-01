@@ -111,6 +111,7 @@ class YtDlpEngine private constructor(private val context: Context) {
     private val activeAnalysisIds = ConcurrentHashMap.newKeySet<String>()
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val operationGate = EngineOperationGate()
+    private val downloadToolsPrewarmInFlight = AtomicBoolean(false)
 
     @Volatile
     private var initialized = false
@@ -178,6 +179,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                         json.toMedia(url, includeEstimates = mode == AnalysisMode.FULL)
                     }
                     analysisCache.put(cacheKey, analysis, mode)
+                    if (mode == AnalysisMode.FULL) prewarmDownloadTools()
                     analysis
                 } catch (error: Throwable) {
                     if (timedOut.get()) throw IOException(METADATA_TIMEOUT_MESSAGE, error)
@@ -206,6 +208,28 @@ class YtDlpEngine private constructor(private val context: Context) {
         // instead of terminating it, so an update can never interrupt a download.
         if (isEngineCheckDue(preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L))) {
             runCatching { updateStable() }
+        }
+    }
+
+    /**
+     * After a successful full metadata request the user normally spends time choosing a format.
+     * Use that think-time to extract the download-only tools, without adding work to app startup,
+     * quick shared-link previews, or the metadata request's own critical path.
+     */
+    private fun prewarmDownloadTools() {
+        if (ffmpegInitialized && aria2cInitialized) return
+        if (!downloadToolsPrewarmInFlight.compareAndSet(false, true)) return
+        watchdogScope.launch(Dispatchers.IO) {
+            try {
+                operationGate.withOperation {
+                    ensureInitialized(needsFfmpeg = true, needsAria2c = true)
+                }
+            } catch (_: Throwable) {
+                // Prewarm is best-effort. A real download retries initialization and surfaces
+                // the actionable startup failure instead of showing an error before the user acts.
+            } finally {
+                downloadToolsPrewarmInFlight.set(false)
+            }
         }
     }
 
