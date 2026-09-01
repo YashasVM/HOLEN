@@ -163,6 +163,14 @@ jobs:
             adb shell settings put global transition_animation_scale 1.0
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
+
+            # Measure a deliberately cold extraction/initialization cycle before the
+            # functional suite. This is diagnostic evidence, not a timing threshold:
+            # hosted-emulator performance varies and must not create flaky CI failures.
+            ./gradlew connectedEmulatorDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest
+            adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt
+
             ./gradlew connectedEmulatorDebugAndroidTest
 
       - name: Upload instrumentation reports
