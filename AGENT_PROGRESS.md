@@ -15,6 +15,7 @@
 - Verified Android lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, 16 KB native-library compatibility, and the connected instrumentation suite for the completed changes above.
 - Reduced first-download tool initialization from the critical path by asynchronously prewarming FFmpeg then aria2c only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean.
 - Proved the prewarm at the initialization boundary: Android CI run `33510436391` measured `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, and `process_launch_ms=1978`. The same run passed normal verification and Linux-KVM instrumentation.
+- Restored the live pre-existing Android CI safeguards after the local-extractor observability edit accidentally replaced unrelated workflow sections from stale content. Signing enforcement, Android 37.1 setup, pinned emulator-runner, 16 KB verifier behavior, branch/path filters, and artifact behavior are restored; only the intended local timing checks/metadata remain added.
 
 ## In progress
 - Reduce the remaining yt-dlp-managed download startup latency without regressing metadata responsiveness or introducing speculative generic app-start work.
@@ -28,7 +29,8 @@
 - A second cold probe in Android CI run `33494800377` measured `youtube_dl_ms=1019`, `ffmpeg_ms=1283`, `aria2c_ms=134`, `process_launch_ms=1957`, `total_ms=4393`, showing the baseline is repeatable enough to guide this optimization.
 - Android CI run `33510436391` passed both jobs and exposed API-readable timing metadata: `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1978`.
 - The 0 ms post-prewarm re-entry measurement shows the one-time FFmpeg+aria2 initialization cost (1.369 s in that run; 1.417-1.461 s in the two prior runs) is fully removed at the wrapper initialization boundary once prewarm completes. This is evidence for the initialization-path improvement, not a claim that every user sees a fixed 1.4 s end-to-end speedup.
-- The new localhost extractor probe is pending fresh CI validation. It serves a tiny loopback `video/mp4` response and measures a real `YoutubeDL.execute` metadata path so public internet latency does not dominate the result.
+- Android CI run `33523235345` is not valid product-performance evidence: it failed before Android code/test execution because the workflow itself had been unintentionally rewritten. Commit `854f95d3` restores the prior live workflow while preserving only the intended local timing additions; fresh CI is required before using the new localhost measurements.
+- The localhost extractor probe serves a tiny loopback `video/mp4` response and measures a real `YoutubeDL.execute` metadata path so public internet latency does not dominate the result.
 - The measurement is diagnostic evidence from a hosted x86_64 emulator, not a user-facing ARM-device benchmark.
 - No production Android behavior changed in the localhost-probe work; only instrumentation and CI observability changed.
 
