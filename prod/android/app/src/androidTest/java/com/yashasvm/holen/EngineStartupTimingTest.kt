@@ -2,6 +2,7 @@ package com.yashasvm.holen
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.yausername.aria2c.Aria2c
@@ -50,6 +51,9 @@ class EngineStartupTimingTest {
             appendLine("process_launch_ms=$processLaunchMs")
             appendLine("total_ms=$totalMs")
         }
+        // connectedAndroidTest may clear app-private files before CI can read them back.
+        // Log the same measurements so the workflow has a durable, adb-readable source.
+        Log.i(REPORT_TAG, report.trim().replace('\n', ' '))
         File(context.cacheDir, REPORT_FILE).writeText(report)
 
         assertTrue("yt-dlp initialization must complete", youtubeDlMs >= 0L)
@@ -75,5 +79,6 @@ class EngineStartupTimingTest {
     private companion object {
         const val ENABLE_ARGUMENT = "holenStartupTiming"
         const val REPORT_FILE = "engine-startup-timing.txt"
+        const val REPORT_TAG = "HOLENStartupTiming"
     }
 }
