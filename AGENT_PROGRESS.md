@@ -16,18 +16,18 @@
 - Make the existing Android instrumentation suite a reliable blocking CI gate.
 - Intel-macOS emulator attempts stalled before Gradle connected-test output, so instrumentation was moved to Ubuntu with KVM. Linux KVM reaches the actual suite quickly and produces connected-test reports.
 - Android CI run `33452811379` on emulator-runner v2.38.0 executed all four tests: `tutorialScreenshotsArePortraitBitmaps`, `sqliteSchemaIsCreatedAtCurrentVersion`, and `interruptedJobsAreRequeuedAndClaimedAtomically` passed; only `firstLaunchRunsCinematicOnboardingInOrder` failed after 5 seconds.
-- Root cause is a CI/test-environment mismatch, not a proven app regression: `disable-animations: true` sets the system animator scale to zero, while HOLEN intentionally treats animator scale zero as reduced-motion mode. In that mode `WelcomeStage` skips its 2.6-second cinematic delay and immediately advances, making the test's initial Welcome assertion impossible.
-- Commit `37df23f1301c2cf5304a6c2537dbeca0daf78275` keeps Linux KVM and emulator-runner v2.38.0 but sets `disable-animations: false` so the onboarding-order test exercises the normal production cinematic path. Android CI run `33456901604` is validating it.
+- `disable-animations: false` alone did not clear that failure: run `33456901604` still failed only the instrumentation job while the normal Android verification job remained green. The emulator reached the test step in about three minutes and retained a real instrumentation report artifact.
+- HOLEN intentionally treats global animator scale zero as reduced-motion mode; in that mode `WelcomeStage` immediately advances instead of waiting 2.6 seconds. Because emulator images can retain zero animation scales even when the runner is told not to disable animations, commit `276e8d9da89ba008dc5d2cd5f7901a8f62f35c6c` now explicitly sets window/transition/animator scales to `1.0` and verifies animator scale before launching Gradle instrumentation.
 - After instrumentation CI is stable, return to first yt-dlp-managed download startup latency. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
-- Android CI run `33452811379` passed the normal verify job: lint, JVM unit tests, APK builds, and 16 KB compatibility.
-- Its Linux-KVM instrumentation artifact contained real XML/logcat output for four tests, with exactly one failure: `firstLaunchRunsCinematicOnboardingInOrder` timed out at `HolenInstrumentedTest.kt:52`; the other three tests passed.
-- The onboarding implementation confirms why: `OnboardingFlow` reads `Settings.Global.ANIMATOR_DURATION_SCALE`; when it is zero, `WelcomeStage` does not execute the normal 2.6-second delay before advancing.
-- No production Android code or instrumentation assertions were weakened for this fix; only the emulator environment was changed to preserve production motion behavior.
+- Android CI run `33456901604` passed the normal verify job: lint, JVM unit tests, APK builds, and 16 KB compatibility; only instrumentation failed.
+- The Linux-KVM instrumentation step completed in roughly three minutes and uploaded a 61,519-byte report artifact, confirming the emulator/Gradle path is functioning rather than hanging during boot.
+- The onboarding implementation reads `Settings.Global.ANIMATOR_DURATION_SCALE`; when it is zero, `WelcomeStage` skips the normal 2.6-second delay before advancing.
+- No production Android code or instrumentation assertions were weakened. The latest change only makes the emulator's motion configuration deterministic and fails early if the intended animator scale cannot be applied.
 
 ## Known risks
-- Instrumentation CI is not considered stable until `33456901604` or a subsequent equivalent run passes the full suite reliably.
+- Instrumentation CI is not considered stable until the explicit-motion-scale run or a subsequent equivalent run passes the full suite reliably.
 - Deferring FFmpeg trades lower metadata-path work for one-time FFmpeg initialization immediately before the first yt-dlp-managed download; no numeric speedup is claimed without device-side measurement.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
