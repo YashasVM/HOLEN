@@ -16,20 +16,19 @@
 
 ## In progress
 - Measure and reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or adding speculative prewarming.
-- Added a test-only cold-start timing harness which clears the extracted wrapper runtime and measures `YoutubeDL.init`, `FFmpeg.init`, and `Aria2c.init` separately on the Linux-KVM instrumentation emulator. CI prints the report but deliberately has no performance threshold, because hosted-emulator timing is diagnostic rather than a stable product benchmark.
-- Android CI run `33471554003` is validating the timing harness. Production startup behavior is unchanged.
-- Current structure: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download then initializes FFmpeg and aria2c before launching yt-dlp. This intentionally keeps heavy media-tool extraction off the metadata path.
-- The current harness does not yet isolate yt-dlp subprocess launch time. That phase should be measured separately after the extraction/initialization harness is validated.
+- Added a test-only cold-start timing harness for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` subprocess launch. CI records the report without a performance threshold because hosted-emulator timing is diagnostic, not a stable product benchmark.
+- Initial timing run `33471554003` failed inside the new instrumentation path. The destructive probe is now explicitly opt-in and is skipped by the normal connected suite, preventing its runtime reset from interfering with functional tests. The timing report is also retained as a CI artifact for diagnosis.
+- Production startup behavior remains unchanged: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download then initializes FFmpeg and aria2c before launching yt-dlp.
 
 ## Validation
 - Android CI run `33464291010` completed successfully on `d0a24f7eb1cb44a3b9906055025ea2244689b459`.
-- The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification.
-- Linux-KVM instrumentation passed; the instrumentation step completed successfully and retained its report artifact.
-- Startup timing run `33471554003` has reached both the real instrumentation step and the normal Android build/test step; final validation and numeric timings are still pending.
+- The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification; Linux-KVM instrumentation passed.
+- Startup timing run `33471554003` reached the real emulator instrumentation step but the new timing path failed before producing usable benchmark evidence. No speed claim is based on that run.
+- Follow-up commits isolate the destructive probe from the normal suite and retain its text report; validation of that fix is pending in the new Android CI run.
 
 ## Known risks
-- Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency claim is made until the timing run completes.
-- Hosted-emulator phase timings are useful for identifying a dominant extraction phase, but they are not a real-device performance claim and should be confirmed on representative ARM hardware before user-facing speed claims.
+- Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency claim is made until the corrected timing run completes.
+- Hosted-emulator phase timings can identify a dominant extraction phase but are not a real-device performance claim and should be confirmed on representative ARM hardware before user-facing speed claims.
 - Moving media-tool initialization earlier could trade download-start latency for unnecessary CPU/storage work on sessions that only inspect links, so any prewarming change needs evidence and a bounded trigger.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
