@@ -27,8 +27,6 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
 
-      # Main-branch artifacts are meant to update an already-installed HOLEN release,
-      # so they must use the same production certificate as tagged releases.
       - name: Restore release signing for main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
@@ -51,7 +49,6 @@ jobs:
         working-directory: prod/android
         shell: bash
         env:
-          # Keep PR builds unsigned; production signing is restored only on main.
           HOLEN_KEYSTORE_PATH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}/holen-release.jks', runner.temp) || '' }}
           HOLEN_KEYSTORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEYSTORE_PASSWORD || '' }}
           HOLEN_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEY_ALIAS || '' }}
@@ -85,9 +82,6 @@ jobs:
           }
           bash scripts/verify-16k-native-libs.sh "${arm64[0]}" "${universal[0]}"
 
-          # Regression: an arbitrary corrupt .so must fail closed even when valid
-          # aligned ELFs are present in the same APK. Only verified *.zip.so wrapper
-          # payloads are allowed to bypass ELF inspection.
           corrupt_dir="$RUNNER_TEMP/holen-corrupt-native-apk"
           rm -rf "$corrupt_dir"
           mkdir -p "$corrupt_dir"
@@ -122,8 +116,6 @@ jobs:
           retention-days: 7
 
   instrumentation:
-    # android-emulator-runner now recommends Ubuntu runners with explicit KVM access;
-    # this avoids the repeated Intel-macOS cold-boot stalls seen on this repository.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -149,23 +141,15 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_5
-          # HOLEN uses the system animator scale to select reduced-motion onboarding.
-          # Keep animations enabled so the cinematic onboarding-order test exercises
-          # the normal production path instead of auto-skipping the Welcome stage.
           disable-animations: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           working-directory: prod/android
           script: |
-            # Some emulator images retain zero animation scales even when the runner
-            # does not disable them. Make the production-motion test environment
-            # explicit before MainActivity is launched by instrumentation.
             adb shell settings put global window_animation_scale 1.0
             adb shell settings put global transition_animation_scale 1.0
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
-            # android-emulator-runner executes script lines separately, so keep each
-            # command self-contained instead of relying on shell line continuations.
             adb logcat -c
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
             mkdir -p app/build/reports/startup
@@ -178,13 +162,13 @@ jobs:
             grep -q 'process_launch_ms=' app/build/reports/startup/engine-startup-timing.txt
             grep -q 'local_extract_ms=' app/build/reports/startup/engine-startup-timing.txt
             grep -q 'local_extract_overhead_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'storage_write_bytes=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'storage_write_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'storage_fsync_ms=' app/build/reports/startup/engine-startup-timing.txt
             cat app/build/reports/startup/engine-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
             ./gradlew connectedEmulatorDebugAndroidTest
 
-      # Artifact metadata is readable through the GitHub API even when artifact ZIP
-      # contents are not. Publish the numeric probe values in the artifact name so
-      # autonomous follow-up runs can consume the evidence without guessing.
       - name: Expose startup timing metadata
         id: startup_timing
         working-directory: prod/android
@@ -194,7 +178,7 @@ jobs:
           report=app/build/reports/startup/engine-startup-timing.txt
           test -s "$report"
           timing_line=$(grep 'youtube_dl_ms=' "$report" | tail -n 1)
-          for key in youtube_dl_ms ffmpeg_ms aria2c_ms post_prewarm_tool_reentry_ms process_launch_ms local_extract_ms local_extract_overhead_ms; do
+          for key in youtube_dl_ms ffmpeg_ms aria2c_ms post_prewarm_tool_reentry_ms process_launch_ms local_extract_ms local_extract_overhead_ms storage_write_ms storage_fsync_ms; do
             value=$(printf '%s\n' "$timing_line" | sed -n "s/.*${key}=\([0-9][0-9]*\).*/\1/p")
             [[ "$value" =~ ^[0-9]+$ ]] || { echo "Missing numeric $key in startup timing report." >&2; exit 1; }
             echo "$key=$value" >> "$GITHUB_OUTPUT"
@@ -204,7 +188,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HOLEN-android-instrumentation-ytdl-${{ steps.startup_timing.outputs.youtube_dl_ms }}ms-ffmpeg-${{ steps.startup_timing.outputs.ffmpeg_ms }}ms-aria2-${{ steps.startup_timing.outputs.aria2c_ms }}ms-reentry-${{ steps.startup_timing.outputs.post_prewarm_tool_reentry_ms }}ms-proc-${{ steps.startup_timing.outputs.process_launch_ms }}ms-local-${{ steps.startup_timing.outputs.local_extract_ms }}ms-overhead-${{ steps.startup_timing.outputs.local_extract_overhead_ms }}ms
+          name: HOLEN-android-instrumentation-ytdl-${{ steps.startup_timing.outputs.youtube_dl_ms }}ms-ffmpeg-${{ steps.startup_timing.outputs.ffmpeg_ms }}ms-aria2-${{ steps.startup_timing.outputs.aria2c_ms }}ms-reentry-${{ steps.startup_timing.outputs.post_prewarm_tool_reentry_ms }}ms-proc-${{ steps.startup_timing.outputs.process_launch_ms }}ms-local-${{ steps.startup_timing.outputs.local_extract_ms }}ms-overhead-${{ steps.startup_timing.outputs.local_extract_overhead_ms }}ms-write64m-${{ steps.startup_timing.outputs.storage_write_ms }}ms-fsync-${{ steps.startup_timing.outputs.storage_fsync_ms }}ms
           path: |
             prod/android/app/build/reports/androidTests/connected/**
             prod/android/app/build/outputs/androidTest-results/connected/**
