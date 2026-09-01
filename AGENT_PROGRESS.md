@@ -17,15 +17,14 @@
 ## In progress
 - Measure and reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or adding speculative prewarming.
 - Added a test-only cold-start timing harness for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` subprocess launch. CI records the report without a performance threshold because hosted-emulator timing is diagnostic, not a stable product benchmark.
-- Android CI run `33475574071` validated the corrected probe end to end: normal verification passed and the Linux-KVM instrumentation job completed successfully with a retained startup timing report.
-- Commit `a5863403` also surfaces the timing report in the GitHub Actions step summary so phase evidence is reviewable directly from the run instead of only through a downloaded artifact.
+- Android CI run `33479707739` was fully green, but inspection of its retained artifact found `engine-startup-timing.txt` was 0 bytes. Therefore that run does not provide valid phase measurements despite the green instrumentation job.
+- The timing test now also emits its report through a dedicated `HOLENStartupTiming` logcat tag, and CI clears logcat before the targeted probe, captures only that tag afterward, verifies the report is non-empty and contains every expected phase, and fails closed if evidence is missing.
 - Production startup behavior remains unchanged: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download then initializes FFmpeg and aria2c before launching yt-dlp.
 
 ## Validation
-- Android CI run `33475574071` completed successfully on `2c839cdd7d0815f000f11c98e68ccc0ed3706512`.
-- The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification; Linux-KVM instrumentation, including the isolated cold-start probe and the normal connected suite, passed.
-- The retained instrumentation artifact was produced successfully. Numeric phase timings are still treated as diagnostic emulator evidence and are not a user-facing Android speed claim.
-- Fresh Android CI validation of the step-summary reporting change is pending on `a5863403`.
+- Android CI run `33479707739` passed normal verification and Linux-KVM instrumentation on `a5863403`, including lint, JVM unit tests, APK builds, 16 KB native-library verification, and the connected suite.
+- The run's instrumentation artifact was retained successfully, but the startup timing file inside it was empty; previous statements that the timing probe itself had yielded usable measurements are superseded by this direct artifact inspection.
+- Fresh Android CI validation is pending for `ec42c115`, which makes startup timing evidence durable through logcat and fails the targeted probe if phase measurements cannot be retrieved.
 
 ## Known risks
 - Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency improvement is claimed until a measured dominant phase is identified and optimized.
