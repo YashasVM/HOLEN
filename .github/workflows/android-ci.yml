@@ -1,147 +1,149 @@
 name: Android CI
 
 on:
-  push:
-    branches:
-      - main
-      - agent-dev
   pull_request:
     paths:
-      - 'prod/android/**'
-      - '.github/workflows/android-ci.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: read
+      - "prod/android/**"
+      - ".github/workflows/android-*.yml"
+  push:
+    branches: ["main", "Android-App", "agent-dev"]
+    paths:
+      - "prod/android/**"
+      - ".github/workflows/android-*.yml"
 
 jobs:
-  verify-android:
-    name: Verify Android
+  verify:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: prod/android
-
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: sdkmanager --channel=3 "platforms;android-37.1" "build-tools;36.0.0"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      # Main-branch artifacts are meant to update an already-installed HOLEN release,
+      # so they must use the same production certificate as tagged releases.
+      - name: Restore release signing for main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          HOLEN_KEYSTORE_BASE64: ${{ secrets.HOLEN_KEYSTORE_BASE64 }}
+          HOLEN_KEYSTORE_PASSWORD: ${{ secrets.HOLEN_KEYSTORE_PASSWORD }}
+          HOLEN_KEY_ALIAS: ${{ secrets.HOLEN_KEY_ALIAS }}
+          HOLEN_KEY_PASSWORD: ${{ secrets.HOLEN_KEY_PASSWORD }}
         run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+          set -euo pipefail
+          for name in HOLEN_KEYSTORE_BASE64 HOLEN_KEYSTORE_PASSWORD HOLEN_KEY_ALIAS HOLEN_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || { echo "Required release signing material is missing." >&2; exit 1; }
+          done
+          key_path="$RUNNER_TEMP/holen-release.jks"
+          printf '%s' "$HOLEN_KEYSTORE_BASE64" | base64 --decode > "$key_path"
+          [[ -s "$key_path" ]] || { echo "Release keystore is empty." >&2; exit 1; }
+          keytool -list -keystore "$key_path" -storepass "$HOLEN_KEYSTORE_PASSWORD" -alias "$HOLEN_KEY_ALIAS" >/dev/null
 
-      - name: Make Gradle executable
-        run: chmod +x gradlew
-
-      - name: Verify wrapper checksum
+      - name: Lint, test, and build
+        working-directory: prod/android
+        shell: bash
+        env:
+          # Keep PR builds unsigned; production signing is restored only on main.
+          HOLEN_KEYSTORE_PATH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('{0}/holen-release.jks', runner.temp) || '' }}
+          HOLEN_KEYSTORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEYSTORE_PASSWORD || '' }}
+          HOLEN_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEY_ALIAS || '' }}
+          HOLEN_KEY_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HOLEN_KEY_PASSWORD || '' }}
         run: |
-          echo "c75f2ef457a2628f0b28ed66c97b3c90301dcc284795939f95713a8606998912  gradle/wrapper/gradle-wrapper.jar" | sha256sum -c -
+          set -euo pipefail
+          signing_args=()
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            signing_args+=("-PholenRequireReleaseSigning=true")
+          fi
+          ./gradlew \
+            "${signing_args[@]}" \
+            lintEmulatorDebug \
+            testEmulatorDebugUnitTest \
+            assembleEmulatorDebug \
+            assembleArm64Release \
+            assembleArmv7Release \
+            assembleUniversalRelease
 
-      - name: Run lint and unit tests
-        run: ./gradlew lint test --stacktrace
-
-      - name: Assemble debug and release APKs
-        run: ./gradlew assembleEmulatorDebug assembleArm64Release assembleArmv7Release assembleUniversalRelease --stacktrace
-
-      - name: Verify native libraries support 16 KB pages
+      - name: Verify 16 KB native library compatibility
+        working-directory: prod/android
+        shell: bash
         run: |
-          python3 - <<'PY'
-          import pathlib
-          import subprocess
-          import sys
-          import zipfile
+          set -euo pipefail
+          shopt -s nullglob
+          arm64=(app/build/outputs/apk/arm64/release/*.apk)
+          universal=(app/build/outputs/apk/universal/release/*.apk)
+          [[ ${#arm64[@]} -eq 1 && ${#universal[@]} -eq 1 ]] || {
+            echo "Expected one arm64 and one universal release APK for 16 KB verification." >&2
+            exit 1
+          }
+          bash scripts/verify-16k-native-libs.sh "${arm64[0]}" "${universal[0]}"
 
-          failures = []
-          for apk in sorted(pathlib.Path("app/build/outputs/apk").glob("**/*.apk")):
-              with zipfile.ZipFile(apk) as zf:
-                  for name in zf.namelist():
-                      if not name.startswith("lib/") or not name.endswith(".so"):
-                          continue
-                      data = zf.read(name)
-                      path = pathlib.Path("/tmp") / pathlib.Path(name).name
-                      path.write_bytes(data)
-                      result = subprocess.run(["readelf", "-lW", path], capture_output=True, text=True, check=True)
-                      for line in result.stdout.splitlines():
-                          if line.lstrip().startswith("LOAD"):
-                              align = int(line.split()[-1], 16)
-                              if align < 0x4000:
-                                  failures.append(f"{apk}: {name} LOAD align {align:#x}")
-          if failures:
-              print("Native libraries with <16 KB LOAD alignment:", file=sys.stderr)
-              print("\n".join(failures), file=sys.stderr)
-              raise SystemExit(1)
-          print("All packaged native LOAD segments are 16 KB compatible.")
-          PY
+          # Regression: an arbitrary corrupt .so must fail closed even when valid
+          # aligned ELFs are present in the same APK. Only verified *.zip.so wrapper
+          # payloads are allowed to bypass ELF inspection.
+          corrupt_dir="$RUNNER_TEMP/holen-corrupt-native-apk"
+          rm -rf "$corrupt_dir"
+          mkdir -p "$corrupt_dir"
+          unzip -qq "${arm64[0]}" -d "$corrupt_dir"
+          printf 'not-an-elf' > "$corrupt_dir/lib/arm64-v8a/libcorrupt.so"
+          corrupt_apk="$RUNNER_TEMP/holen-corrupt-native.apk"
+          (
+            cd "$corrupt_dir"
+            zip -qr "$corrupt_apk" .
+          )
+          if bash scripts/verify-16k-native-libs.sh "$corrupt_apk"; then
+            echo "16 KB verifier accepted an arbitrary corrupt 64-bit .so." >&2
+            exit 1
+          fi
 
-      - name: Upload APKs
+      - name: Upload signed ARM64 update
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: HOLEN-android-apks
-          path: |
-            prod/android/app/build/outputs/apk/arm64/release/*.apk
-            prod/android/app/build/outputs/apk/armv7/release/*.apk
-            prod/android/app/build/outputs/apk/universal/release/*.apk
+          name: HOLEN-android-arm64-signed-update
+          path: prod/android/app/build/outputs/apk/arm64/release/*.apk
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload lint and unit-test reports
-        if: always()
+      - name: Upload ARM64 test APK
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: HOLEN-android-verification-reports
-          path: |
-            prod/android/app/build/reports/lint-results-*.html
-            prod/android/app/build/reports/tests/**
-          if-no-files-found: warn
+          name: HOLEN-android-arm64-test
+          path: prod/android/app/build/outputs/apk/arm64/release/*.apk
+          if-no-files-found: error
           retention-days: 7
 
   instrumentation:
-    name: Android instrumentation
+    # android-emulator-runner now recommends Ubuntu runners with explicit KVM access;
+    # this avoids the repeated Intel-macOS cold-boot stalls seen on this repository.
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-
+    timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install emulator packages
-        run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "emulator" "system-images;android-35;google_apis;x86_64"
-
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
       - name: Enable KVM
+        shell: bash
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-
-      - name: Make Gradle executable
-        working-directory: prod/android
-        run: chmod +x gradlew
-
-      - name: Run connected tests
-        uses: reactivecircus/android-emulator-runner@v2
+      - name: Run Android instrumentation tests
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
           api-level: 35
           target: google_apis
