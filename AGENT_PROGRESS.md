@@ -19,8 +19,8 @@
 - Measured app-private storage in Android CI run `33546570973`: writing 64 MiB with the production 256 KiB copy buffer took `26 ms`, while the final `fsync` took `71 ms`. This hosted-emulator result is strong evidence not to tune copy-buffer size or worker concurrency around private-storage write cost.
 
 ## In progress
-- Measure deterministic fresh and Range-resume transfer overhead without public-network noise. A test-only localhost server now serves a 64 MiB response and honors a resume from 32 MiB, while the client uses the production 256 KiB copy buffer and final `fsync` pattern.
-- The transfer benchmark is isolated in a narrow `agent-dev` workflow that runs only when the benchmark test/workflow itself changes, avoiding churn or cost on ordinary Android CI pushes.
+- Measure deterministic fresh and Range-resume transfer overhead without public-network noise. The existing opt-in `EngineStartupTimingTest` now also serves a 64 MiB localhost response and honors a resume from 32 MiB, while the client uses the production 256 KiB copy buffer and final `fsync` pattern.
+- The transfer probe is folded into the already-established Android timing instrumentation path instead of introducing a separate benchmark workflow, minimizing CI surface area and preserving the existing workflow safeguards unchanged.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
