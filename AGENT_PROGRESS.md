@@ -13,33 +13,28 @@
 - Added a blocking Android instrumentation CI job on Ubuntu/KVM, retained failure reports, and aligned the onboarding test with the production creator-credit contract.
 - Android CI run `33464291010` passed both the normal verification job and the Linux-KVM instrumentation job after the test alignment; the instrumentation gate is now working end to end.
 - Verified Android lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, 16 KB native-library compatibility, and the connected instrumentation suite for the completed changes above.
+- Reduced first-download tool initialization from the critical path by asynchronously prewarming FFmpeg then aria2c only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean.
+- Proved the prewarm at the initialization boundary: Android CI run `33510436391` measured `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, and `process_launch_ms=1978`. The same run passed normal verification and Linux-KVM instrumentation.
 
 ## In progress
-- Reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or doing generic app-start prewarming.
-- The cold-start timing harness produces fail-closed measurements for `YoutubeDL.init`, `FFmpeg.init`, `Aria2c.init`, and a minimal yt-dlp `--version` process launch.
-- Baseline Android CI run `33484712612` measured on the hosted API-35 x86_64 emulator: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
-- A second cold probe in Android CI run `33494800377` measured `youtube_dl_ms=1019`, `ffmpeg_ms=1283`, `aria2c_ms=134`, `process_launch_ms=1957`, `total_ms=4393`, showing the baseline is repeatable enough to guide this optimization.
-- FFmpeg + aria2c one-time initialization accounted for 1.417-1.461 s across those runs, roughly one third of measured cold wrapper startup, while yt-dlp process launch remained the largest individual phase.
-- Commit `94ab5caa` starts FFmpeg then aria2c initialization asynchronously only after a successful FULL yt-dlp analysis. QUICK/shared-link analysis and ordinary app idle remain lean, and the existing engine operation gate/init mutex serialize initialization against updates, resets, and immediate downloads.
-- The prewarm is best-effort: failures are deliberately deferred to the real download path, where existing actionable startup errors are shown. This avoids surfacing a background error before the user has chosen to download.
-- The startup probe records `post_prewarm_tool_reentry_ms`: after one cold FFmpeg+aria2 initialization, it immediately measures invoking those wrapper initializers again. HOLEN's real post-prewarm `ensureInitialized` path returns even earlier because its in-memory flags avoid those calls entirely.
-- Android CI run `33505212049` passed both verification and instrumentation with the new post-prewarm measurement required. Its numeric value is present in the retained report/step summary, but the autonomous maintainer interface cannot read artifact ZIP contents or step-summary text back through the GitHub API.
-- Commit `df057858` therefore exposes all startup timing values in the instrumentation artifact name. Artifact metadata is API-readable, allowing future runs to consume numeric evidence without weakening the fail-closed probe or touching production behavior.
+- Reduce the remaining yt-dlp-managed download startup latency without regressing metadata responsiveness or introducing speculative generic app-start work.
+- Hosted-emulator measurements now consistently place yt-dlp process launch near 1.95-1.98 s, making it the largest remaining measured startup component.
+- The current youtubedl-android architecture executes yt-dlp through a separate Python process for each request. Replacing it with an in-process Chaquopy-based fork is not a small optimization: current alternatives trade away HOLEN's in-app yt-dlp update path and 32-bit ABI support, add a large embedded Python runtime, and materially change extractor/runtime behavior. Do not migrate merely to chase the process-launch number without representative-device evidence and a full compatibility plan.
+- Next measurement should target the real download path around `YoutubeDL.execute`, separating wrapper process startup from extractor/network time where practical. Avoid dummy process prewarming unless measurements show it creates reusable state rather than simply paying the same process startup twice.
 
 ## Validation
-- Android CI run `33494800377` passed the normal verification job and Linux-KVM instrumentation for the production prewarm commit. Lint/tests/APK builds/16 KB verification and the connected suite all remained green.
-- The same run retained a non-empty timing report and reproduced the earlier cold-start total within 4 ms (`4393` vs `4389` ms), so the diagnostic baseline is stable across these two hosted-emulator runs.
-- Android CI run `33505212049` also passed verification and instrumentation after making `post_prewarm_tool_reentry_ms` mandatory; this confirms the boundary probe executes and produces all required fields, but its numeric output was not programmatically retrievable in this maintainer environment.
-- Fresh Android CI run `33510436391` is validating the API-readable timing-metadata change. Do not treat it as validated until both jobs pass and the artifact name contains all five numeric fields.
+- Baseline Android CI run `33484712612` measured on the hosted API-35 x86_64 emulator: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
+- A second cold probe in Android CI run `33494800377` measured `youtube_dl_ms=1019`, `ffmpeg_ms=1283`, `aria2c_ms=134`, `process_launch_ms=1957`, `total_ms=4393`, showing the baseline is repeatable enough to guide this optimization.
+- Android CI run `33510436391` passed both jobs and exposed API-readable timing metadata: `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1978`.
+- The 0 ms post-prewarm re-entry measurement shows the one-time FFmpeg+aria2 initialization cost (1.369 s in that run; 1.417-1.461 s in the two prior runs) is fully removed at the wrapper initialization boundary once prewarm completes. This is evidence for the initialization-path improvement, not a claim that every user sees a fixed 1.4 s end-to-end speedup.
 - The measurement is diagnostic evidence from a hosted x86_64 emulator, not a user-facing ARM-device benchmark.
-- Do not claim a user-visible speedup yet: the boundary probe measures the remaining wrapper initialization cost after completed prewarm, but it does not include real user think-time or network/download launch latency.
 - The production code diff remains intentionally narrow: one guarded background prewarm path in `YtDlpEngine`; no web/CLI behavior, format selection, downloader arguments, release metadata, or app-start warm-up changed.
 
 ## Known risks
-- A user who performs a successful FULL analysis but never downloads will now pay the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis because that is the strongest existing download-intent signal.
+- A user who performs a successful FULL analysis but never downloads now pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis because that is the strongest existing download-intent signal.
 - If the user queues immediately after analysis, the download may still wait for some or all of initialization; the existing `initMutex` makes this a join rather than duplicate extraction.
 - Hosted-emulator timings can guide optimization but are not representative ARM-device performance claims; confirm on representative ARM hardware before advertising a user-facing speedup.
-- yt-dlp process launch remains the single largest measured startup component and may be mostly intrinsic to Python/yt-dlp startup; do not add a dummy warm process without measurement.
+- yt-dlp process launch remains the single largest measured startup component and may be mostly intrinsic to the current youtubedl-android subprocess architecture; do not add a dummy warm process or swap runtime libraries without evidence.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
 - `main` remains intentionally untouched by autonomous maintenance.
