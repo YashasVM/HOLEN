@@ -19,8 +19,9 @@
 - Measured app-private storage in Android CI run `33546570973`: writing 64 MiB with the production 256 KiB copy buffer took `26 ms`, while the final `fsync` took `71 ms`. This hosted-emulator result is strong evidence not to tune copy-buffer size or worker concurrency around private-storage write cost.
 
 ## In progress
-- Measure deterministic fresh and Range-resume transfer overhead without public-network noise. The existing opt-in `EngineStartupTimingTest` now also serves a 64 MiB localhost response and honors a resume from 32 MiB, while the client uses the production 256 KiB copy buffer and final `fsync` pattern.
-- The transfer probe is folded into the already-established Android timing instrumentation path instead of introducing a separate benchmark workflow, minimizing CI surface area and preserving the existing workflow safeguards unchanged.
+- Measure deterministic fresh and Range-resume transfer overhead without public-network noise. The existing opt-in `EngineStartupTimingTest` serves a 64 MiB localhost response and honors a resume from 32 MiB, while the client uses the production 256 KiB copy buffer and final `fsync` pattern.
+- The first transfer-probe Android CI run `33553165159` passed normal lint/JVM tests/APK builds/16 KB verification but failed instrumentation before recording timings because Android's debug app correctly blocked cleartext HTTP to `127.0.0.1`. The failure was test-environment-only, not a production transfer regression.
+- Added a debug-only manifest override enabling cleartext traffic so the deterministic localhost probe can run without weakening release/network policy. Production/release manifests remain unchanged. Validation is pending fresh Android CI.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -29,7 +30,7 @@
 - Restored-workflow/local-extractor run `33528825430`: `youtube_dl_ms=1088`, `ffmpeg_ms=1310`, `aria2c_ms=131`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1946`, `local_extract_ms=2225`, `local_extract_overhead_ms=279`.
 - Android CI run `33541067475` passed the bounded `Retry-After` direct-download implementation.
 - Storage run `33546570973`: `storage_write_ms=26`, `storage_fsync_ms=71` for 64 MiB. The run passed normal Android verification and instrumentation.
-- The fresh/resume transfer probe is diagnostic hosted-emulator evidence only and is pending its first CI result; it does not represent real internet or ARM-device throughput.
+- Transfer run `33553165159`: verify job passed, instrumentation failed with `java.io.IOException: Cleartext HTTP traffic to 127.0.0.1 not permitted`; no transfer timing from this run is valid evidence.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -38,6 +39,7 @@
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns; those cases remain actionable failures for the user to retry later.
 - The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise HOLEN's public-HTTPS endpoint pinning or real mobile-network variability. It should prevent bad tuning decisions, not be presented as an end-to-end speed benchmark.
+- The debug-only cleartext override exists solely for localhost instrumentation. Release builds retain the normal cleartext prohibition.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
