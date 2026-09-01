@@ -1,55 +1,37 @@
 # Agent progress
 
 ## Completed
-- Created the long-running `agent-dev` branch from `main` and kept `main` untouched.
-- Ported the validated Android updater version-normalization fix from former PR #18 onto `agent-dev`.
-- Extended safe direct-download resume support to servers that provide a strong `Last-Modified`/`Date` validator but no ETag. Strong ETags remain preferred; weak/malformed ETags still disable resume.
-- Enabled the full Android CI workflow on `agent-dev` pushes so Android changes are linted, unit-tested, assembled for emulator/ARM64/ARMv7/universal, and checked for 16 KB native-library compatibility before weekly review.
-- The resume/CI batch passed the full Android CI workflow on commit `509b7297ddf316a68dbd481d9aa49984673f51ca`.
-- Added bounded automatic retry for direct-file downloads so transient transport errors and HTTP 408/500/502/503/504 can recover without requiring a manual retry. Existing resumable staging is reused between attempts.
-- The direct-download retry implementation passed generic CI and the full Android CI matrix on commit `a0f2049cc01611d2eff0311c69a2f0c8982ca0ac`.
-- Classified yt-dlp/extractor HTTP failures separately from direct-file failures. HTTP 401/403 now points to expired/authenticated access, 404/410 to unavailable/moved media, 429 to rate limiting, and 5xx to temporary source failure. Explicit bot-challenge text still takes priority over status-only classification.
-- The HTTP failure-classification/test repair passed generic CI and full Android CI on commit `289f071c07bf488eef4a4dd9737503aefcadde29`.
-- Re-verified yt-dlp/aria2 interrupted-download behavior against current upstream. yt-dlp PR #11698 fixed aria2c resume semantics and was merged before stable 2026.08.19, so no HOLEN-specific downloader fallback or throughput-reducing workaround is justified.
-- Measured the current ARM64 release APK rather than guessing at package-size bottlenecks. The APK is 63,698,918 bytes (~60.7 MiB); the dominant payloads are `libffmpeg.zip.so` 35,624,931 bytes, `libpython.zip.so` 14,305,904 bytes, and aria2 (`libaria2c.zip.so` + `libaria2c.so`) 6,842,837 bytes. These three required media-engine components account for ~89% of the APK, so ordinary R8/resource cleanup cannot produce a material size reduction.
-- Removed FFmpeg extraction from the background metadata warm-up path. Fresh installs now prepare only Python/yt-dlp before analysis; FFmpeg remains lazily initialized at download time. This avoids letting the 35.6 MB FFmpeg payload hold the shared initialization mutex while the first metadata request waits for media tools it does not use.
-- Fixed same-process engine-reset recovery. After a manual bundled-engine reset or a failed stable-engine update clears extracted runtime files, analyze/download now fail with an explicit restart-required error instead of calling upstream singleton `init()` methods that may already believe they are initialized. The aria2 extraction-version marker is also cleared with Python/FFmpeg/yt-dlp markers. First-initialization fallback remains restart-free.
-- The engine-reset guard passed generic CI plus full Android CI (lint, unit tests, APK builds, and 16 KB native-library validation) on commit `771f6097f0eb9deca62370014dffa4c165887149`.
-- Hardened yt-dlp downloader selection for fragmented manifests in `41ae0d4e7b99d0a507f4650ffd554217e8eb0a4a`: aria2c remains the default external downloader for ordinary transfers, while `dash,m3u8` are explicitly forced to yt-dlp's native downloader. This matches yt-dlp's workaround for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574 and protects an older bundled engine even before the stable updater runs.
-- The manifest-downloader hardening passed generic CI and full Android CI, including lint, unit tests, APK assembly, and 16 KB native-library validation, on Android CI run `33406133219`.
-- Fixed restart-required engine-reset failures being misclassified as generic network failures. Download jobs now preserve the actionable “close and reopen HOLEN” guidance, with a regression test covering the `IOException` path in commit `d5e18bf48804c317eca6eeab085bc8cb7ea54144`.
-- The restart-guidance classification fix passed generic CI and full Android CI on commit `d5e18bf48804c317eca6eeab085bc8cb7ea54144`; Android CI run `33417196473` completed successfully.
+- Created and maintained the long-running `agent-dev` branch while leaving `main` untouched.
+- Ported the validated Android updater version-normalization fix from former PR #18.
+- Added conservative direct-download resume fallback using strong Last-Modified/Date validation when no ETag exists; weak/malformed validators still disable resume.
+- Added bounded direct-download retry for transient transport failures and HTTP 408/500/502/503/504 while preserving resumable staging.
+- Added actionable yt-dlp HTTP failure classification for auth/access, unavailable media, rate limits, and temporary source failures.
+- Removed FFmpeg extraction from metadata warm-up so first metadata analysis no longer waits on media tooling it does not need.
+- Hardened same-process engine reset/update failure handling so destructive runtime resets fail with explicit restart guidance instead of reusing stale singleton initialization state.
+- Kept aria2c as the ordinary-transfer downloader while forcing DASH/HLS through yt-dlp native downloading, matching the upstream mitigation for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574.
+- Fixed restart-required engine failures being misclassified as generic network failures.
+- Verified Android lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, and 16 KB native-library compatibility for the completed production-code changes above.
 
 ## In progress
-- Execute the existing Android instrumentation suite in CI rather than merely assembling its APK.
-- Three Intel-macOS attempts entered `reactivecircus/android-emulator-runner` but never produced Gradle connected-test results. Raising the boot timeout from 600s to 900s did not help: Android CI run `33443793903` still spent about 24 minutes in the emulator action before failing, while the normal Android verify job passed.
-- Linux KVM run `33448377292` improved the failure materially: it completed in under five minutes and uploaded a non-empty connected-test report artifact, while the normal verify job again passed. That proves the workflow is now reaching Gradle/instrumentation output instead of only stalling during emulator boot.
-- Commit `de390b6ebd785079cfe80468c245d181fc96e044` keeps the Linux-KVM setup but upgrades the emulator action from v2.36.0 to the current upstream v2.38.0 commit `a421e43855164a8197daf9d8d40fe71c6996bb0d`. Upstream v2.37 moved the action to Node 24/current SDK tooling and v2.38 is the latest release. Validation is pending; do not alter tests until the resulting report identifies a HOLEN-side assertion or setup failure.
-- Investigate first yt-dlp-managed download startup latency after the instrumentation CI task is stable. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
+- Make the existing Android instrumentation suite a reliable blocking CI gate.
+- Intel-macOS emulator attempts stalled before Gradle connected-test output, so instrumentation was moved to Ubuntu with KVM. Linux KVM reaches the actual suite quickly and produces connected-test reports.
+- Android CI run `33452811379` on emulator-runner v2.38.0 executed all four tests: `tutorialScreenshotsArePortraitBitmaps`, `sqliteSchemaIsCreatedAtCurrentVersion`, and `interruptedJobsAreRequeuedAndClaimedAtomically` passed; only `firstLaunchRunsCinematicOnboardingInOrder` failed after 5 seconds.
+- Root cause is a CI/test-environment mismatch, not a proven app regression: `disable-animations: true` sets the system animator scale to zero, while HOLEN intentionally treats animator scale zero as reduced-motion mode. In that mode `WelcomeStage` skips its 2.6-second cinematic delay and immediately advances, making the test's initial Welcome assertion impossible.
+- Commit `37df23f1301c2cf5304a6c2537dbeca0daf78275` keeps Linux KVM and emulator-runner v2.38.0 but sets `disable-animations: false` so the onboarding-order test exercises the normal production cinematic path. Android CI run `33456901604` is validating it.
+- After instrumentation CI is stable, return to first yt-dlp-managed download startup latency. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
-- Generic repository CI and full Android CI passed for the Last-Modified resume implementation, bounded direct-download retries, yt-dlp HTTP failure classification, lazy-FFmpeg initialization, engine-reset guard, manifest-downloader hardening, and restart-guidance classification.
-- Resume unit coverage includes strong ETag preference, weak ETag rejection, valid Last-Modified fallback, unsafe timestamp rejection, and HTTPS-only persisted resume state.
-- Direct retry policy tests cover transient transport/HTTP failures, retry-budget exhaustion, bounded backoff, permanent HTTP failures, rate limiting, TLS failures, malformed redirects, and protocol errors.
-- Friendly-failure tests cover yt-dlp-style HTTP 403/404/429/503 messages, verify that explicit bot challenges remain distinct from ordinary rate limiting, and verify that an engine-reset restart requirement cannot fall through to generic network-retry guidance.
-- Current yt-dlp stable `2026.08.19` includes the merged aria2c resume fix (`yt-dlp/yt-dlp#11698`), including persisted aria2 control files for continued downloads and overwrite fallback when a partial transfer cannot be resumed.
-- Latest measured Android ARM64 test artifact came from successful Android CI run 33343043276 on commit `289f071c07bf488eef4a4dd9737503aefcadde29`; its release APK measured 63,698,918 bytes.
-- The engine-reset fix is intentionally narrow: destructive runtime clearing marks the current process unusable until restart, while recovery from a failed first initialization still retries once without setting the restart guard.
-- yt-dlp's documented downloader syntax supports a default downloader plus protocol-specific overrides; the security advisory explicitly recommends `--downloader dash,m3u8:native` for users unable to immediately upgrade an affected engine.
-- Android CI run `33443793903` passed lint, unit tests, emulator APK build, ARM release builds, and 16 KB verification in the normal verify job, but the instrumentation job failed before any connected-test report files were generated.
-- Android CI run `33448377292` again passed lint, unit tests, APK builds, and 16 KB verification; its Linux-KVM instrumentation job failed but produced a 93,946-byte `HOLEN-android-instrumentation-reports` artifact, proving the runner progressed beyond the previous no-report boot failure mode.
+- Android CI run `33452811379` passed the normal verify job: lint, JVM unit tests, APK builds, and 16 KB compatibility.
+- Its Linux-KVM instrumentation artifact contained real XML/logcat output for four tests, with exactly one failure: `firstLaunchRunsCinematicOnboardingInOrder` timed out at `HolenInstrumentedTest.kt:52`; the other three tests passed.
+- The onboarding implementation confirms why: `OnboardingFlow` reads `Settings.Global.ANIMATOR_DURATION_SCALE`; when it is zero, `WelcomeStage` does not execute the normal 2.6-second delay before advancing.
+- No production Android code or instrumentation assertions were weakened for this fix; only the emulator environment was changed to preserve production motion behavior.
 
 ## Known risks
-- Last-Modified resume is intentionally conservative: it is used only when no ETag is present and the response Date is at least one second later, matching RFC 9110 strong-validator requirements.
-- Automatic direct retry is capped at two retries with 1s/2s backoff. HTTP 429 is deliberately not retried automatically because the server may require a longer `Retry-After` interval.
-- HTTP status alone cannot prove whether a 401/403 is an expired URL versus account-gated media, so the Android error message deliberately presents both likely actions instead of claiming a single cause.
-- Network switching can still expose device/carrier/DNS-specific failures that cannot be proven from repository inspection alone; do not add a second process-level retry loop without a reproducible failure because that risks retry storms and duplicate work.
-- Deferring FFmpeg trades fresh-install metadata latency for one-time initialization immediately before the first yt-dlp-managed download. No numeric speedup is claimed until a device-side cold-install benchmark is available; the change only removes unnecessary FFmpeg work from the metadata critical path.
-- The APK-size bottleneck is structural: removing FFmpeg breaks common split-stream merging/post-processing, removing aria2 trades away the current fast external downloader, and downloading these engines at first run would add network/bootstrap/security/update complexity and weaken offline reliability. Do not make that trade without a concrete product decision and measured benefit.
-- Engine reset/update-failure recovery now deliberately requires an app restart because youtubedl-android's process-local singleton initialization flags cannot be safely reset by HOLEN after deleting extracted runtime files.
-- The manifest safety override intentionally gives DASH/HLS transfers to yt-dlp's native fragment downloader, so those protocols do not receive aria2c's transfer behavior; this is the upstream-recommended security trade-off and ordinary HTTP transfers still use aria2c.
-- Instrumentation CI is still not trusted as a stable regression gate until a run executes the suite successfully. If v2.38.0 still fails, use the uploaded connected-test report to fix the precise app/test/runner issue rather than extending timeouts or making the gate non-blocking.
+- Instrumentation CI is not considered stable until `33456901604` or a subsequent equivalent run passes the full suite reliably.
+- Deferring FFmpeg trades lower metadata-path work for one-time FFmpeg initialization immediately before the first yt-dlp-managed download; no numeric speedup is claimed without device-side measurement.
+- DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
+- Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
 - `main` remains intentionally untouched by autonomous maintenance.
 
 ## Weekly review
-- Compare `agent-dev` against `main`, inspect this file and the latest Android CI for the most recent Android code commit, then merge only if satisfied.
+- Compare `agent-dev` against `main`, inspect this file and the latest Android CI for the most recent Android code/CI commit, then merge only if satisfied.
