@@ -181,6 +181,10 @@ jobs:
             grep -q 'storage_write_bytes=' app/build/reports/startup/engine-startup-timing.txt
             grep -q 'storage_write_ms=' app/build/reports/startup/engine-startup-timing.txt
             grep -q 'storage_fsync_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'transfer_bytes=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'transfer_fresh_ms=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'transfer_resume_offset_bytes=' app/build/reports/startup/engine-startup-timing.txt
+            grep -q 'transfer_resume_ms=' app/build/reports/startup/engine-startup-timing.txt
             cat app/build/reports/startup/engine-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
             ./gradlew connectedEmulatorDebugAndroidTest
@@ -197,7 +201,7 @@ jobs:
           report=app/build/reports/startup/engine-startup-timing.txt
           test -s "$report"
           timing_line=$(grep 'youtube_dl_ms=' "$report" | tail -n 1)
-          for key in youtube_dl_ms ffmpeg_ms aria2c_ms post_prewarm_tool_reentry_ms process_launch_ms local_extract_ms local_extract_overhead_ms storage_write_ms storage_fsync_ms; do
+          for key in youtube_dl_ms ffmpeg_ms aria2c_ms post_prewarm_tool_reentry_ms process_launch_ms local_extract_ms local_extract_overhead_ms storage_write_ms storage_fsync_ms transfer_fresh_ms transfer_resume_ms; do
             value=$(printf '%s\n' "$timing_line" | sed -n "s/.*${key}=\([0-9][0-9]*\).*/\1/p")
             [[ "$value" =~ ^[0-9]+$ ]] || { echo "Missing numeric $key in startup timing report." >&2; exit 1; }
             echo "$key=$value" >> "$GITHUB_OUTPUT"
@@ -207,7 +211,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HOLEN-android-instrumentation-ytdl-${{ steps.startup_timing.outputs.youtube_dl_ms }}ms-ffmpeg-${{ steps.startup_timing.outputs.ffmpeg_ms }}ms-aria2-${{ steps.startup_timing.outputs.aria2c_ms }}ms-reentry-${{ steps.startup_timing.outputs.post_prewarm_tool_reentry_ms }}ms-proc-${{ steps.startup_timing.outputs.process_launch_ms }}ms-local-${{ steps.startup_timing.outputs.local_extract_ms }}ms-overhead-${{ steps.startup_timing.outputs.local_extract_overhead_ms }}ms-write64m-${{ steps.startup_timing.outputs.storage_write_ms }}ms-fsync-${{ steps.startup_timing.outputs.storage_fsync_ms }}ms
+          name: HOLEN-android-instrumentation-ytdl-${{ steps.startup_timing.outputs.youtube_dl_ms }}ms-ffmpeg-${{ steps.startup_timing.outputs.ffmpeg_ms }}ms-aria2-${{ steps.startup_timing.outputs.aria2c_ms }}ms-reentry-${{ steps.startup_timing.outputs.post_prewarm_tool_reentry_ms }}ms-proc-${{ steps.startup_timing.outputs.process_launch_ms }}ms-local-${{ steps.startup_timing.outputs.local_extract_ms }}ms-overhead-${{ steps.startup_timing.outputs.local_extract_overhead_ms }}ms-write64m-${{ steps.startup_timing.outputs.storage_write_ms }}ms-fsync-${{ steps.startup_timing.outputs.storage_fsync_ms }}ms-fresh64m-${{ steps.startup_timing.outputs.transfer_fresh_ms }}ms-resume32m-${{ steps.startup_timing.outputs.transfer_resume_ms }}ms
           path: |
             prod/android/app/build/reports/androidTests/connected/**
             prod/android/app/build/outputs/androidTest-results/connected/**
