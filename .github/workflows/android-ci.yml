@@ -155,7 +155,15 @@ jobs:
           disable-animations: false
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           working-directory: prod/android
-          script: ./gradlew connectedEmulatorDebugAndroidTest
+          script: |
+            # Some emulator images retain zero animation scales even when the runner
+            # does not disable them. Make the production-motion test environment
+            # explicit before MainActivity is launched by instrumentation.
+            adb shell settings put global window_animation_scale 1.0
+            adb shell settings put global transition_animation_scale 1.0
+            adb shell settings put global animator_duration_scale 1.0
+            test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
+            ./gradlew connectedEmulatorDebugAndroidTest
 
       - name: Upload instrumentation reports
         if: always()
