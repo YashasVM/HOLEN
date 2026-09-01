@@ -133,8 +133,8 @@ class EngineStartupTimingTest {
                             output.flush()
                         }
                     }
-                } catch (_: SocketException) {
-                    if (!closed) throw
+                } catch (error: SocketException) {
+                    if (!closed) throw error
                 }
             }
         }
