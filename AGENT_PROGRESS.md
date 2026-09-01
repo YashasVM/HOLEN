@@ -17,11 +17,12 @@
 - Closed the remaining startup micro-optimization investigation with deterministic evidence: Android CI run `33528825430` measured `process_launch_ms=1946`, `local_extract_ms=2225`, and `local_extract_overhead_ms=279`, showing about 87% of the deterministic localhost extraction path is the wrapper subprocess baseline.
 - Added server-directed handling for HTTP 429 on Android direct downloads. `Retry-After` is preserved and retried only when valid and at most 30 seconds; Android CI run `33541067475` passed.
 - Measured app-private storage in Android CI run `33546570973`: writing 64 MiB with the production 256 KiB copy buffer took `26 ms`, while the final `fsync` took `71 ms`. This hosted-emulator result is strong evidence not to tune copy-buffer size or worker concurrency around private-storage write cost.
+- Repaired the localhost transfer probe with a debug-only cleartext manifest override. Android CI run `33558047759` then passed both normal Android verification and instrumentation; release/network cleartext policy remains unchanged.
+- Made transfer evidence fail-closed in Android CI: `transfer_fresh_ms` and `transfer_resume_ms` are now required and exposed in artifact metadata so autonomous follow-up runs can consume the numbers without reading artifact ZIP contents.
 
 ## In progress
-- Measure deterministic fresh and Range-resume transfer overhead without public-network noise. The existing opt-in `EngineStartupTimingTest` serves a 64 MiB localhost response and honors a resume from 32 MiB, while the client uses the production 256 KiB copy buffer and final `fsync` pattern.
-- The first transfer-probe Android CI run `33553165159` passed normal lint/JVM tests/APK builds/16 KB verification but failed instrumentation before recording timings because Android's debug app correctly blocked cleartext HTTP to `127.0.0.1`. The failure was test-environment-only, not a production transfer regression.
-- Added a debug-only manifest override enabling cleartext traffic so the deterministic localhost probe can run without weakening release/network policy. Production/release manifests remain unchanged. Validation is pending fresh Android CI.
+- Validate the new CI metadata exposure, then consume the deterministic 64 MiB fresh-transfer and 32 MiB Range-resume timings from the next Android CI artifact.
+- Use those numbers only to decide whether HOLEN's Java copy/append/resume path is materially expensive. Do not tune buffers, worker count, or concurrency unless the measurement supports it.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -31,6 +32,7 @@
 - Android CI run `33541067475` passed the bounded `Retry-After` direct-download implementation.
 - Storage run `33546570973`: `storage_write_ms=26`, `storage_fsync_ms=71` for 64 MiB. The run passed normal Android verification and instrumentation.
 - Transfer run `33553165159`: verify job passed, instrumentation failed with `java.io.IOException: Cleartext HTTP traffic to 127.0.0.1 not permitted`; no transfer timing from this run is valid evidence.
+- Repaired transfer run `33558047759`: verify and instrumentation passed. Its existing artifact metadata still omitted transfer values, which is why CI metadata exposure was added next instead of guessing at the numbers.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
