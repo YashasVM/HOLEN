@@ -164,12 +164,14 @@ jobs:
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
-            # Measure a deliberately cold extraction/initialization cycle before the
-            # functional suite. This is diagnostic evidence, not a timing threshold:
-            # hosted-emulator performance varies and must not create flaky CI failures.
+            # Run the destructive cold-start probe explicitly. In the normal suite the
+            # same test is skipped, so it cannot delete a runtime used by functional tests.
             ./gradlew connectedEmulatorDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest
-            adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt
+              -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest \
+              -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
+            mkdir -p app/build/reports/startup
+            adb shell run-as com.yashasvm.holen cat cache/engine-startup-timing.txt \
+              | tee app/build/reports/startup/engine-startup-timing.txt
 
             ./gradlew connectedEmulatorDebugAndroidTest
 
@@ -181,5 +183,6 @@ jobs:
           path: |
             prod/android/app/build/reports/androidTests/connected/**
             prod/android/app/build/outputs/androidTest-results/connected/**
+            prod/android/app/build/reports/startup/**
           if-no-files-found: warn
           retention-days: 7
