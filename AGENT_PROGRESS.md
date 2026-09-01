@@ -15,19 +15,19 @@
 ## In progress
 - Make the existing Android instrumentation suite a reliable blocking CI gate.
 - Intel-macOS emulator attempts stalled before Gradle connected-test output, so instrumentation was moved to Ubuntu with KVM. Linux KVM reaches the actual suite quickly and produces connected-test reports.
-- Android CI run `33452811379` on emulator-runner v2.38.0 executed all four tests: `tutorialScreenshotsArePortraitBitmaps`, `sqliteSchemaIsCreatedAtCurrentVersion`, and `interruptedJobsAreRequeuedAndClaimedAtomically` passed; only `firstLaunchRunsCinematicOnboardingInOrder` failed after 5 seconds.
-- `disable-animations: false` alone did not clear that failure: run `33456901604` still failed only the instrumentation job while the normal Android verification job remained green. The emulator reached the test step in about three minutes and retained a real instrumentation report artifact.
-- HOLEN intentionally treats global animator scale zero as reduced-motion mode; in that mode `WelcomeStage` immediately advances instead of waiting 2.6 seconds. Because emulator images can retain zero animation scales even when the runner is told not to disable animations, commit `276e8d9da89ba008dc5d2cd5f7901a8f62f35c6c` now explicitly sets window/transition/animator scales to `1.0` and verifies animator scale before launching Gradle instrumentation.
+- Android CI run `33460480923` passed the normal Android verification job and executed all four instrumentation tests; three passed and only `firstLaunchRunsCinematicOnboardingInOrder` failed.
+- The retained report showed the failure precisely at `HolenInstrumentedTest.kt:58`: the test expected `Made by @yashas.vm` during the Welcome stage. Current production code intentionally renders `persistent-creator-credit` only when onboarding is complete, and explicitly documents that attribution belongs to the download home rather than setup/onboarding.
+- Commit `d0a24f7eb1cb44a3b9906055025ea2244689b459` therefore fixes the stale instrumentation expectation: onboarding now asserts that the persistent creator credit is absent during Welcome/About instead of incorrectly requiring it. No production UI behavior was changed.
 - After instrumentation CI is stable, return to first yt-dlp-managed download startup latency. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
 
 ## Validation
-- Android CI run `33456901604` passed the normal verify job: lint, JVM unit tests, APK builds, and 16 KB compatibility; only instrumentation failed.
-- The Linux-KVM instrumentation step completed in roughly three minutes and uploaded a 61,519-byte report artifact, confirming the emulator/Gradle path is functioning rather than hanging during boot.
-- The onboarding implementation reads `Settings.Global.ANIMATOR_DURATION_SCALE`; when it is zero, `WelcomeStage` skips the normal 2.6-second delay before advancing.
-- No production Android code or instrumentation assertions were weakened. The latest change only makes the emulator's motion configuration deterministic and fails early if the intended animator scale cannot be applied.
+- Android CI run `33460480923` passed lint, JVM unit tests, APK builds, and 16 KB compatibility in the normal verify job.
+- Linux-KVM instrumentation completed in about three and a half minutes and retained a 64,590-byte report artifact, so emulator boot/Gradle execution is functioning.
+- The report recorded the exact failed selector: `Made by @yashas.vm` was absent during Welcome, which matches the current production implementation rather than indicating an app regression.
+- The test fix strengthens the intended contract by explicitly asserting that `persistent-creator-credit` does not exist during onboarding; it does not weaken production code or bypass the instrumentation gate.
 
 ## Known risks
-- Instrumentation CI is not considered stable until the explicit-motion-scale run or a subsequent equivalent run passes the full suite reliably.
+- Instrumentation CI is not considered stable until the test-alignment commit passes the full suite on Linux KVM.
 - Deferring FFmpeg trades lower metadata-path work for one-time FFmpeg initialization immediately before the first yt-dlp-managed download; no numeric speedup is claimed without device-side measurement.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
