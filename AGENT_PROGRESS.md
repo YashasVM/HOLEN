@@ -10,25 +10,25 @@
 - Hardened same-process engine reset/update failure handling so destructive runtime resets fail with explicit restart guidance instead of reusing stale singleton initialization state.
 - Kept aria2c as the ordinary-transfer downloader while forcing DASH/HLS through yt-dlp native downloading, matching the upstream mitigation for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574.
 - Fixed restart-required engine failures being misclassified as generic network failures.
-- Verified Android lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, and 16 KB native-library compatibility for the completed production-code changes above.
+- Added a blocking Android instrumentation CI job on Ubuntu/KVM, retained failure reports, and aligned the onboarding test with the production creator-credit contract.
+- Android CI run `33464291010` passed both the normal verification job and the Linux-KVM instrumentation job after the test alignment; the instrumentation gate is now working end to end.
+- Verified Android lint, JVM tests, emulator/ARM64/ARMv7/universal APK builds, 16 KB native-library compatibility, and the connected instrumentation suite for the completed changes above.
 
 ## In progress
-- Make the existing Android instrumentation suite a reliable blocking CI gate.
-- Intel-macOS emulator attempts stalled before Gradle connected-test output, so instrumentation was moved to Ubuntu with KVM. Linux KVM reaches the actual suite quickly and produces connected-test reports.
-- Android CI run `33460480923` passed the normal Android verification job and executed all four instrumentation tests; three passed and only `firstLaunchRunsCinematicOnboardingInOrder` failed.
-- The retained report showed the failure precisely at `HolenInstrumentedTest.kt:58`: the test expected `Made by @yashas.vm` during the Welcome stage. Current production code intentionally renders `persistent-creator-credit` only when onboarding is complete, and explicitly documents that attribution belongs to the download home rather than setup/onboarding.
-- Commit `d0a24f7eb1cb44a3b9906055025ea2244689b459` therefore fixes the stale instrumentation expectation: onboarding now asserts that the persistent creator credit is absent during Welcome/About instead of incorrectly requiring it. No production UI behavior was changed.
-- After instrumentation CI is stable, return to first yt-dlp-managed download startup latency. Do not prewarm or parallelize Python/FFmpeg/aria2 extraction without device-side timing or another defensible structural benefit.
+- Measure and reduce first yt-dlp-managed download startup latency without regressing metadata responsiveness or adding speculative prewarming.
+- Current structure: app idle warm-up initializes only Python/yt-dlp; a real yt-dlp-managed download then initializes FFmpeg and aria2c before launching yt-dlp. This intentionally keeps heavy media-tool extraction off the metadata path.
+- Upstream `youtubedl-android` documentation initializes YoutubeDL, FFmpeg, then Aria2c before downloads. It does not document concurrent initialization, so do not parallelize those extractors without evidence that their shared runtime setup is safe.
+- Candidate next step is to obtain device-side phase timing for Python/yt-dlp readiness, FFmpeg init, aria2c init, and yt-dlp launch, or use another defensible measurement path before moving work earlier in the UI lifecycle.
 
 ## Validation
-- Android CI run `33460480923` passed lint, JVM unit tests, APK builds, and 16 KB compatibility in the normal verify job.
-- Linux-KVM instrumentation completed in about three and a half minutes and retained a 64,590-byte report artifact, so emulator boot/Gradle execution is functioning.
-- The report recorded the exact failed selector: `Made by @yashas.vm` was absent during Welcome, which matches the current production implementation rather than indicating an app regression.
-- The test fix strengthens the intended contract by explicitly asserting that `persistent-creator-credit` does not exist during onboarding; it does not weaken production code or bypass the instrumentation gate.
+- Android CI run `33464291010` completed successfully on `d0a24f7eb1cb44a3b9906055025ea2244689b459`.
+- The normal job passed lint, JVM unit tests, APK builds, and 16 KB native-library verification.
+- Linux-KVM instrumentation passed; the instrumentation step completed successfully and retained its report artifact.
+- No production Android code changed while resolving the final onboarding assertion; the corrected test now matches the current production UI contract.
 
 ## Known risks
-- Instrumentation CI is not considered stable until the test-alignment commit passes the full suite on Linux KVM.
-- Deferring FFmpeg trades lower metadata-path work for one-time FFmpeg initialization immediately before the first yt-dlp-managed download; no numeric speedup is claimed without device-side measurement.
+- Deferring FFmpeg/aria2c keeps metadata startup lean but leaves their one-time initialization on the first yt-dlp-managed download critical path; no numeric latency claim is made without device-side measurement.
+- Moving media-tool initialization earlier could trade download-start latency for unnecessary CPU/storage work on sessions that only inspect links, so any prewarming change needs evidence and a bounded trigger.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Network switching can expose device/carrier/DNS-specific failures that repository-only tests cannot reproduce; avoid adding another process-level retry loop without evidence.
 - `main` remains intentionally untouched by autonomous maintenance.
