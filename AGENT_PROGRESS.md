@@ -33,7 +33,7 @@
 - Exposed `Retry without cookies` on Android failed-job cards using the same validated eligibility predicate; ordinary Retry remains available and restores configured-cookie identity. The action never appears for cancelled jobs and does not alter the selected download format. Android CI run `33633640767` passed.
 
 ## In progress
-- Added focused Android instrumentation coverage that seeds an eligible public-media failure, an account-gated failure, and a cancelled job, then asserts the `Retry without cookies` semantics action appears only for the eligible job. Android CI run `33639203889` is validating this end-to-end UI proof.
+- End-to-end Compose coverage for `Retry without cookies`: Android CI run `33639203889` passed the full verify/build/16 KB job but failed only the instrumentation job. The test seeded onboarding completion with asynchronous SharedPreferences `apply()` immediately before `MainActivity` launch, creating a setup race. Commit `ecc15575` switches setup/cleanup to synchronous `commit()` and fails explicitly if setup persistence cannot complete. Awaiting Android CI confirmation before closing the cookie-isolation task.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -55,7 +55,7 @@
 - Explicit no-cookie requeue run `33622415323`: Android CI passed, validating durable policy-before-requeue behavior and cleanup before the UI action is exposed.
 - Tightened action-eligibility run `33627146686`: Android CI passed with explicit cancelled and members-only exclusion coverage on top of the existing eligibility tests.
 - Guarded Compose action run `33633640767`: Android CI passed for the final production visibility/callback wiring.
-- Guarded action UI-instrumentation run `33639203889`: queued at the latest check; do not treat the new end-to-end UI assertion as validated until it completes successfully.
+- Guarded action UI-instrumentation run `33639203889`: verify/build/16 KB/APK job passed; instrumentation job failed. Do not treat the end-to-end UI assertion as validated until the deterministic setup fix passes.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
