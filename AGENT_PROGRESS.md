@@ -25,10 +25,11 @@
 - Closed the proposed stale-format-ID recovery investigation: HOLEN stores semantic choices (`BEST_MP4`, `MP4_1080`, `MP4_720`, audio variants), not yt-dlp format IDs. yt-dlp resolves the selector against current formats at download time, so there is no persisted stale format ID to remap. Automatic quality substitution would therefore add behavior/risk without solving the identified failure mode.
 - Hardened imported cookie handling so a syntactically valid file containing only expired persistent cookies is no longer treated as configured or passed to yt-dlp. Session cookies (expiry `0`) remain valid and mixed files remain usable while at least one cookie is current; Android CI run `33585060641` passed.
 - Rejected silent automatic cookie dropping. Upstream yt-dlp documents YouTube cookies as necessary mainly for account-gated content and warns that account use carries extra risk; real upstream reports also show authenticated extraction can expose fewer public formats. HOLEN now gives explicit cookie-isolation guidance on extractor HTTP 401/403 and requested-format failures instead of silently changing identity or quality.
-- Added a deterministic cookie-isolation retry eligibility gate before persistence/UI wiring. It only qualifies failed yt-dlp media jobs whose existing error explicitly recommends a one-time no-cookie retry, and excludes direct files, missing-cookie state, queued/running work, and account/age-gated failures.
+- Added a deterministic cookie-isolation retry eligibility gate before persistence/UI wiring. It only qualifies failed yt-dlp media jobs whose existing error explicitly recommends a one-time no-cookie retry, and excludes direct files, missing-cookie state, queued/running work, and account/age-gated failures. Android CI run `33601355781` passed.
+- Added a durable per-job authentication-policy sidecar for the explicit no-cookie recovery path. Missing or unknown state fails safe to `CONFIGURED`, `WITHOUT_COOKIES` survives process/service restarts, and stale entries can be pruned without changing the core jobs schema. JVM coverage checks fail-safe decoding and job-key validation.
 
 ## In progress
-- Continue authenticated-download reliability by turning the cookie-isolation eligibility gate into a persisted Android-only “retry without cookies” path. The next implementation step is the database/auth-policy migration plus engine and UI wiring; the action must survive process/background-service restarts, preserve the selected semantic format, and never silently switch private/age-restricted/members-only jobs to unauthenticated access.
+- Finish the Android-only “retry without cookies” path by wiring the persisted policy into yt-dlp execution and the failed-job UI action. The action must preserve the selected semantic format, be offered only through the existing eligibility gate, and never silently switch private/age-restricted/members-only jobs to unauthenticated access.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -44,7 +45,8 @@
 - Unavailable-format/media classification run `33577332071`: Android verification passed for the new failure guidance and tests.
 - Expired-cookie guard run `33585060641`: Android verification passed with JVM coverage for fully expired, session, and mixed cookie files.
 - Cookie-isolation guidance run `33592884940`: Android verification passed for extractor 401/403/requested-format recovery guidance.
-- Cookie-isolation eligibility (`970c17f0`, `84e69e13`): Android CI run `33601355781` and generic CI run `33601355801` are pending; JVM coverage now asserts eligible public-media failures while excluding direct-file, non-failed, no-cookie, age-restricted, and login-required cases.
+- Cookie-isolation eligibility run `33601355781`: Android verification passed; JVM coverage asserts eligible public-media failures while excluding direct-file, non-failed, no-cookie, age-restricted, and login-required cases.
+- Persisted authentication-policy commits `43dc685b`, `2beb3576`, `e29ab2c8`: Android CI run `33606011186` and generic CI run `33606011204` are pending.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -53,7 +55,8 @@
 - YouTube's challenge behavior continues to evolve upstream. The previously suspected missing-runtime problem does not apply to HOLEN's current wrapper because QuickJS is already packaged/configured; future failures must be reproduced before attributing them to JS challenge support.
 - The QuickJS instrumentation verifies wrapper command wiring and packaged native-file presence, not a live YouTube challenge, deliberately avoiding flaky public-network CI.
 - `Requested format is not available` can mean current extractor output no longer satisfies the selected semantic quality/container constraints or source-side access changed. HOLEN intentionally does not silently substitute a different user-selected quality.
-- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. HOLEN still applies a configured cookie file to yt-dlp requests. The new eligibility gate only decides when an explicit recovery may be shown; the actual persisted per-job no-cookie policy still needs implementation before this recovery becomes one-tap.
+- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. HOLEN still applies a configured cookie file to yt-dlp requests. The durable sidecar now solves restart-safe policy persistence, but production execution/UI wiring is intentionally not enabled until the new persistence code passes CI.
+- The authentication-policy sidecar deliberately uses absence as `CONFIGURED`, preserving every existing job and avoiding a database migration for one recovery bit. Lifecycle cleanup must remain wired when the user-facing recovery action is added so removed jobs do not leave stale entries indefinitely.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
 - The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise public HTTPS, mobile radios, server throttling, or end-to-end yt-dlp/aria2 behavior.
