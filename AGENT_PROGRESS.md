@@ -20,11 +20,12 @@
 - Repaired the localhost transfer probe with a debug-only cleartext manifest override; release cleartext policy remains unchanged.
 - Made transfer evidence fail-closed in Android CI and closed the Java copy/resume bottleneck investigation. Android CI run `33563442686` passed and measured a 64 MiB fresh localhost transfer at `364 ms` and a 32 MiB HTTP Range resume at `160 ms`. These emulator-local measurements show the copy/append/resume path itself is not a credible reason to tune the 256 KiB buffer or worker count.
 - Verified current yt-dlp aria2c integration already uses aggressive ordinary-HTTP defaults (`-x16 -j16 -s16`, 1 MiB minimum split), so HOLEN should not add redundant higher connection counts without real network evidence.
-- Corrected the YouTube JS-runtime assumption: HOLEN already uses `youtubedl-android 0.18.1`, whose library bundles QuickJS `2025-04-26` and automatically supplies `--js-runtimes quickjs:<native-path>` on every yt-dlp execution. Upstream yt-dlp lists QuickJS `2025-04-26` as the first version with the relevant performance optimizations, and official zipimport yt-dlp binaries bundle the matching EJS scripts. Added instrumentation assertions so CI fails if the wrapper stops configuring the packaged QuickJS runtime or its native file disappears.
+- Corrected the YouTube JS-runtime assumption: HOLEN already uses `youtubedl-android 0.18.1`, whose library bundles QuickJS `2025-04-26` and automatically supplies `--js-runtimes quickjs:<native-path>` on every yt-dlp execution. Added instrumentation assertions so CI fails if the wrapper stops configuring the packaged QuickJS runtime or its native file disappears; Android CI run `33573354344` passed.
+- Added Android yt-dlp failure guidance for a current high-frequency failure family: `Requested format is not available` now tells the user to re-analyze and select an actually available format instead of exposing raw yt-dlp text. Region-restricted and generic unavailable-media failures now also get distinct actionable guidance.
 
 ## In progress
-- Validate the new QuickJS runtime-wiring assertions in Android CI. This proves packaging/command wiring without relying on public YouTube network behavior.
-- After that, investigate representative YouTube extractor failures only if they reproduce with the already-configured QuickJS runtime; do not add Deno/Node or duplicate JS-runtime dependencies unless the existing upstream-supported path is proven insufficient.
+- Validate the new unavailable-format/media failure classification and tests in Android CI. No downloader parameters or format-selection policy changed; this is error interpretation only.
+- After validation, inspect whether HOLEN's saved format IDs can become stale between analysis and download often enough to justify an automatic one-time re-analysis/remap. Do not silently substitute quality without explicit, tested selection rules.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -36,7 +37,8 @@
 - Transfer run `33553165159`: verify job passed, instrumentation failed because debug localhost cleartext was initially blocked; no transfer timing from this run is valid evidence.
 - Repaired transfer run `33558047759`: verify and instrumentation passed; artifact metadata still omitted the transfer values.
 - Fail-closed transfer run `33563442686`: Android verification and instrumentation passed; `transfer_fresh_ms=364` for 64 MiB and `transfer_resume_ms=160` for the remaining 32 MiB after a real `Range`/206 resume.
-- QuickJS runtime-wiring instrumentation is awaiting the Android CI run triggered by commit `bdae938e`.
+- QuickJS runtime-wiring run `33573354344`: Android verification and instrumentation passed.
+- Unavailable-format/media classification: JVM/Android CI is pending for commits `d9630563` and `f3e4b3a5`.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -44,6 +46,7 @@
 - yt-dlp process launch remains structurally expensive under youtubedl-android because each execute call starts a fresh packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without representative-device evidence and a compatibility plan.
 - YouTube's challenge behavior continues to evolve upstream. The previously suspected missing-runtime problem does not apply to HOLEN's current wrapper because QuickJS is already packaged/configured; future failures must be reproduced before attributing them to JS challenge support.
 - The QuickJS instrumentation verifies wrapper command wiring and packaged native-file presence, not a live YouTube challenge, deliberately avoiding flaky public-network CI.
+- `Requested format is not available` can mean the previously selected format disappeared, yt-dlp extraction exposed fewer formats, or source-side access changed. The new message intentionally recommends re-analysis/update rather than pretending one cause is certain.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
 - The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise public HTTPS, mobile radios, server throttling, or end-to-end yt-dlp/aria2 behavior.
