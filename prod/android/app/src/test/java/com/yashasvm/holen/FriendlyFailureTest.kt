@@ -34,6 +34,27 @@ class FriendlyFailureTest {
     }
 
     @Test
+    fun requestedFormatFailureTellsUserToReanalyzeInsteadOfShowingRawYtDlpError() {
+        val result = friendlyFailure(
+            IllegalStateException("ERROR: [youtube] abc123: Requested format is not available. Use --list-formats for a list of available formats"),
+        )
+
+        assertTrue(result.contains("Re-analyze"))
+        assertTrue(result.contains("available format"))
+        assertTrue(result.contains("update the media engine"))
+    }
+
+    @Test
+    fun unavailableAndRegionalMediaFailuresAreActionable() {
+        val unavailable = friendlyFailure(IllegalStateException("ERROR: [youtube] abc123: Video unavailable"))
+        val regional = friendlyFailure(IllegalStateException("ERROR: This video is not available in your country"))
+
+        assertTrue(unavailable.contains("currently unavailable"))
+        assertTrue(unavailable.contains("Re-analyze"))
+        assertTrue(regional.contains("current region"))
+    }
+
+    @Test
     fun pendingEngineResetRequiresRestartInsteadOfNetworkRetry() {
         val result = friendlyFailure(
             IOException("Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."),
