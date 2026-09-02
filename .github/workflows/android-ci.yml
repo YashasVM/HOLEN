@@ -147,17 +147,17 @@ jobs:
           emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           working-directory: prod/android
           script: |
+            set -euo pipefail
             adb shell settings put global window_animation_scale 1.0
             adb shell settings put global transition_animation_scale 1.0
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
             mkdir -p app/build/reports/startup
-            adb logcat -c
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.AppStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenAppStartupTiming=true
-            adb logcat -d -s HOLENAppStartup:I '*:S' | tee app/build/reports/startup/app-startup-timing.txt
+            adb shell run-as com.yashasvm.holen cat files/app-startup-timing.txt | tr -d '\r' | tee app/build/reports/startup/app-startup-timing.txt
             test -s app/build/reports/startup/app-startup-timing.txt
-            grep -q 'app_home_ms=' app/build/reports/startup/app-startup-timing.txt
+            grep -q '^app_home_ms=[0-9][0-9]*$' app/build/reports/startup/app-startup-timing.txt
             cat app/build/reports/startup/app-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
             adb logcat -c
@@ -193,13 +193,13 @@ jobs:
           test -s "$report"
           test -s "$app_report"
           timing_line=$(grep 'youtube_dl_ms=' "$report" | tail -n 1)
-          app_line=$(grep 'app_home_ms=' "$app_report" | tail -n 1)
+          app_line=$(grep '^app_home_ms=' "$app_report" | tail -n 1)
           for key in youtube_dl_ms ffmpeg_ms aria2c_ms post_prewarm_tool_reentry_ms process_launch_ms local_extract_ms local_extract_overhead_ms storage_write_ms storage_fsync_ms transfer_fresh_ms transfer_resume_ms; do
             value=$(printf '%s\n' "$timing_line" | sed -n "s/.*${key}=\([0-9][0-9]*\).*/\1/p")
             [[ "$value" =~ ^[0-9]+$ ]] || { echo "Missing numeric $key in startup timing report." >&2; exit 1; }
             echo "$key=$value" >> "$GITHUB_OUTPUT"
           done
-          app_home_ms=$(printf '%s\n' "$app_line" | sed -n 's/.*app_home_ms=\([0-9][0-9]*\).*/\1/p')
+          app_home_ms=$(printf '%s\n' "$app_line" | sed -n 's/^app_home_ms=\([0-9][0-9]*\)$/\1/p')
           [[ "$app_home_ms" =~ ^[0-9]+$ ]] || { echo "Missing numeric app_home_ms in app startup timing report." >&2; exit 1; }
           echo "app_home_ms=$app_home_ms" >> "$GITHUB_OUTPUT"
 
@@ -207,7 +207,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: HOLEN-android-instrumentation-home-${{ steps.startup_timing.outputs.app_home_ms }}ms-ytdl-${{ steps.startup_timing.outputs.youtube_dl_ms }}ms-ffmpeg-${{ steps.startup_timing.outputs.ffmpeg_ms }}ms-aria2-${{ steps.startup_timing.outputs.aria2c_ms }}ms-reentry-${{ steps.startup_timing.outputs.post_prewarm_tool_reentry_ms }}ms-proc-${{ steps.startup_timing.outputs.process_launch_ms }}ms-local-${{ steps.startup_timing.outputs.local_extract_ms }}ms-overhead-${{ steps.startup_timing.outputs.local_extract_overhead_ms }}ms-write64m-${{ steps.startup_timing.outputs.storage_write_ms }}ms-fsync-${{ steps.startup_timing.outputs.storage_fsync_ms }}ms-fresh64m-${{ steps.startup_timing.outputs.transfer_fresh_ms }}ms-resume32m-${{ steps.startup_timing.outputs.transfer_resume_ms }}ms
+          name: HOLEN-android-instrumentation-${{ github.run_id }}
           path: |
             prod/android/app/build/reports/androidTests/connected/**
             prod/android/app/build/outputs/androidTest-results/connected/**
