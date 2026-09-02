@@ -18,6 +18,26 @@ fun JobStatus.canTransitionTo(next: JobStatus): Boolean = when (this) {
     JobStatus.COMPLETED -> false
 }
 
+/**
+ * Limits the explicit no-cookie recovery action to failures which already tell the user that
+ * cookie isolation is a reasonable diagnostic. Account-gated and age-gated failures deliberately
+ * never qualify, and direct-file HTTP failures must not be conflated with yt-dlp authentication.
+ */
+fun shouldOfferCookieIsolationRetry(
+    sourceKind: SourceKind,
+    status: JobStatus,
+    errorMessage: String?,
+    cookiesConfigured: Boolean,
+): Boolean {
+    if (!cookiesConfigured || sourceKind != SourceKind.MEDIA || status != JobStatus.FAILED) return false
+    val failure = errorMessage?.lowercase().orEmpty()
+    if (!failure.contains("retry once without cookies")) return false
+    return !failure.contains("signed-in account") &&
+        !failure.contains("age verification") &&
+        !failure.contains("members-only") &&
+        !failure.contains("members only")
+}
+
 fun friendlyFailure(error: Throwable): String {
     val message = error.message.orEmpty()
     val normalized = message.lowercase()
