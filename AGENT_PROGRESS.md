@@ -12,7 +12,7 @@
 - End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
 
 ## In progress
-- Establish a defensible app-startup baseline before changing startup behavior. Android CI `33663898765` showed the normal verify path still passes, but the instrumentation job failed before producing any startup report artifact. The launch-to-home probe had been placed after the older engine timing probe in one monolithic emulator script, so an earlier instrumentation failure could prevent `app_home_ms` from being measured at all. Commit `224553a7` now runs the rendered-home probe first and persists its report before the engine/full instrumentation work. This does not hide later failures; it isolates evidence collection so the next run can tell whether app startup itself is healthy. No production startup optimization has been made or claimed yet.
+- Establish a defensible app-startup baseline before changing startup behavior. Android CI `33670471626` still passed the full verify job but failed instrumentation before a usable `app_home_ms` artifact was retained. The rendered-home probe now runs first, and commits `bf49d52c` / `29383db2` remove the fragile logcat handoff: the test writes `app_home_ms` into the debug app's files directory, CI reads it back with `run-as`, validates the exact numeric format, and uploads instrumentation/startup reports under a stable run-specific artifact name even when a later instrumentation stage fails. No production startup optimization has been made or claimed yet.
 
 ## Validation / performance evidence
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -21,6 +21,7 @@
 - Storage probe `33546570973`: 64 MiB write `26 ms`, final `fsync` `71 ms`.
 - Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB HTTP Range resume `160 ms`. This does not justify changing the 256 KiB copy buffer or worker count.
 - QuickJS wiring `33573354344`, cookie expiry `33585060641`, cookie-isolation eligibility `33601355781`, persisted auth policy `33606011186`, execution wiring `33611780875`, explicit requeue `33622415323`, tightened exclusions `33627146686`, production UI `33633640767`, and final end-to-end UI run `33651634112` all passed their relevant Android CI validation.
+- Startup harness attempts `33663898765` and `33670471626` did not yield a defensible launch-to-home baseline; do not treat either as performance evidence.
 
 ## Known risks / review points
 - Hosted-emulator timings guide optimization but are not representative ARM-device performance claims; confirm material gains on representative hardware before advertising speedups.
