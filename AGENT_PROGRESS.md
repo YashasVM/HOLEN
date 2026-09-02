@@ -23,9 +23,10 @@
 - Corrected the YouTube JS-runtime assumption: HOLEN already uses `youtubedl-android 0.18.1`, whose library bundles QuickJS `2025-04-26` and automatically supplies `--js-runtimes quickjs:<native-path>` on every yt-dlp execution. Added instrumentation assertions so CI fails if the wrapper stops configuring the packaged QuickJS runtime or its native file disappears; Android CI run `33573354344` passed.
 - Added Android yt-dlp failure guidance for `Requested format is not available`, region restrictions, and generic unavailable-media failures; Android CI run `33577332071` passed.
 - Closed the proposed stale-format-ID recovery investigation: HOLEN stores semantic choices (`BEST_MP4`, `MP4_1080`, `MP4_720`, audio variants), not yt-dlp format IDs. yt-dlp resolves the selector against current formats at download time, so there is no persisted stale format ID to remap. Automatic quality substitution would therefore add behavior/risk without solving the identified failure mode.
+- Hardened imported cookie handling so a syntactically valid file containing only expired persistent cookies is no longer treated as configured or passed to yt-dlp. Session cookies (expiry `0`) remain valid and mixed files remain usable while at least one cookie is current.
 
 ## In progress
-- Investigate the next reproduced Android yt-dlp reliability gap rather than adding speculative format fallback. Priority is authenticated/cookie and extractor failure behavior that can be demonstrated against current yt-dlp output.
+- Validate the expired-cookie guard in Android CI, then continue authenticated-download reliability work. Current upstream yt-dlp guidance says YouTube account cookies should be used only when necessary because they rotate and account-authenticated extraction has additional risk; do not change HOLEN's cookie application policy until a safe per-request strategy is demonstrated.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -39,6 +40,7 @@
 - Fail-closed transfer run `33563442686`: Android verification and instrumentation passed; `transfer_fresh_ms=364` for 64 MiB and `transfer_resume_ms=160` for the remaining 32 MiB after a real `Range`/206 resume.
 - QuickJS runtime-wiring run `33573354344`: Android verification and instrumentation passed.
 - Unavailable-format/media classification run `33577332071`: Android verification passed for the new failure guidance and tests.
+- Expired-cookie guard: JVM coverage added for fully expired, session, and mixed cookie files; Android CI run `33585060641` is pending completion.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -47,6 +49,7 @@
 - YouTube's challenge behavior continues to evolve upstream. The previously suspected missing-runtime problem does not apply to HOLEN's current wrapper because QuickJS is already packaged/configured; future failures must be reproduced before attributing them to JS challenge support.
 - The QuickJS instrumentation verifies wrapper command wiring and packaged native-file presence, not a live YouTube challenge, deliberately avoiding flaky public-network CI.
 - `Requested format is not available` can mean current extractor output no longer satisfies the selected semantic quality/container constraints or source-side access changed. HOLEN intentionally does not silently substitute a different user-selected quality.
+- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. HOLEN still applies a configured cookie file to yt-dlp requests; changing that behavior requires a per-request fallback design that cannot silently reduce format quality or break authenticated media.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
 - The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise public HTTPS, mobile radios, server throttling, or end-to-end yt-dlp/aria2 behavior.
