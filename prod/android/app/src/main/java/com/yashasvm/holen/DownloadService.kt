@@ -39,12 +39,12 @@ class DownloadService : Service() {
     private lateinit var store: HolenStore
     private lateinit var outputStore: OutputStore
     private lateinit var engine: YtDlpEngine
+    private lateinit var authenticationStore: JobAuthenticationStore
     private val directDownloaders = ConcurrentHashMap<String, DirectDownloader>()
     private val activeJobIds = ConcurrentHashMap.newKeySet<String>()
     private val notificationUpdateLock = Any()
     private val notificationStates = mutableMapOf<String, NotificationState>()
     private var primaryNotificationJobId: String? = null
-
 
     @Volatile
     private var recovered = false
@@ -61,6 +61,7 @@ class DownloadService : Service() {
         store = HolenStore.get(this)
         outputStore = OutputStore(this)
         engine = YtDlpEngine.get(this)
+        authenticationStore = JobAuthenticationStore(this)
         createNotificationChannel()
         scope.launch { outputStore.cleanOrphanStaging() }
     }
@@ -206,7 +207,13 @@ class DownloadService : Service() {
                 if (directDownloader != null) {
                     directDownloader.downloadWithRetry(job, directory, { shouldAbort(job.id) }, reportProgress)
                 } else {
-                    engine.download(job, directory, { shouldAbort(job.id) }, reportProgress)
+                    engine.download(
+                        job = job,
+                        directory = directory,
+                        authenticationPolicy = authenticationStore.policy(job.id),
+                        isCancelled = { shouldAbort(job.id) },
+                        onProgress = reportProgress,
+                    )
                 }
             } finally {
                 stagingProgress.stop()
@@ -236,6 +243,7 @@ class DownloadService : Service() {
                 error("Download cancelled")
             }
             outputStore.confirmPublication(job.id)
+            authenticationStore.clear(job.id)
             runCatching { showCompletionNotification(job, published) }
             publishedOutput = null
         } catch (error: Throwable) {
@@ -281,6 +289,7 @@ class DownloadService : Service() {
                     val status = store.get(jobId)?.status
                     if (completed > 0 || status == JobStatus.COMPLETED) {
                         outputStore.confirmPublication(jobId)
+                        authenticationStore.clear(jobId)
                     } else {
                         val deleted = runCatching { outputStore.deleteDocument(published.uri) }
                             .getOrDefault(false)
@@ -689,8 +698,6 @@ private class StagingProgressSampler(
         val elapsed = (now - previousAt).takeIf { previousAt > 0L && it > 0L }
         val total = knownTotalBytes
         val measuredPercent = total?.let {
-            // A size estimate can be slightly low, but the media process has not
-            // completed while a staging file is still growing.
             ((bytes * 100L / it.coerceAtLeast(1L)).toInt()).coerceIn(0, 99)
         } ?: floorPercent
         onProgress(
