@@ -203,9 +203,6 @@ class YtDlpEngine private constructor(private val context: Context) {
      */
     suspend fun warmup() = withContext(Dispatchers.IO) {
         operationGate.withOperation { ensureInitialized(needsFfmpeg = false) }
-        // A stable update check is intentionally rate-limited and runs only from the
-        // non-interactive warm-up path. withMaintenance waits for any active transfer
-        // instead of terminating it, so an update can never interrupt a download.
         if (isEngineCheckDue(preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L))) {
             runCatching { updateStable() }
         }
@@ -236,6 +233,7 @@ class YtDlpEngine private constructor(private val context: Context) {
     suspend fun download(
         job: DownloadJob,
         directory: File,
+        authenticationPolicy: JobAuthenticationPolicy = JobAuthenticationPolicy.CONFIGURED,
         isCancelled: () -> Boolean = { false },
         onProgress: (TransferProgress) -> Unit,
     ): StagedDownload = withContext(Dispatchers.IO) {
@@ -252,28 +250,22 @@ class YtDlpEngine private constructor(private val context: Context) {
                 )
                 val request = YoutubeDLRequest(job.sourceUrl).apply {
                     addOption("--ignore-config")
-                    addCommands(cookieStore.cookieArguments())
+                    if (authenticationPolicy.usesConfiguredCookies) {
+                        addCommands(cookieStore.cookieArguments())
+                    }
                     addCommands(downloadArguments(job.format))
                     addCommands(
                         listOf(
                             "--continue",
-                            // Keep a readable title while yt-dlp still strips characters
-                            // which are unsafe for the destination document provider.
                             "--windows-filenames",
                             "--no-overwrites",
                             "--embed-metadata",
-                            // Keep aria2c for ordinary HTTP transfers, but never hand HLS/DASH
-                            // fragment manifests to it. This is safe on patched yt-dlp and also
-                            // protects the bundled engine if a stable update has not run yet.
                             "--downloader", "libaria2c.so",
                             "--downloader", "dash,m3u8:native",
                             "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
                             "--socket-timeout", "20",
-                            // --print normally makes yt-dlp quiet. Request progress explicitly
-                            // and use a machine-readable template so the wrapper callback does
-                            // not depend on yt-dlp's human-facing wording.
                             "--progress",
                             "--progress-template",
                             "download:$PROGRESS_MARKER %(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s",
@@ -286,9 +278,6 @@ class YtDlpEngine private constructor(private val context: Context) {
                 }
                 var lastUpdate = 0L
                 var lastProgress: TransferProgress? = null
-                // yt-dlp writes progress to stderr. The wrapper only delivers its
-                // stdout stream to the callback, so merge stderr before launching
-                // the process or no live progress ever reaches the app.
                 val response = YoutubeDL.execute(request, job.id, true) { wrapperPercent, wrapperEta, line ->
                     if (isCancelled()) {
                         YoutubeDL.destroyProcessById(job.id)
@@ -300,9 +289,6 @@ class YtDlpEngine private constructor(private val context: Context) {
                             wrapperEta = wrapperEta,
                             previous = lastProgress,
                         )
-                        // Do not allow a noisy non-progress line to consume the one-second
-                        // window before the actual progress record arrives.  Real progress is
-                        // still capped to four UI/DB writes per second.
                         if (progress != null && (now - lastUpdate >= 250 || progress.percent >= 100)) {
                             if (progress != lastProgress || progress.percent >= 100) {
                                 onProgress(progress)
@@ -334,7 +320,6 @@ class YtDlpEngine private constructor(private val context: Context) {
     fun createAnalysisProcessId(): String =
         "$ANALYSIS_PROCESS_PREFIX${analysisProcessSequence.incrementAndGet()}"
 
-    /** Cancels only the metadata request owned by the caller. */
     fun cancelAnalysis(processId: String) {
         if (processId in activeAnalysisIds) cancel(processId)
     }
@@ -421,10 +406,6 @@ class YtDlpEngine private constructor(private val context: Context) {
         }
     }
 
-    /**
-     * The wrapper extracts Python, yt-dlp, FFmpeg, and aria2 into this directory. Clearing only
-     * yt-dlp leaves a broken runtime behind, so recovery must remove all extraction markers too.
-     */
     private fun clearRuntimeLocked(requiresRestart: Boolean) {
         File(context.noBackupFilesDir, YoutubeDL.baseName).deleteRecursively()
         context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
@@ -590,8 +571,6 @@ class YtDlpEngine private constructor(private val context: Context) {
             }
 
             val videoOnly = matching.filter { it.video && !it.audio }.maxOfOrNull(Candidate::bytes)
-            // Audio-only streams never satisfy a video target's match test, so
-            // read them from the full candidate set.
             val audioOnly = candidates.map { it.first }
                 .filter { it.audio && !it.video }
                 .maxOfOrNull(Candidate::bytes)
