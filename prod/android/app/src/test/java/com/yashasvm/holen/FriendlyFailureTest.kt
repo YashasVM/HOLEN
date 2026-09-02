@@ -1,6 +1,7 @@
 package com.yashasvm.holen
 
 import java.io.IOException
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,6 +47,73 @@ class FriendlyFailureTest {
         assertTrue(result.contains("retry once without cookies"))
         assertTrue(result.contains("before changing quality"))
         assertTrue(result.contains("update the media engine"))
+    }
+
+    @Test
+    fun cookieIsolationRetryIsOnlyOfferedForEligibleMediaFailures() {
+        val formatFailure = friendlyFailure(
+            IllegalStateException("ERROR: [youtube] abc123: Requested format is not available"),
+        )
+        val forbidden = friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden"))
+        val ageRestricted = friendlyFailure(IllegalStateException("ERROR: This video is age-restricted"))
+        val loginRequired = friendlyFailure(IllegalStateException("ERROR: Login required"))
+
+        assertTrue(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.FAILED,
+                formatFailure,
+                cookiesConfigured = true,
+            ),
+        )
+        assertTrue(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.FAILED,
+                forbidden,
+                cookiesConfigured = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.DIRECT_FILE,
+                JobStatus.FAILED,
+                forbidden,
+                cookiesConfigured = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.QUEUED,
+                forbidden,
+                cookiesConfigured = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.FAILED,
+                forbidden,
+                cookiesConfigured = false,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.FAILED,
+                ageRestricted,
+                cookiesConfigured = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.FAILED,
+                loginRequired,
+                cookiesConfigured = true,
+            ),
+        )
     }
 
     @Test
