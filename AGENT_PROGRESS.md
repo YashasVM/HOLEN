@@ -12,7 +12,7 @@
 - End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
 
 ## In progress
-- Establish a defensible app-startup baseline before changing startup behavior. The repeated instrumentation failures were traced to the pinned ReactiveCircus emulator runner: it parses a multiline `script:` into separate one-line commands and executes each with a fresh `sh -c`, so shell functions, traps, and state cannot survive between YAML lines. Commits `8da9e653` and `9b3cbe06` moved the complete instrumentation/timing flow into `prod/android/scripts/run-instrumentation-ci.sh` and changed the runner input to a single `bash scripts/run-instrumentation-ci.sh` command. Android CI `33692771383` is validating the corrected stateful harness. No production startup optimization has been made or claimed yet.
+- Establish a defensible app-startup baseline before changing startup behavior. The pinned ReactiveCircus emulator runner's multiline-script behavior was fixed by moving the complete flow into `prod/android/scripts/run-instrumentation-ci.sh` and invoking it as one Bash command. Android CI `33692771383` then reached the stateful script but still failed in instrumentation while the normal verify job remained green. Commit `dfbf373e` now records the exact failing stage, preserves each Gradle invocation's stdout in the uploaded report, and exposes concise failure diagnostics in the Actions step summary. No production startup optimization has been made or claimed yet.
 
 ## Validation / performance evidence
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -21,7 +21,7 @@
 - Storage probe `33546570973`: 64 MiB write `26 ms`, final `fsync` `71 ms`.
 - Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB HTTP Range resume `160 ms`. This does not justify changing the 256 KiB copy buffer or worker count.
 - QuickJS wiring `33573354344`, cookie expiry `33585060641`, cookie-isolation eligibility `33601355781`, persisted auth policy `33606011186`, execution wiring `33611780875`, explicit requeue `33622415323`, tightened exclusions `33627146686`, production UI `33633640767`, and final end-to-end UI run `33651634112` all passed their relevant Android CI validation.
-- Startup harness attempts through `33687578045` have not yet yielded a defensible launch-to-home baseline. Its verify job remained green (lint/tests/build, release APK assembly, and 16 KB verification); the remaining failure was isolated to the runner-script execution model, not evidence of a production startup regression.
+- Startup harness attempts through `33692771383` have not yet yielded a defensible launch-to-home baseline. Run `33692771383` confirmed lint/tests/build, release APK assembly, and 16 KB verification remain green; only instrumentation failed.
 
 ## Known risks / review points
 - Hosted-emulator timings guide optimization but are not representative ARM-device performance claims; confirm material gains on representative hardware before advertising speedups.
