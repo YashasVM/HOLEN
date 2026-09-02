@@ -10,4 +10,8 @@ package com.yashasvm.holen
 enum class JobAuthenticationPolicy {
     CONFIGURED,
     WITHOUT_COOKIES,
+    ;
+
+    val usesConfiguredCookies: Boolean
+        get() = this == CONFIGURED
 }
