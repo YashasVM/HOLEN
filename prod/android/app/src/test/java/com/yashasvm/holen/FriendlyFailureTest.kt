@@ -57,6 +57,7 @@ class FriendlyFailureTest {
         val forbidden = friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden"))
         val ageRestricted = friendlyFailure(IllegalStateException("ERROR: This video is age-restricted"))
         val loginRequired = friendlyFailure(IllegalStateException("ERROR: Login required"))
+        val membersOnly = friendlyFailure(IllegalStateException("ERROR: This video is members-only"))
 
         assertTrue(
             shouldOfferCookieIsolationRetry(
@@ -93,6 +94,14 @@ class FriendlyFailureTest {
         assertFalse(
             shouldOfferCookieIsolationRetry(
                 SourceKind.MEDIA,
+                JobStatus.CANCELLED,
+                forbidden,
+                cookiesConfigured = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
                 JobStatus.FAILED,
                 forbidden,
                 cookiesConfigured = false,
@@ -111,6 +120,14 @@ class FriendlyFailureTest {
                 SourceKind.MEDIA,
                 JobStatus.FAILED,
                 loginRequired,
+                cookiesConfigured = true,
+            ),
+        )
+        assertFalse(
+            shouldOfferCookieIsolationRetry(
+                SourceKind.MEDIA,
+                JobStatus.FAILED,
+                membersOnly,
                 cookiesConfigured = true,
             ),
         )
