@@ -30,10 +30,10 @@
 - Wired persisted per-job authentication policy into Android media download execution. `CONFIGURED` remains the default, while `WITHOUT_COOKIES` omits cookie arguments only for that job. Successful completion/recovery clears the sidecar state. Android CI run `33611780875` and generic CI run `33611780956` passed.
 - Wired the explicit failed-job requeue path so `WITHOUT_COOKIES` is persisted before queueing, ordinary Retry restores `CONFIGURED`, failed requeue rolls the sidecar back, and history/file removal prunes stale policy state. Android CI run `33622415323` passed.
 - Tightened the no-cookie action eligibility tests to explicitly reject cancelled and members-only jobs in addition to direct-file, non-failed, no-cookie, age-restricted, and login-required cases. Android CI run `33627146686` passed.
-- Exposed `Retry without cookies` on Android failed-job cards using the same validated eligibility predicate; ordinary Retry remains available and restores configured-cookie identity. The action never appears for cancelled jobs and does not alter the selected download format.
+- Exposed `Retry without cookies` on Android failed-job cards using the same validated eligibility predicate; ordinary Retry remains available and restores configured-cookie identity. The action never appears for cancelled jobs and does not alter the selected download format. Android CI run `33633640767` passed.
 
 ## In progress
-- Android CI run `33633640767` is validating the final Compose wiring for the guarded `Retry without cookies` action. The production diff is intentionally limited to the job-card visibility/callback wiring and a deterministic semantics tag for UI-level testing.
+- Added focused Android instrumentation coverage that seeds an eligible public-media failure, an account-gated failure, and a cancelled job, then asserts the `Retry without cookies` semantics action appears only for the eligible job. Android CI run `33639203889` is validating this end-to-end UI proof.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -54,7 +54,8 @@
 - Persisted policy execution run `33611780875`: Android verification, 16 KB native-library compatibility, ARM64 test APK assembly/upload, and connected instrumentation all passed; generic CI `33611780956` also passed.
 - Explicit no-cookie requeue run `33622415323`: Android CI passed, validating durable policy-before-requeue behavior and cleanup before the UI action is exposed.
 - Tightened action-eligibility run `33627146686`: Android CI passed with explicit cancelled and members-only exclusion coverage on top of the existing eligibility tests.
-- Guarded Compose action run `33633640767`: in progress at the latest check; do not treat the UI wiring as fully validated until it completes successfully.
+- Guarded Compose action run `33633640767`: Android CI passed for the final production visibility/callback wiring.
+- Guarded action UI-instrumentation run `33639203889`: queued at the latest check; do not treat the new end-to-end UI assertion as validated until it completes successfully.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
