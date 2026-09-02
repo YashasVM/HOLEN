@@ -24,10 +24,10 @@
 - Added Android yt-dlp failure guidance for `Requested format is not available`, region restrictions, and generic unavailable-media failures; Android CI run `33577332071` passed.
 - Closed the proposed stale-format-ID recovery investigation: HOLEN stores semantic choices (`BEST_MP4`, `MP4_1080`, `MP4_720`, audio variants), not yt-dlp format IDs. yt-dlp resolves the selector against current formats at download time, so there is no persisted stale format ID to remap. Automatic quality substitution would therefore add behavior/risk without solving the identified failure mode.
 - Hardened imported cookie handling so a syntactically valid file containing only expired persistent cookies is no longer treated as configured or passed to yt-dlp. Session cookies (expiry `0`) remain valid and mixed files remain usable while at least one cookie is current; Android CI run `33585060641` passed.
-- Rejected automatic "retry public YouTube media without cookies" behavior for now. Upstream documents cookies as necessary for account-gated content but also has real reports where authenticated extraction exposes fewer public formats. An automatic identity switch could therefore change available quality/access silently. Any fallback should be explicit or proven to preserve the requested media constraints.
+- Rejected silent automatic cookie dropping. Upstream yt-dlp documents YouTube cookies as necessary mainly for account-gated content and warns that account use carries extra risk; real upstream reports also show authenticated extraction can expose fewer public formats. HOLEN now gives explicit cookie-isolation guidance on extractor HTTP 401/403 and requested-format failures instead of silently changing identity or quality.
 
 ## In progress
-- Continue authenticated-download reliability by designing a transparent Android-only cookie fallback/diagnostic path that lets users retry public YouTube media without cookies when cookie-backed extraction fails, while preserving cookie-backed access for private/age-restricted/members-only media and avoiding silent quality substitution.
+- Continue authenticated-download reliability by turning the new cookie-isolation guidance into a persisted Android-only “retry without cookies” path. The retry must survive process/background-service restarts, preserve the selected semantic format, and never affect private/age-restricted/members-only jobs unless the user explicitly chooses it.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -42,6 +42,7 @@
 - QuickJS runtime-wiring run `33573354344`: Android verification and instrumentation passed.
 - Unavailable-format/media classification run `33577332071`: Android verification passed for the new failure guidance and tests.
 - Expired-cookie guard run `33585060641`: Android verification passed with JVM coverage for fully expired, session, and mixed cookie files.
+- Cookie-isolation guidance (`4940a534`, `0082080d`): CI pending; JVM coverage now asserts that extractor 403 and requested-format failures preserve account-access guidance while explicitly suggesting a one-time no-cookie retry for public media.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -50,7 +51,7 @@
 - YouTube's challenge behavior continues to evolve upstream. The previously suspected missing-runtime problem does not apply to HOLEN's current wrapper because QuickJS is already packaged/configured; future failures must be reproduced before attributing them to JS challenge support.
 - The QuickJS instrumentation verifies wrapper command wiring and packaged native-file presence, not a live YouTube challenge, deliberately avoiding flaky public-network CI.
 - `Requested format is not available` can mean current extractor output no longer satisfies the selected semantic quality/container constraints or source-side access changed. HOLEN intentionally does not silently substitute a different user-selected quality.
-- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. HOLEN still applies a configured cookie file to yt-dlp requests. Automatically dropping cookies is also risky because it can break account-gated media or change the exposed format set; prefer an explicit/diagnostic retry path unless equivalent output can be proven.
+- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. HOLEN still applies a configured cookie file to yt-dlp requests. The new error text is only guidance; the actual persisted explicit no-cookie retry still needs implementation before this recovery becomes one-tap.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
 - The localhost transfer probe intentionally isolates stream/copy/resume cost and does not exercise public HTTPS, mobile radios, server throttling, or end-to-end yt-dlp/aria2 behavior.
