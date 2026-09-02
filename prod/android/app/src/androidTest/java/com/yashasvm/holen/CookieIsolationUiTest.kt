@@ -2,8 +2,10 @@ package com.yashasvm.holen
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
@@ -68,12 +70,8 @@ class CookieIsolationUiTest {
 
     @Test
     fun retryWithoutCookiesIsVisibleOnlyForEligibleFailedMedia() {
-        composeRule.waitUntil(5_000) {
-            runCatching {
-                composeRule.onNodeWithTag("retry-without-cookies-$eligibleId")
-                    .assertIsDisplayed()
-            }.isSuccess
-        }
+        composeRule.onNodeWithTag("home-active")
+            .performScrollToNode(hasTestTag("job-$eligibleId"))
 
         composeRule.onNodeWithTag("retry-without-cookies-$eligibleId").assertIsDisplayed()
         composeRule.onNodeWithTag("retry-without-cookies-$accountGatedId").assertDoesNotExist()
