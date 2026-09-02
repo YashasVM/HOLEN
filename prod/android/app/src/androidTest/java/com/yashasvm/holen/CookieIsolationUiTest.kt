@@ -34,11 +34,13 @@ class CookieIsolationUiTest {
                 )
                 val cookieStore = CookieStore(context)
                 val store = HolenStore.get(context)
-                preferences.edit()
-                    .clear()
-                    .putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, true)
-                    .putInt(HolenStore.PREF_ONBOARDING_VERSION, HolenStore.ONBOARDING_VERSION)
-                    .apply()
+                check(
+                    preferences.edit()
+                        .clear()
+                        .putBoolean(HolenStore.PREF_ONBOARDING_COMPLETED, true)
+                        .putInt(HolenStore.PREF_ONBOARDING_VERSION, HolenStore.ONBOARDING_VERSION)
+                        .commit(),
+                ) { "Could not seed onboarding state before launching MainActivity" }
                 cookieStore.clear()
                 cookieStore.save(
                     "# Netscape HTTP Cookie File\n" +
@@ -53,7 +55,7 @@ class CookieIsolationUiTest {
                 } finally {
                     runBlocking { seededIds.forEach { store.remove(it) } }
                     cookieStore.clear()
-                    preferences.edit().clear().apply()
+                    preferences.edit().clear().commit()
                 }
             }
         }
