@@ -9,10 +9,10 @@
 - Removed FFmpeg from metadata initialization and prewarm download tooling only after successful FULL analysis.
 - Hardened imported cookies so fully expired persistent-cookie files are not treated as configured.
 - Completed explicit `Retry without cookies` recovery for eligible failed public-media jobs. The per-job authentication policy is durable across process/service restart, ordinary Retry restores configured cookies, account/age/members-only/direct/cancelled jobs are excluded, and stale policy state is cleaned with job/history removal.
-- End-to-end Compose coverage for the guarded no-cookie action is now green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
+- End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
 
 ## In progress
-- Establish a defensible app-startup baseline before changing startup behavior. `AppStartupTimingTest` measures launch-to-rendered-home on the hosted emulator; no startup optimization will be claimed until that probe is validated and produces repeatable evidence.
+- Establish a defensible app-startup baseline before changing startup behavior. The first `AppStartupTimingTest` CI attempt (`33658094654`) did not validate the probe: Android verification passed, instrumentation failed, and inspection showed the workflow never invoked the new test with its required opt-in argument. Commit `910300b1` now runs the probe explicitly, captures `app_home_ms`, and publishes the value in instrumentation artifact metadata. Android CI `33663898765` is validating that corrected harness. No production startup optimization has been made or claimed yet.
 
 ## Validation / performance evidence
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
