@@ -152,9 +152,16 @@ jobs:
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
+            mkdir -p app/build/reports/startup
+            adb logcat -c
+            ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.AppStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenAppStartupTiming=true
+            adb logcat -d -s HOLENAppStartup:I '*:S' | tee app/build/reports/startup/app-startup-timing.txt
+            test -s app/build/reports/startup/app-startup-timing.txt
+            grep -q 'app_home_ms=' app/build/reports/startup/app-startup-timing.txt
+            cat app/build/reports/startup/app-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
+
             adb logcat -c
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EngineStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenStartupTiming=true
-            mkdir -p app/build/reports/startup
             adb logcat -d -s HOLENStartupTiming:I '*:S' | tee app/build/reports/startup/engine-startup-timing.txt
             test -s app/build/reports/startup/engine-startup-timing.txt
             grep -q 'youtube_dl_ms=' app/build/reports/startup/engine-startup-timing.txt
@@ -172,13 +179,6 @@ jobs:
             grep -q 'transfer_resume_offset_bytes=' app/build/reports/startup/engine-startup-timing.txt
             grep -q 'transfer_resume_ms=' app/build/reports/startup/engine-startup-timing.txt
             cat app/build/reports/startup/engine-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
-
-            adb logcat -c
-            ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.AppStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenAppStartupTiming=true
-            adb logcat -d -s HOLENAppStartup:I '*:S' | tee app/build/reports/startup/app-startup-timing.txt
-            test -s app/build/reports/startup/app-startup-timing.txt
-            grep -q 'app_home_ms=' app/build/reports/startup/app-startup-timing.txt
-            cat app/build/reports/startup/app-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
             ./gradlew connectedEmulatorDebugAndroidTest
 
