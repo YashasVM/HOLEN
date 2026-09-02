@@ -36,6 +36,12 @@ fun friendlyFailure(error: Throwable): String {
             "This video needs age verification. Use fresh cookies from an account permitted to watch it, then retry."
         isLoginRequiredFailure(normalized) ->
             "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry."
+        isRequestedFormatUnavailableFailure(normalized) ->
+            "That format is no longer available from the source. Re-analyze the link and choose an available format; update the media engine if the expected quality is missing."
+        isRegionRestrictedFailure(normalized) ->
+            "This media is not available from the source in your current region."
+        isUnavailableMediaFailure(normalized) ->
+            "This media is currently unavailable from the source. Re-analyze the link; if it still plays normally, update the media engine and retry."
         extractorHttpFailure != null -> extractorHttpFailure
         normalized.contains("unsupported") -> "This URL is not supported by the current engine."
         message.startsWith("Network response ", true) -> directHttpFailure(message)
@@ -115,4 +121,25 @@ private fun isLoginRequiredFailure(message: String): Boolean = listOf(
     "members-only",
     "members only",
     "this video is private",
+).any(message::contains)
+
+private fun isRequestedFormatUnavailableFailure(message: String): Boolean = listOf(
+    "requested format is not available",
+    "requested format not available",
+    "requested quality is not available",
+).any(message::contains)
+
+private fun isRegionRestrictedFailure(message: String): Boolean = listOf(
+    "not available in your country",
+    "not available in your region",
+    "geo-restricted",
+    "georestricted",
+).any(message::contains)
+
+private fun isUnavailableMediaFailure(message: String): Boolean = listOf(
+    "video unavailable",
+    "this video is unavailable",
+    "this content isn't available",
+    "this content is not available",
+    "media unavailable",
 ).any(message::contains)
