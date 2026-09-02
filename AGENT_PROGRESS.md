@@ -12,7 +12,7 @@
 - End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
 
 ## In progress
-- Establish a defensible app-startup baseline before changing startup behavior. The first `AppStartupTimingTest` CI attempt (`33658094654`) did not validate the probe: Android verification passed, instrumentation failed, and inspection showed the workflow never invoked the new test with its required opt-in argument. Commit `910300b1` now runs the probe explicitly, captures `app_home_ms`, and publishes the value in instrumentation artifact metadata. Android CI `33663898765` is validating that corrected harness. No production startup optimization has been made or claimed yet.
+- Establish a defensible app-startup baseline before changing startup behavior. Android CI `33663898765` showed the normal verify path still passes, but the instrumentation job failed before producing any startup report artifact. The launch-to-home probe had been placed after the older engine timing probe in one monolithic emulator script, so an earlier instrumentation failure could prevent `app_home_ms` from being measured at all. Commit `224553a7` now runs the rendered-home probe first and persists its report before the engine/full instrumentation work. This does not hide later failures; it isolates evidence collection so the next run can tell whether app startup itself is healthy. No production startup optimization has been made or claimed yet.
 
 ## Validation / performance evidence
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
