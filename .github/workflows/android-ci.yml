@@ -148,12 +148,30 @@ jobs:
           working-directory: prod/android
           script: |
             set -eu
+            mkdir -p app/build/reports/startup
+            collect_instrumentation_diagnostics() {
+              status=$?
+              trap - EXIT
+              diagnostics=app/build/reports/startup/instrumentation-diagnostics.txt
+              {
+                echo "script_exit_status=$status"
+                echo "=== adb devices ==="
+                adb devices -l || true
+                echo "=== target package ==="
+                adb shell dumpsys package com.yashasvm.holen 2>/dev/null | head -n 80 || true
+                echo "=== generated android-test outputs ==="
+                find app/build -path '*androidTest*' -o -path '*androidTests*' 2>/dev/null | sort | tail -n 200 || true
+              } > "$diagnostics" 2>&1
+              adb logcat -d > app/build/reports/startup/instrumentation-logcat.txt 2>&1 || true
+              exit "$status"
+            }
+            trap collect_instrumentation_diagnostics EXIT
+
             adb shell settings put global window_animation_scale 1.0
             adb shell settings put global transition_animation_scale 1.0
             adb shell settings put global animator_duration_scale 1.0
             test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
-            mkdir -p app/build/reports/startup
             ./gradlew connectedEmulatorDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.AppStartupTimingTest -Pandroid.testInstrumentationRunnerArguments.holenAppStartupTiming=true
             adb shell run-as com.yashasvm.holen cat files/app-startup-timing.txt | tr -d '\r' | tee app/build/reports/startup/app-startup-timing.txt
             test -s app/build/reports/startup/app-startup-timing.txt
@@ -212,5 +230,5 @@ jobs:
             prod/android/app/build/reports/androidTests/connected/**
             prod/android/app/build/outputs/androidTest-results/connected/**
             prod/android/app/build/reports/startup/**
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
