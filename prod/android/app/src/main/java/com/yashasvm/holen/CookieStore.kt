@@ -77,15 +77,21 @@ class CookieStore(context: Context) {
 
     companion object {
         const val MAX_BYTES = 1024 * 1024
-        const val ERROR_INVALID = "This does not look like a Netscape cookies.txt file."
+        const val ERROR_INVALID = "This does not look like a valid, unexpired Netscape cookies.txt file."
         const val ERROR_TOO_LARGE = "The cookies file is too large."
         const val ERROR_SAVE = "Cookies could not be saved."
 
         internal fun cookieArguments(file: File?): List<String> =
             file?.let { listOf("--cookies", it.absolutePath) }.orEmpty()
 
+        /**
+         * Syntax alone is not enough for an imported cookie file to be useful. A file containing
+         * only expired persistent cookies would otherwise be shown as configured and passed to
+         * yt-dlp even though it cannot authenticate a request. Session cookies (expiry 0) remain
+         * usable, and a mixed file is accepted as long as at least one cookie is still usable.
+         */
         internal fun validateCookieBytes(bytes: ByteArray): Boolean =
-            inspectCookieBytes(bytes) != null
+            inspectCookieBytes(bytes)?.usableCookies?.let { it > 0 } == true
 
         internal fun inspectCookieBytes(
             bytes: ByteArray,
