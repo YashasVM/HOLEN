@@ -21,6 +21,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val outputStore = OutputStore(application)
     private val engine = YtDlpEngine.get(application)
     private val cookieStore = CookieStore(application)
+    private val jobAuthenticationStore = JobAuthenticationStore(application)
     private val analyzer = SourceAnalyzer(engine)
     private val appUpdateManager = AppUpdateManager(application)
     private val preferences = application.getSharedPreferences(
@@ -320,9 +321,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun retry(job: DownloadJob) {
         viewModelScope.launch {
             runCatching {
-                store.transition(job.id, JobStatus.QUEUED)
+                withContext(Dispatchers.IO) { jobAuthenticationStore.clear(job.id) }
+                check(store.transition(job.id, JobStatus.QUEUED)) {
+                    "The download could not be requeued."
+                }
                 DownloadService.wake(getApplication())
             }.onFailure { mutableError.value = friendlyFailure(it) }
+        }
+    }
+
+    fun retryWithoutCookies(job: DownloadJob) {
+        if (!shouldOfferCookieIsolationRetry(
+                sourceKind = job.sourceKind,
+                status = job.status,
+                errorMessage = job.errorMessage,
+                cookiesConfigured = mutableCookiesConfigured.value,
+            )
+        ) {
+            mutableError.value =
+                "Retry without cookies is only available for failed public media that may be affected by configured cookies."
+            return
+        }
+        viewModelScope.launch {
+            var requeued = false
+            try {
+                withContext(Dispatchers.IO) {
+                    jobAuthenticationStore.set(job.id, JobAuthenticationPolicy.WITHOUT_COOKIES)
+                }
+                requeued = store.transition(job.id, JobStatus.QUEUED)
+                check(requeued) { "The download could not be requeued." }
+                DownloadService.wake(getApplication())
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (!requeued) {
+                    withContext(Dispatchers.IO) { jobAuthenticationStore.clear(job.id) }
+                }
+                mutableError.value = friendlyFailure(error)
+            }
         }
     }
 
@@ -347,7 +382,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearFinished(ids: Set<String>? = null) {
         viewModelScope.launch {
-            store.clearFinished(ids)
+            runCatching {
+                store.clearFinished(ids)
+                val knownJobIds = store.knownJobIds()
+                withContext(Dispatchers.IO) { jobAuthenticationStore.prune(knownJobIds) }
+            }.onFailure { mutableError.value = friendlyFailure(it) }
         }
     }
 
@@ -358,6 +397,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?: error("The saved file location is missing.")
                 if (!outputStore.deleteDocument(uri)) error("The file could not be deleted.")
                 store.remove(job.id)
+                withContext(Dispatchers.IO) { jobAuthenticationStore.clear(job.id) }
             }.onFailure { mutableError.value = friendlyFailure(it) }
         }
     }
