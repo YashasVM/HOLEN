@@ -37,7 +37,7 @@ fun friendlyFailure(error: Throwable): String {
         isLoginRequiredFailure(normalized) ->
             "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry."
         isRequestedFormatUnavailableFailure(normalized) ->
-            "That format is no longer available from the source. Re-analyze the link and choose an available format; update the media engine if the expected quality is missing."
+            "That format is no longer available from the source. Re-analyze the link and choose an available format. If this is public media and cookies are configured, retry once without cookies before changing quality; update the media engine if the expected quality is still missing."
         isRegionRestrictedFailure(normalized) ->
             "This media is not available from the source in your current region."
         isUnavailableMediaFailure(normalized) ->
@@ -91,7 +91,7 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     401, 403 -> if (directFile) {
         "The server denied access (HTTP $status). Check that the link is still valid and that you have access to the file."
     } else {
-        "The source denied access (HTTP $status). The link may have expired or the media may require fresh cookies/account access."
+        "The source denied access (HTTP $status). If this is public media and cookies are configured, retry once without cookies; otherwise refresh the cookies/account access."
     }
     404, 410 -> if (directFile) {
         "The file is no longer available (HTTP $status). Check the link or get a fresh download URL."
