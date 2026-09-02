@@ -31,6 +31,7 @@ class AppStartupTimingTest {
             InstrumentationRegistry.getArguments().getString("holenAppStartupTiming") == "true",
         )
         context = ApplicationProvider.getApplicationContext()
+        context.filesDir.resolve(STARTUP_REPORT_FILE).delete()
         val preferences = context.getSharedPreferences(
             HolenStore.PREFERENCES_NAME,
             Context.MODE_PRIVATE,
@@ -64,12 +65,15 @@ class AppStartupTimingTest {
                     .isNotEmpty()
             }
             val elapsedMs = SystemClock.elapsedRealtime() - startedAt
-            Log.i(LOG_TAG, "app_home_ms=$elapsedMs")
+            val timingLine = "app_home_ms=$elapsedMs"
+            context.filesDir.resolve(STARTUP_REPORT_FILE).writeText("$timingLine\n")
+            Log.i(LOG_TAG, timingLine)
         }
     }
 
     companion object {
         private const val LOG_TAG = "HOLENAppStartup"
+        private const val STARTUP_REPORT_FILE = "app-startup-timing.txt"
         private const val STARTUP_TIMEOUT_MS = 15_000L
     }
 }
