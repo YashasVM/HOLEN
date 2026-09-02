@@ -29,9 +29,11 @@
 - Added a durable per-job authentication-policy sidecar for the explicit no-cookie recovery path. Missing or unknown state fails safe to `CONFIGURED`, `WITHOUT_COOKIES` survives process/service restarts, and stale entries can be pruned without changing the core jobs schema. Android CI run `33606011186` and generic CI run `33606011204` passed.
 - Wired persisted per-job authentication policy into Android media download execution. `CONFIGURED` remains the default, while `WITHOUT_COOKIES` omits cookie arguments only for that job. Successful completion/recovery clears the sidecar state. Android CI run `33611780875` and generic CI run `33611780956` passed.
 - Wired the explicit failed-job requeue path so `WITHOUT_COOKIES` is persisted before queueing, ordinary Retry restores `CONFIGURED`, failed requeue rolls the sidecar back, and history/file removal prunes stale policy state. Android CI run `33622415323` passed.
+- Tightened the no-cookie action eligibility tests to explicitly reject cancelled and members-only jobs in addition to direct-file, non-failed, no-cookie, age-restricted, and login-required cases. Android CI run `33627146686` passed.
+- Exposed `Retry without cookies` on Android failed-job cards using the same validated eligibility predicate; ordinary Retry remains available and restores configured-cookie identity. The action never appears for cancelled jobs and does not alter the selected download format.
 
 ## In progress
-- The final user-facing `Retry without cookies` action remains intentionally hidden until its visibility contract is locked down. JVM coverage now explicitly excludes direct files, queued/cancelled jobs, missing-cookie state, age-restricted, login-required, and members-only failures while allowing only eligible failed public-media errors. Android CI run `33627146686` is validating that tightened boundary before the Compose action is exposed.
+- Android CI run `33633640767` is validating the final Compose wiring for the guarded `Retry without cookies` action. The production diff is intentionally limited to the job-card visibility/callback wiring and a deterministic semantics tag for UI-level testing.
 
 ## Validation
 - Baseline Android CI run `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -51,7 +53,8 @@
 - Persisted authentication-policy run `33606011186`: Android CI passed; generic CI `33606011204` also passed.
 - Persisted policy execution run `33611780875`: Android verification, 16 KB native-library compatibility, ARM64 test APK assembly/upload, and connected instrumentation all passed; generic CI `33611780956` also passed.
 - Explicit no-cookie requeue run `33622415323`: Android CI passed, validating durable policy-before-requeue behavior and cleanup before the UI action is exposed.
-- Tightened action-eligibility run `33627146686`: in progress; adds explicit cancelled and members-only exclusion coverage on top of the existing eligibility tests.
+- Tightened action-eligibility run `33627146686`: Android CI passed with explicit cancelled and members-only exclusion coverage on top of the existing eligibility tests.
+- Guarded Compose action run `33633640767`: in progress at the latest check; do not treat the UI wiring as fully validated until it completes successfully.
 
 ## Known risks
 - A user who performs a successful FULL analysis but never downloads pays the one-time FFmpeg/aria2 extraction cost in the background. Scope is intentionally limited to FULL analysis as the strongest existing download-intent signal.
@@ -60,7 +63,7 @@
 - YouTube's challenge behavior continues to evolve upstream. The previously suspected missing-runtime problem does not apply to HOLEN's current wrapper because QuickJS is already packaged/configured; future failures must be reproduced before attributing them to JS challenge support.
 - The QuickJS instrumentation verifies wrapper command wiring and packaged native-file presence, not a live YouTube challenge, deliberately avoiding flaky public-network CI.
 - `Requested format is not available` can mean current extractor output no longer satisfies the selected semantic quality/container constraints or source-side access changed. HOLEN intentionally does not silently substitute a different user-selected quality.
-- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. Normal jobs still use configured cookies. The explicit no-cookie requeue path is implemented and validated but remains user-inaccessible until the eligibility-gated Compose action is wired.
+- YouTube account cookies rotate and upstream recommends using them only for content that actually needs authentication. Normal jobs still use configured cookies. The explicit no-cookie action is user-driven, uses the validated public-media failure gate, and ordinary Retry restores configured cookies.
 - The authentication-policy sidecar deliberately uses absence as `CONFIGURED`, preserving every existing job and avoiding a database migration for one recovery bit. Successful downloads and user-driven history/file removal clean policy state; a failed no-cookie attempt deliberately retains its policy until the user chooses ordinary Retry, which restores configured cookies.
 - DASH/HLS intentionally use yt-dlp's native fragment downloader for safety, so those protocols do not receive aria2c transfer behavior; ordinary HTTP transfers still use aria2c.
 - Direct-file rate-limit retries intentionally ignore `Retry-After` values above 30 seconds so one of the two download workers is not held for long server cooldowns.
