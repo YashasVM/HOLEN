@@ -18,7 +18,9 @@ class FriendlyFailureTest {
 
     @Test
     fun extractorHttpFailuresAreClassifiedWithoutPretendingRateLimitsAreBotChecks() {
-        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden")).contains("fresh cookies"))
+        val forbidden = friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden"))
+        assertTrue(forbidden.contains("retry once without cookies"))
+        assertTrue(forbidden.contains("refresh the cookies/account access"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 404: Not Found")).contains("no longer available"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("repeated retries"))
@@ -34,13 +36,15 @@ class FriendlyFailureTest {
     }
 
     @Test
-    fun requestedFormatFailureTellsUserToReanalyzeInsteadOfShowingRawYtDlpError() {
+    fun requestedFormatFailureSuggestsCookieIsolationBeforeChangingQuality() {
         val result = friendlyFailure(
             IllegalStateException("ERROR: [youtube] abc123: Requested format is not available. Use --list-formats for a list of available formats"),
         )
 
         assertTrue(result.contains("Re-analyze"))
         assertTrue(result.contains("available format"))
+        assertTrue(result.contains("retry once without cookies"))
+        assertTrue(result.contains("before changing quality"))
         assertTrue(result.contains("update the media engine"))
     }
 
