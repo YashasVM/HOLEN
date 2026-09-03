@@ -83,7 +83,8 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("dlopen failed", true) ||
             message.contains("libpython", true) ->
             "The media engine could not start. Reset or update it in Settings."
-        message.contains("network", true) ||
+        isTransientNetworkFailure(normalized) ||
+            message.contains("network", true) ||
             error is java.io.IOException -> "The network transfer failed. Retry to continue the partial download."
         else -> message.lineSequence()
             .firstOrNull { it.isNotBlank() }
@@ -173,4 +174,18 @@ private fun isPostProcessingFailure(message: String): Boolean = listOf(
     "ffmpeg exited with code",
     "ffmpeg error",
     "conversion failed",
+).any(message::contains)
+
+private fun isTransientNetworkFailure(message: String): Boolean = listOf(
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "remote end closed connection",
+    "broken pipe",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "network is unreachable",
+    "unable to download webpage",
+    "unable to download api page",
+    "ssl eof",
 ).any(message::contains)

@@ -163,4 +163,22 @@ class FriendlyFailureTest {
         assertFalse(ffmpegExit.contains("network transfer failed", ignoreCase = true))
         assertTrue(conversion.contains("merging or converting"))
     }
+
+    @Test
+    fun ytDlpTransientTransportFailuresAreActionableEvenWhenWrapperExceptionIsNotIo() {
+        val reset = friendlyFailure(
+            IllegalStateException("ERROR: [youtube] abc123: Unable to download webpage: [Errno 104] Connection reset by peer"),
+        )
+        val dns = friendlyFailure(
+            IllegalStateException("ERROR: Unable to download API page: Temporary failure in name resolution"),
+        )
+        val closed = friendlyFailure(
+            IllegalStateException("ERROR: Remote end closed connection without response"),
+        )
+
+        assertTrue(reset.contains("network transfer failed", ignoreCase = true))
+        assertTrue(reset.contains("Retry to continue"))
+        assertTrue(dns.contains("network transfer failed", ignoreCase = true))
+        assertTrue(closed.contains("network transfer failed", ignoreCase = true))
+    }
 }
