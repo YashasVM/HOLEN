@@ -36,7 +36,7 @@ class FragmentRetryInstrumentedTest {
                         YoutubeDLRequest(server.playlistUrl)
                             .addOption("--ignore-config")
                             .addOption("--fragment-retries", "3")
-                            .addOption("--retries", "0")
+                            .addOption("--retries", "3")
                             .addOption("--socket-timeout", "5")
                             .addOption("--no-playlist")
                             .addOption("--output", File(outputDir, "probe.%(ext)s").absolutePath),
@@ -48,7 +48,7 @@ class FragmentRetryInstrumentedTest {
                 }
 
                 assertTrue(
-                    "Two transient fragment failures should recover within --fragment-retries 3: $failure",
+                    "Two transient HTTP fragment failures should recover within the production retry budgets: $failure",
                     failure == null,
                 )
                 assertEquals(
