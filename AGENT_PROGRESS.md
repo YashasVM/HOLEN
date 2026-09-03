@@ -10,9 +10,10 @@
 - Hardened imported cookies so fully expired persistent-cookie files are not treated as configured.
 - Completed explicit `Retry without cookies` recovery for eligible failed public-media jobs. The per-job authentication policy is durable across process/service restart, ordinary Retry restores configured cookies, account/age/members-only/direct/cancelled jobs are excluded, and stale policy state is cleaned with job/history removal.
 - End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
+- Completed a working launch-to-rendered-home startup probe. Android CI `33705752404` passed verify and instrumentation twice on the same commit; the probe produced `app_home_ms=2293` on the original run and `app_home_ms=3312` on a controlled instrumentation-job rerun.
 
 ## In progress
-- Establish a defensible app-startup baseline before changing startup behavior. Android CI `33701583811` proved the launch-to-home test now compiles and passes on the emulator, but the harness then failed while trying to read the timing file with `run-as` after Gradle had already removed the tested app (`unknown package: com.yashasvm.holen`). Commit `4dedd03f` now extracts the existing `HOLENAppStartup` timing from logcat immediately after the successful test instead of depending on post-test app storage. No production startup optimization has been made or claimed yet.
+- Startup measurement is now technically reliable, but hosted-emulator absolute timing is too noisy for small optimization claims: the two green measurements differ by 1019 ms (~44% of the lower result). Do not change production startup code based only on this CI number. Use representative-device evidence or phase-relative evidence before attempting a startup optimization.
 
 ## Validation / performance evidence
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -21,10 +22,10 @@
 - Storage probe `33546570973`: 64 MiB write `26 ms`, final `fsync` `71 ms`.
 - Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB HTTP Range resume `160 ms`. This does not justify changing the 256 KiB copy buffer or worker count.
 - QuickJS wiring `33573354344`, cookie expiry `33585060641`, cookie-isolation eligibility `33601355781`, persisted auth policy `33606011186`, execution wiring `33611780875`, explicit requeue `33622415323`, tightened exclusions `33627146686`, production UI `33633640767`, and final end-to-end UI run `33651634112` all passed their relevant Android CI validation.
-- Startup harness attempt `33701583811`: verify passed lint/tests/build, release APK assembly, and 16 KB verification; `AppStartupTimingTest` compiled and its single emulator test passed. Instrumentation failed only afterward at timing extraction because `connectedEmulatorDebugAndroidTest` had removed the app before `adb shell run-as` executed. A defensible `app_home_ms` baseline is still pending validation of the logcat extraction fix.
+- Startup probe `33705752404`: verify passed lint/tests/build, release APK assembly, and 16 KB verification; instrumentation passed twice. Launch-to-rendered-home was `2293 ms` then `3312 ms`. The same rerun also measured `youtube_dl_ms=1193`, `ffmpeg_ms=1255`, `aria2c_ms=134`, `process_launch_ms=1908`, 64 MiB storage write `27 ms` + `fsync` `63 ms`, fresh localhost transfer `307 ms`, and resumed transfer `111 ms`.
 
 ## Known risks / review points
-- Hosted-emulator timings guide optimization but are not representative ARM-device performance claims; confirm material gains on representative hardware before advertising speedups.
+- Hosted-emulator timings are useful for catching large regressions and validating the measurement path, but the observed startup variance is too high for micro-optimization claims. Confirm material gains on representative ARM hardware before advertising speedups.
 - yt-dlp process launch is structurally expensive under youtubedl-android because each execute call starts a fresh packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without device evidence and a compatibility plan.
 - A successful FULL analysis can trigger one-time FFmpeg/aria2 prewarm even if the user never downloads; scope is intentionally limited to the strongest existing download-intent signal.
 - YouTube challenge/auth behavior continues to evolve. Normal jobs use configured cookies; no-cookie retry remains explicit and user-driven and never silently changes selected quality.
