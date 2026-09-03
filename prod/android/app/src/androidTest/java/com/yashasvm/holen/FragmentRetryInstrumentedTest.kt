@@ -2,6 +2,7 @@ package com.yashasvm.holen
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
@@ -23,6 +24,7 @@ class FragmentRetryInstrumentedTest {
     fun transientFragmentFailuresUseConfiguredRetryBudgetWhenSkippingIsAllowed() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         YoutubeDL.init(context)
+        FFmpeg.init(context)
         val outputDir = File(context.cacheDir, "fragment-retry-probe").apply {
             deleteRecursively()
             check(mkdirs())
