@@ -20,7 +20,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class FragmentRetryInstrumentedTest {
     @Test
-    fun transientFragmentFailuresRecoverWithinCurrentRetryBudget() {
+    fun abortOnUnavailableFragmentTakesPriorityOverFragmentRetryBudget() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         YoutubeDL.init(context)
         val outputDir = File(context.cacheDir, "fragment-retry-probe").apply {
@@ -48,20 +48,29 @@ class FragmentRetryInstrumentedTest {
                     failure = error
                 }
 
-                assertTrue("Two transient fragment failures should recover with --fragment-retries 3: $failure", failure == null)
+                assertNotNull(
+                    "Integrity mode should abort instead of accepting a temporarily unavailable fragment",
+                    failure,
+                )
                 assertEquals(
-                    "yt-dlp should retry the fragment twice before the successful response",
-                    3,
+                    "--abort-on-unavailable-fragments should fail on the first unavailable-fragment response",
+                    1,
                     server.fragmentRequests,
                 )
-                val finalized = outputDir.listFiles().orEmpty().firstOrNull { file ->
+                assertTrue(
+                    "The packaged runtime should report an unavailable fragment: $failure",
+                    failure.toString().contains("fragment 1 not found", ignoreCase = true),
+                )
+                val finalized = outputDir.listFiles().orEmpty().filter { file ->
                     file.name.startsWith("probe.") &&
                         !file.name.endsWith(".part") &&
                         !file.name.endsWith(".ytdl") &&
                         !file.name.contains(".frag")
                 }
-                assertNotNull("Recovered fragmented media should be finalized", finalized)
-                assertTrue("Recovered output should contain the served fragment", finalized!!.length() >= SEGMENT_BYTES.size)
+                assertTrue(
+                    "A transiently unavailable fragment must not publish incomplete media: ${finalized.joinToString { it.name }}",
+                    finalized.isEmpty(),
+                )
             }
         } finally {
             outputDir.deleteRecursively()
