@@ -73,6 +73,8 @@ fun friendlyFailure(error: Throwable): String {
             ?: "The selected download folder could not be written."
         message.contains("permission", true) ||
             message.contains("denied", true) -> "Download folder access was revoked. Choose the folder again."
+        isPostProcessingFailure(normalized) ->
+            "Media post-processing failed while merging or converting the download. Check free storage, then update or reset the media engine and retry."
         message.contains("timed out", true) ||
             message.contains("timeout", true) -> "The network timed out. Retry to continue the partial download."
         message.contains("media engine startup failed", true) ||
@@ -162,4 +164,13 @@ private fun isUnavailableMediaFailure(message: String): Boolean = listOf(
     "this content isn't available",
     "this content is not available",
     "media unavailable",
+).any(message::contains)
+
+private fun isPostProcessingFailure(message: String): Boolean = listOf(
+    "postprocessing:",
+    "post-processing",
+    "post processing",
+    "ffmpeg exited with code",
+    "ffmpeg error",
+    "conversion failed",
 ).any(message::contains)

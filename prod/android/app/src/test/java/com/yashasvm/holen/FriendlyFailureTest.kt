@@ -152,4 +152,15 @@ class FriendlyFailureTest {
         assertTrue(result.contains("Close and reopen HOLEN"))
         assertTrue(!result.contains("network transfer failed", ignoreCase = true))
     }
+
+    @Test
+    fun postProcessingFailuresDoNotMasqueradeAsNetworkErrors() {
+        val ffmpegExit = friendlyFailure(IOException("ERROR: Postprocessing: ffmpeg exited with code 1"))
+        val conversion = friendlyFailure(IllegalStateException("ERROR: Postprocessing: Conversion failed!"))
+
+        assertTrue(ffmpegExit.contains("post-processing"))
+        assertTrue(ffmpegExit.contains("update or reset the media engine"))
+        assertFalse(ffmpegExit.contains("network transfer failed", ignoreCase = true))
+        assertTrue(conversion.contains("merging or converting"))
+    }
 }
