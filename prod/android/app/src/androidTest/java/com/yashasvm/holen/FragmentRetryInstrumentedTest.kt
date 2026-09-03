@@ -21,7 +21,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class FragmentRetryInstrumentedTest {
     @Test
-    fun transientFragmentFailuresRecoverAcrossAbortSafeProcessRetries() {
+    fun transientFragmentFailuresRecoverWithinAbortSafeTransferRetries() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         YoutubeDL.init(context)
         FFmpeg.init(context)
@@ -32,52 +32,26 @@ class FragmentRetryInstrumentedTest {
 
         try {
             TransientFragmentHlsServer(failuresBeforeSuccess = 2).use { server ->
-                var failure: Throwable? = null
-                var responseOutput: String? = null
-                var processAttempts = 0
-                while (processAttempts < MAX_PROCESS_ATTEMPTS) {
-                    processAttempts++
-                    try {
-                        val response = YoutubeDL.execute(
-                            YoutubeDLRequest(server.playlistUrl)
-                                .addOption("--ignore-config")
-                                .addOption("--continue")
-                                .addOption("--fragment-retries", "3")
-                                .addOption("--retries", "3")
-                                .addOption("--abort-on-unavailable-fragments")
-                                .addOption("--socket-timeout", "5")
-                                .addOption("--no-playlist")
-                                .addOption("--output", File(outputDir, "probe.%(ext)s").absolutePath),
-                            "fragment-retry-probe",
-                            null,
-                        )
-                        responseOutput = response.out
-                        failure = null
-                        break
-                    } catch (error: Throwable) {
-                        failure = error
-                        if (!isUnavailableFragmentFailure(error) || processAttempts >= MAX_PROCESS_ATTEMPTS) {
-                            break
-                        }
-                        Thread.sleep(100L * processAttempts)
-                    }
-                }
+                val response = YoutubeDL.execute(
+                    YoutubeDLRequest(server.playlistUrl)
+                        .addOption("--ignore-config")
+                        .addOption("--continue")
+                        .addOption("--fragment-retries", "3")
+                        .addOption("--retries", "3")
+                        .addOption("--abort-on-unavailable-fragments")
+                        .addOption("--socket-timeout", "5")
+                        .addOption("--no-playlist")
+                        .addOption("--output", File(outputDir, "probe.%(ext)s").absolutePath),
+                    "fragment-retry-probe",
+                    null,
+                )
 
-                assertTrue(
-                    "Two transient HTTP fragment failures should recover without disabling abort-on-unavailable-fragments: $failure",
-                    failure == null,
-                )
                 assertEquals(
-                    "The recovery loop should restart yt-dlp twice before the fragment succeeds",
-                    3,
-                    processAttempts,
-                )
-                assertEquals(
-                    "Each aborted yt-dlp process should make one fragment request",
+                    "The configured transfer retry budget should recover two transient HTTP 503 fragment responses inside one yt-dlp process",
                     3,
                     server.fragmentRequests,
                 )
-                assertNotNull("Successful retry should return yt-dlp output", responseOutput)
+                assertTrue("Successful retry should return yt-dlp output", response.out.isNotBlank())
                 val finalized = outputDir.listFiles().orEmpty().firstOrNull { file ->
                     file.name.startsWith("probe.") &&
                         !file.name.endsWith(".part") &&
@@ -94,22 +68,6 @@ class FragmentRetryInstrumentedTest {
             outputDir.deleteRecursively()
             YoutubeDL.destroyProcessById("fragment-retry-probe")
         }
-    }
-
-    private fun isUnavailableFragmentFailure(error: Throwable): Boolean {
-        var current: Throwable? = error
-        while (current != null) {
-            val message = current.message.orEmpty().lowercase()
-            if (
-                "fragment not found" in message ||
-                "unavailable fragment" in message ||
-                "unable to download video data" in message
-            ) {
-                return true
-            }
-            current = current.cause
-        }
-        return false
     }
 
     private class TransientFragmentHlsServer(
@@ -178,7 +136,6 @@ class FragmentRetryInstrumentedTest {
     }
 
     private companion object {
-        const val MAX_PROCESS_ATTEMPTS = 3
         val SEGMENT_BYTES = ByteArray(188 * 8) { index -> (index and 0xff).toByte() }
         val PLAYLIST = """
             #EXTM3U
