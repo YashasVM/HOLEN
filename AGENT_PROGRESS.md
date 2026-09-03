@@ -1,58 +1,33 @@
 # Agent progress
 
 ## Completed since weekly review
-- Kept all autonomous Android work on `agent-dev`; `main` remains untouched.
-- Hardened direct-file downloads with conservative resume validation, bounded transient retries, and valid short `Retry-After` handling for HTTP 429.
-- Improved yt-dlp failure classification for authentication/access, rate limits, unavailable/region-restricted media, requested-format failures, post-processing failures, common transient transport failures, and incomplete-fragment/empty-output failures without silently substituting quality.
-- Kept ordinary HTTP transfers on aria2c while routing DASH/HLS through yt-dlp native fragment downloading, matching the upstream mitigation for GHSA-vx4q-3cr2-7cg2 / CVE-2026-50574.
-- Verified youtubedl-android 0.18.1 already bundles/configures QuickJS; CI guards that runtime wiring rather than adding a redundant JS runtime.
-- Removed FFmpeg from metadata initialization and prewarm download tooling only after successful FULL analysis.
-- Hardened imported cookies so fully expired persistent-cookie files are not treated as configured.
-- Completed explicit `Retry without cookies` recovery for eligible failed public-media jobs. The per-job authentication policy is durable across process/service restart, ordinary Retry restores configured cookies, account/age/members-only/direct/cancelled jobs are excluded, and stale policy state is cleaned with job/history removal.
-- End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after deterministic setup and scrolling to the failed-job card before asserting.
-- Completed a working launch-to-rendered-home startup probe. Android CI `33705752404` passed verify and instrumentation twice on the same commit; the probe produced `app_home_ms=2293` and `app_home_ms=3312`.
-- Added explicit FFmpeg/yt-dlp post-processing failure classification; Android CI `33713261388` passed.
-- Added transient yt-dlp transport classification for connection reset/abort/refusal, remote disconnect, broken pipe, DNS resolution, unreachable network, webpage/API fetch, and SSL EOF failures; Android CI `33720955973` and generic CI passed.
-- Added incomplete-fragment/empty-output failure classification with focused precedence coverage; Android CI `33730714220` and generic CI passed.
-- Enforced fragment integrity for yt-dlp DASH/HLS downloads with `--abort-on-unavailable-fragments`; Android CI `33736269904` passed. Missing fragments now fail instead of silently finalizing known-incomplete media.
-- Validated the fragment-integrity policy end-to-end against the packaged Android yt-dlp runtime: Android CI `33741738053` passed a deterministic localhost HLS test that returns HTTP 404 for a required fragment and verifies the job fails without publishing finalized media.
-- Confirmed the packaged runtime behavior of the integrity flag: Android CI `33752339316` passed a deterministic test proving `--abort-on-unavailable-fragments` aborts on the first transient HTTP 503 before `--fragment-retries 3` can recover.
+- All autonomous Android work remains on `agent-dev`; `main` is untouched.
+- Hardened direct downloads with conservative resume validation, bounded transient retries, and short valid `Retry-After` handling for HTTP 429.
+- Improved yt-dlp failure classification for auth/access, rate limits, unavailable/region-restricted media, requested-format failures, post-processing failures, transient transport failures, and incomplete-fragment/empty-output failures.
+- Kept ordinary HTTP transfers on aria2c while routing DASH/HLS through yt-dlp native fragment downloading; youtubedl-android 0.18.1 QuickJS wiring is guarded by CI.
+- Added durable explicit `Retry without cookies` recovery for eligible failed public-media jobs, with restart persistence, exclusions, cleanup, and end-to-end Compose coverage.
+- Removed FFmpeg from metadata-only initialization and limited download-tool prewarm to successful FULL analysis.
+- Added and validated startup, storage, transfer, post-processing, transport-error, fragment-error, and fragment-integrity instrumentation coverage.
+- Fragment integrity currently uses `--abort-on-unavailable-fragments`; Android CI `33736269904` and packaged-runtime test `33741738053` confirmed missing fragments fail without publishing incomplete media.
+- Android CI `33752339316` confirmed that the integrity flag aborts on the first transient HTTP 503 before yt-dlp can consume the configured retry budget.
 
 ## In progress
-- Resolve the verified retry/integrity conflict for fragmented downloads. Probe `6c022ea6` failed instrumentation because the test set `--retries 0`; the packaged yt-dlp runtime stopped after the first HTTP 503 with `The downloaded file is empty`, so that probe did not mirror production, which uses both `--retries 3` and `--fragment-retries 3`.
-- Corrected probe `7036735b` now mirrors both production retry budgets while still disabling immediate fragment abort only inside the test. Android CI `33764121986` is validating whether two HTTP 503 responses recover on the third request.
-- If the corrected probe is green, move integrity enforcement after yt-dlp's retry budget rather than weakening integrity: allow bounded transient retries, detect any fragment ultimately skipped, and refuse/remove incomplete output before HOLEN publishes it.
-- Review yt-dlp transfer retry policy using failure evidence before changing it. HOLEN pins `--retries 3` and `--fragment-retries 3` while current yt-dlp defaults are higher. Do not increase retries or add delays solely to match upstream; more retries/sleeps can increase failure latency, bandwidth use, and rate-limit pressure.
-- Startup measurement is technically reliable, but hosted-emulator absolute timing is too noisy for small optimization claims: the two green measurements differ by 1019 ms (~44% of the lower result). Use representative-device or phase-relative evidence before production startup optimization.
+- Resolve the retry/integrity conflict for fragmented downloads without ever publishing known-incomplete media.
+- Probe `7036735b` correctly restored production `--retries 3` and `--fragment-retries 3`, but Android CI `33764121986` failed for a test-fixture reason rather than retry behavior: after the synthetic fragment path recovered, the probe reached metadata handling without the FFmpeg runtime initialized and failed with `ffprobe not found` / `expected str, bytes or os.PathLike object, not NoneType`.
+- Commit `b683447e` initializes `FFmpeg` in the retry probe, matching production download startup (`ensureInitialized(needsFfmpeg = true, needsAria2c = true)`). Android CI `33769714854` is validating the corrected production-equivalent probe.
+- If that probe proves two HTTP 503 responses recover on the third fragment request, move integrity enforcement after the bounded retry budget: permit retries, detect any ultimately skipped fragment, and refuse/remove incomplete output before HOLEN publishes it.
+- Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
 
 ## Validation / performance evidence
+- Startup probe `33705752404`: lint/tests/build/release assembly/16-KB checks passed; instrumentation passed twice with launch-to-rendered-home at `2293 ms` and `3312 ms`. Hosted-emulator variance is too high for small optimization claims.
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
-- Post-prewarm proof `33510436391`: `youtube_dl_ms=1002`, `ffmpeg_ms=1237`, `aria2c_ms=132`, `post_prewarm_tool_reentry_ms=0`, `process_launch_ms=1978`.
-- Local extraction `33528825430`: `process_launch_ms=1946`, `local_extract_ms=2225`, `local_extract_overhead_ms=279`; the wrapper subprocess baseline dominates this deterministic path.
-- Storage probe `33546570973`: 64 MiB write `26 ms`, final `fsync` `71 ms`.
-- Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB HTTP Range resume `160 ms`. This does not justify changing the 256 KiB copy buffer or worker count.
-- QuickJS wiring `33573354344`, cookie expiry `33585060641`, cookie-isolation eligibility `33601355781`, persisted auth policy `33606011186`, execution wiring `33611780875`, explicit requeue `33622415323`, tightened exclusions `33627146686`, production UI `33633640767`, and final end-to-end UI run `33651634112` all passed their relevant Android CI validation.
-- Startup probe `33705752404`: verify passed lint/tests/build, release APK assembly, and 16 KB verification; instrumentation passed twice. Launch-to-rendered-home was `2293 ms` then `3312 ms`. The same rerun measured `youtube_dl_ms=1193`, `ffmpeg_ms=1255`, `aria2c_ms=134`, `process_launch_ms=1908`, 64 MiB storage write `27 ms` + `fsync` `63 ms`, fresh localhost transfer `307 ms`, and resumed transfer `111 ms`.
-- Post-processing classification `2eb9578b`: Android CI `33713261388` passed on 2026-09-03.
-- Transport classification `c0202610`: Android CI `33720955973` and generic CI passed on 2026-09-03.
-- Fragment-failure classification/tests through `aa767490`: Android CI `33730714220` and generic CI passed on 2026-09-03.
-- Fragment-integrity production policy `44194c63`: Android CI `33736269904` passed on 2026-09-03.
-- Packaged-runtime missing-fragment abort test `6879799b`: Android CI `33741738053` passed on 2026-09-03.
-- Fragment retry probe `59033f42`: Android CI `33746993258` verify passed, but instrumentation failed because the packaged yt-dlp runtime aborted on the first HTTP 503 with `--abort-on-unavailable-fragments`; it did not consume the configured fragment retry budget.
-- Corrected abort-priority regression test `6658d5b0`: Android CI `33752339316` and generic CI passed on 2026-09-03.
-- Retry-without-abort probe `6c022ea6`: generic CI passed, but Android CI `33758294917` instrumentation failed after one HTTP 503 because the probe forced `--retries 0`; this established that `--fragment-retries 3` alone did not recover that HTTP failure in the bundled yt-dlp `2025.11.12` runtime.
-- Production-mirroring retry probe `7036735b`: pending Android CI `33764121986`; it restores `--retries 3` alongside `--fragment-retries 3` while leaving abort disabled only for the probe.
+- Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB Range resume `160 ms`; no evidence justified changing the 256 KiB copy buffer or worker count.
+- Post-processing classification `33713261388`, transport classification `33720955973`, fragment-failure classification `33730714220`, fragment-integrity policy `33736269904`, missing-fragment packaged-runtime test `33741738053`, and abort-priority regression `33752339316` all passed their relevant Android CI validation.
+- Retry probe `33746993258` proved `--abort-on-unavailable-fragments` prevents transient-fragment recovery. Probe `33758294917` was invalid for production because it forced `--retries 0`. Probe `33764121986` restored production retry counts but failed because the successful synthetic stream reached FFprobe without production-equivalent FFmpeg initialization; this is corrected in `b683447e`.
 
-## Known risks / review points
-- `--abort-on-unavailable-fragments` currently favors integrity over partial success and also takes priority over yt-dlp fragment retries for transient HTTP 503 responses. Until the post-retry integrity design is implemented and validated, fragmented downloads can fail on a single transient unavailable-fragment response.
-- yt-dlp's normal `--skip-unavailable-fragments` path can finalize incomplete media after retries are exhausted. HOLEN must not switch to that behavior without independently detecting the skip and preventing publication of the result.
-- Hosted-emulator timings are useful for large regressions but too variable for micro-optimization claims. Confirm material gains on representative ARM hardware.
-- yt-dlp process launch is structurally expensive under youtubedl-android because each execute call starts a packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without device evidence and a compatibility plan.
-- HOLEN explicitly uses three yt-dlp transfer/fragment retries. Changing retry count/backoff needs representative failure evidence because extra retries can worsen rate limits and long-tail failure time.
-- A successful FULL analysis can trigger one-time FFmpeg/aria2 prewarm even if the user never downloads; scope is intentionally limited to the strongest existing download-intent signal.
-- YouTube challenge/auth behavior continues to evolve. Normal jobs use configured cookies; no-cookie retry remains explicit and user-driven and never silently changes selected quality.
-- DASH/HLS intentionally do not use aria2c; ordinary HTTP transfers do.
-- `main` remains intentionally user-controlled and untouched by autonomous maintenance.
-
-## Weekly review
-Compare `agent-dev` against `main`, inspect the latest Android CI for the newest Android code commit, review this file, and merge only the changes you want.
+## Known risks / weekly review
+- Production `--abort-on-unavailable-fragments` still favors integrity over recovery and can fail a fragmented download on one transient unavailable-fragment response.
+- yt-dlp's normal skip-unavailable path can finalize incomplete media after retries are exhausted; HOLEN must not adopt it without independent integrity enforcement.
+- yt-dlp process launch is structurally expensive under youtubedl-android; do not add dummy warm processes or migrate runtimes without representative-device evidence.
+- YouTube challenge/auth behavior continues to evolve; configured cookies remain the normal path and no-cookie retry stays explicit and user-driven.
+- Compare `agent-dev` against `main`, inspect the latest Android CI for the newest Android code commit, and merge only the changes you want.
