@@ -75,6 +75,8 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("denied", true) -> "Download folder access was revoked. Choose the folder again."
         isPostProcessingFailure(normalized) ->
             "Media post-processing failed while merging or converting the download. Check free storage, then update or reset the media engine and retry."
+        isFragmentTransferFailure(normalized) ->
+            "One or more media fragments could not be downloaded completely. Re-analyze the link and retry; if it persists, update the media engine before changing quality."
         message.contains("timed out", true) ||
             message.contains("timeout", true) -> "The network timed out. Retry to continue the partial download."
         message.contains("media engine startup failed", true) ||
@@ -174,6 +176,12 @@ private fun isPostProcessingFailure(message: String): Boolean = listOf(
     "ffmpeg exited with code",
     "ffmpeg error",
     "conversion failed",
+).any(message::contains)
+
+private fun isFragmentTransferFailure(message: String): Boolean = listOf(
+    "fragment not found",
+    "downloaded file is empty",
+    "unable to download video data",
 ).any(message::contains)
 
 private fun isTransientNetworkFailure(message: String): Boolean = listOf(
