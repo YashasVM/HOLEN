@@ -11,9 +11,11 @@
 - Completed explicit `Retry without cookies` recovery for eligible failed public-media jobs. The per-job authentication policy is durable across process/service restart, ordinary Retry restores configured cookies, account/age/members-only/direct/cancelled jobs are excluded, and stale policy state is cleaned with job/history removal.
 - End-to-end Compose coverage for the guarded no-cookie action is green: Android CI `33651634112` passed after fixing deterministic setup and scrolling to the actual failed-job card before asserting.
 - Completed a working launch-to-rendered-home startup probe. Android CI `33705752404` passed verify and instrumentation twice on the same commit; the probe produced `app_home_ms=2293` on the original run and `app_home_ms=3312` on a controlled instrumentation-job rerun.
+- Added explicit FFmpeg/yt-dlp post-processing failure classification so merge/conversion failures no longer fall through as generic network failures; regression tests cover both `IOException` and non-I/O yt-dlp error paths.
 
 ## In progress
-- Startup measurement is now technically reliable, but hosted-emulator absolute timing is too noisy for small optimization claims: the two green measurements differ by 1019 ms (~44% of the lower result). Do not change production startup code based only on this CI number. Use representative-device evidence or phase-relative evidence before attempting a startup optimization.
+- Validate post-processing failure classification in Android CI `33713261388`; no production retry-policy change is justified until this focused error-handling fix is green.
+- Startup measurement is technically reliable, but hosted-emulator absolute timing is too noisy for small optimization claims: the two green measurements differ by 1019 ms (~44% of the lower result). Do not change production startup code based only on this CI number. Use representative-device evidence or phase-relative evidence before attempting a startup optimization.
 
 ## Validation / performance evidence
 - Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
@@ -23,6 +25,7 @@
 - Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB HTTP Range resume `160 ms`. This does not justify changing the 256 KiB copy buffer or worker count.
 - QuickJS wiring `33573354344`, cookie expiry `33585060641`, cookie-isolation eligibility `33601355781`, persisted auth policy `33606011186`, execution wiring `33611780875`, explicit requeue `33622415323`, tightened exclusions `33627146686`, production UI `33633640767`, and final end-to-end UI run `33651634112` all passed their relevant Android CI validation.
 - Startup probe `33705752404`: verify passed lint/tests/build, release APK assembly, and 16 KB verification; instrumentation passed twice. Launch-to-rendered-home was `2293 ms` then `3312 ms`. The same rerun also measured `youtube_dl_ms=1193`, `ffmpeg_ms=1255`, `aria2c_ms=134`, `process_launch_ms=1908`, 64 MiB storage write `27 ms` + `fsync` `63 ms`, fresh localhost transfer `307 ms`, and resumed transfer `111 ms`.
+- Post-processing classification commit `2eb9578b` has focused unit coverage; Android CI `33713261388` is currently validating lint/tests/build, release APK assembly, 16 KB compatibility, and instrumentation.
 
 ## Known risks / review points
 - Hosted-emulator timings are useful for catching large regressions and validating the measurement path, but the observed startup variance is too high for micro-optimization claims. Confirm material gains on representative ARM hardware before advertising speedups.
