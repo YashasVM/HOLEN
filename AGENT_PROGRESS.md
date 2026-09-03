@@ -14,9 +14,10 @@
 - Added explicit FFmpeg/yt-dlp post-processing failure classification; Android CI `33713261388` passed.
 - Added transient yt-dlp transport classification for connection reset/abort/refusal, remote disconnect, broken pipe, DNS resolution, unreachable network, webpage/API fetch, and SSL EOF failures; Android CI `33720955973` and generic CI passed.
 - Added incomplete-fragment/empty-output failure classification with focused precedence coverage; Android CI `33730714220` and generic CI passed.
+- Enforced fragment integrity for yt-dlp DASH/HLS downloads with `--abort-on-unavailable-fragments`; Android CI `33736269904` passed. Missing fragments now fail instead of silently finalizing known-incomplete media.
 
 ## In progress
-- Enforce fragment integrity for yt-dlp DASH/HLS downloads with `--abort-on-unavailable-fragments` (`44194c63`). yt-dlp otherwise skips unavailable fragments by default, which can finalize damaged/truncated media and make later completion require a full redownload. Generic CI is green; Android CI `33736269904` is validating the production change. This intentionally turns missing-fragment streams that previously appeared successful into retryable failures rather than publishing knowingly incomplete media.
+- Validate fragment integrity end-to-end against the packaged Android yt-dlp runtime. `FragmentIntegrityInstrumentedTest` serves a deterministic localhost HLS playlist whose second segment returns HTTP 404, then requires yt-dlp to request the missing segment, fail with `--abort-on-unavailable-fragments`, and leave no finalized media. Android CI `33741738053` is validating commit `6879799b`.
 - Review yt-dlp transfer retry policy using real failure evidence before changing it. HOLEN pins `--retries 3` and `--fragment-retries 3` while current yt-dlp defaults are higher. Do not increase retries or add delays solely to match upstream; more retries/sleeps can increase failure latency, bandwidth use, and rate-limit pressure.
 - Startup measurement is technically reliable, but hosted-emulator absolute timing is too noisy for small optimization claims: the two green measurements differ by 1019 ms (~44% of the lower result). Use representative-device or phase-relative evidence before production startup optimization.
 
@@ -31,9 +32,10 @@
 - Post-processing classification `2eb9578b`: Android CI `33713261388` passed on 2026-09-03.
 - Transport classification `c0202610`: Android CI `33720955973` and generic CI passed on 2026-09-03.
 - Fragment-failure classification/tests through `aa767490`: Android CI `33730714220` and generic CI passed on 2026-09-03.
+- Fragment-integrity production policy `44194c63`: Android CI `33736269904` passed on 2026-09-03.
 
 ## Known risks / review points
-- `--abort-on-unavailable-fragments` favors integrity over partial success. Some streams with a genuinely tolerable missing segment will now fail; the user can re-analyze/retry/update the engine instead of unknowingly receiving incomplete media. Validate the newest Android CI before merging.
+- `--abort-on-unavailable-fragments` favors integrity over partial success. Some streams with a genuinely tolerable missing segment now fail; the user can re-analyze/retry/update the engine instead of unknowingly receiving incomplete media. The deterministic packaged-runtime missing-fragment test is still validating this behavior end-to-end.
 - Hosted-emulator timings are useful for large regressions but too variable for micro-optimization claims. Confirm material gains on representative ARM hardware.
 - yt-dlp process launch is structurally expensive under youtubedl-android because each execute call starts a packaged-Python subprocess. Do not add dummy warm processes or migrate runtimes without device evidence and a compatibility plan.
 - HOLEN explicitly uses three yt-dlp transfer/fragment retries. Changing retry count/backoff needs representative failure evidence because extra retries can worsen rate limits and long-tail failure time.
