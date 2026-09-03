@@ -52,22 +52,73 @@ class FragmentRetryInstrumentedTest {
                     server.fragmentRequests,
                 )
                 assertTrue("Successful retry should return yt-dlp output", response.out.isNotBlank())
-                val finalized = outputDir.listFiles().orEmpty().firstOrNull { file ->
-                    file.name.startsWith("probe.") &&
-                        !file.name.endsWith(".part") &&
-                        !file.name.endsWith(".ytdl") &&
-                        !file.name.contains(".frag")
-                }
-                assertNotNull("Recovered fragmented media should be finalized", finalized)
+                val finalized = finalizedMedia(outputDir)
+                assertNotNull("Recovered fragmented media should be finalized", finalized.firstOrNull())
                 assertTrue(
                     "Recovered output should contain the served fragment",
-                    finalized!!.length() >= SEGMENT_BYTES.size,
+                    finalized.first().length() >= SEGMENT_BYTES.size,
                 )
             }
         } finally {
             outputDir.deleteRecursively()
             YoutubeDL.destroyProcessById("fragment-retry-probe")
         }
+    }
+
+    @Test
+    fun persistentFragmentFailuresExhaustRetriesWithoutFinalizingMedia() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        YoutubeDL.init(context)
+        FFmpeg.init(context)
+        val outputDir = File(context.cacheDir, "fragment-retry-exhaustion-probe").apply {
+            deleteRecursively()
+            check(mkdirs())
+        }
+
+        try {
+            TransientFragmentHlsServer(failuresBeforeSuccess = Int.MAX_VALUE).use { server ->
+                var failure: Throwable? = null
+                try {
+                    YoutubeDL.execute(
+                        YoutubeDLRequest(server.playlistUrl)
+                            .addOption("--ignore-config")
+                            .addOption("--continue")
+                            .addOption("--fragment-retries", "3")
+                            .addOption("--retries", "3")
+                            .addOption("--abort-on-unavailable-fragments")
+                            .addOption("--socket-timeout", "5")
+                            .addOption("--no-playlist")
+                            .addOption("--output", File(outputDir, "probe.%(ext)s").absolutePath),
+                        "fragment-retry-exhaustion-probe",
+                        null,
+                    )
+                } catch (error: Throwable) {
+                    failure = error
+                }
+
+                assertEquals(
+                    "Three configured HTTP retries should allow four total fragment attempts before exhaustion",
+                    4,
+                    server.fragmentRequests,
+                )
+                assertNotNull("Persistent HTTP 503 fragment failures must fail after the retry budget is exhausted", failure)
+                val finalized = finalizedMedia(outputDir)
+                assertTrue(
+                    "Retry exhaustion must not publish incomplete media: ${finalized.joinToString { it.name }}",
+                    finalized.isEmpty(),
+                )
+            }
+        } finally {
+            outputDir.deleteRecursively()
+            YoutubeDL.destroyProcessById("fragment-retry-exhaustion-probe")
+        }
+    }
+
+    private fun finalizedMedia(outputDir: File): List<File> = outputDir.listFiles().orEmpty().filter { file ->
+        file.name.startsWith("probe.") &&
+            !file.name.endsWith(".part") &&
+            !file.name.endsWith(".ytdl") &&
+            !file.name.contains(".frag")
     }
 
     private class TransientFragmentHlsServer(
