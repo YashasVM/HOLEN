@@ -3,10 +3,9 @@ package com.yashasvm.holen
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import androidx.compose.ui.test.fetchSemanticsNodes
-import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onAllNodes
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -60,9 +59,9 @@ class AppStartupTimingTest {
         val startedAt = SystemClock.elapsedRealtime()
         ActivityScenario.launch(MainActivity::class.java).use {
             composeRule.waitUntil(timeoutMillis = STARTUP_TIMEOUT_MS) {
-                composeRule.onAllNodes(hasTestTag("home-active"))
-                    .fetchSemanticsNodes(atLeastOneRootRequired = false)
-                    .isNotEmpty()
+                runCatching {
+                    composeRule.onNodeWithTag("home-active").assertIsDisplayed()
+                }.isSuccess
             }
             val elapsedMs = SystemClock.elapsedRealtime() - startedAt
             val timingLine = "app_home_ms=$elapsedMs"
