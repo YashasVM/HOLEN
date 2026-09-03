@@ -203,7 +203,12 @@ class YtDlpEngine private constructor(private val context: Context) {
      */
     suspend fun warmup() = withContext(Dispatchers.IO) {
         operationGate.withOperation { ensureInitialized(needsFfmpeg = false) }
-        if (isEngineCheckDue(preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L))) {
+        val lastCheckAt = preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L)
+        val lastSuccessfulCheckAt = preferences.getLong(
+            HolenStore.PREF_ENGINE_LAST_SUCCESSFUL_UPDATE_AT,
+            0L,
+        )
+        if (isEngineCheckDue(lastCheckAt, lastSuccessfulCheckAt)) {
             runCatching { updateStable() }
         }
     }
@@ -500,6 +505,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         const val QUICK_ANALYSIS_TIMEOUT_MS = 12_000L
         const val METADATA_TIMEOUT_MESSAGE = "Metadata lookup timed out. Check the link or try again."
         internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
+        internal const val ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS = 24L * 60 * 60 * 1000
         private const val ANALYSIS_PROCESS_PREFIX = "analysis-"
         private const val RESTART_REQUIRED_MESSAGE =
             "Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."
@@ -646,8 +652,17 @@ class YtDlpEngine private constructor(private val context: Context) {
 
         internal fun isEngineCheckDue(
             lastCheckAt: Long,
+            lastSuccessfulCheckAt: Long = lastCheckAt,
             now: Long = System.currentTimeMillis(),
-        ): Boolean = lastCheckAt <= 0L || now - lastCheckAt >= ENGINE_CHECK_INTERVAL_MS
+        ): Boolean {
+            if (lastCheckAt <= 0L) return true
+            val interval = if (lastCheckAt > lastSuccessfulCheckAt) {
+                ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS
+            } else {
+                ENGINE_CHECK_INTERVAL_MS
+            }
+            return now - lastCheckAt >= interval
+        }
 
         private val downloadMutex = Semaphore(MAX_ACTIVE_DOWNLOADS)
 
