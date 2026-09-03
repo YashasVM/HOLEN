@@ -340,8 +340,11 @@ class YtDlpEngine private constructor(private val context: Context) {
                 }
                 version
             } catch (error: Throwable) {
-                resetToBundledLocked()
-                throw IOException("Engine update failed. Close and reopen HOLEN to restore the bundled engine.", error)
+                // youtubedl-android checks the network before replacing the active binary and
+                // restores its bundled binary if installation itself fails. Clearing HOLEN's
+                // whole runtime here would turn an ordinary offline update check into a forced
+                // restart even though the previous engine is still usable.
+                throw IOException("Engine update failed. The current engine was kept.", error)
             }
         }
     }
