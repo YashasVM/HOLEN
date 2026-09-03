@@ -19,8 +19,9 @@
 - Confirmed the packaged runtime behavior of the integrity flag: Android CI `33752339316` passed a deterministic test proving `--abort-on-unavailable-fragments` aborts on the first transient HTTP 503 before `--fragment-retries 3` can recover.
 
 ## In progress
-- Resolve the verified retry/integrity conflict for fragmented downloads. A new packaged-runtime probe on commit `6c022ea6` removes immediate fragment abort only inside the test and verifies that two HTTP 503 responses recover on the third fragment request under `--fragment-retries 3`; Android CI `33758294917` is validating it.
-- If that probe is green, move integrity enforcement after yt-dlp's retry budget rather than weakening integrity: allow bounded transient fragment retries, detect any fragment ultimately skipped, and refuse/remove incomplete output before HOLEN publishes it.
+- Resolve the verified retry/integrity conflict for fragmented downloads. Probe `6c022ea6` failed instrumentation because the test set `--retries 0`; the packaged yt-dlp runtime stopped after the first HTTP 503 with `The downloaded file is empty`, so that probe did not mirror production, which uses both `--retries 3` and `--fragment-retries 3`.
+- Corrected probe `7036735b` now mirrors both production retry budgets while still disabling immediate fragment abort only inside the test. Android CI `33764121986` is validating whether two HTTP 503 responses recover on the third request.
+- If the corrected probe is green, move integrity enforcement after yt-dlp's retry budget rather than weakening integrity: allow bounded transient retries, detect any fragment ultimately skipped, and refuse/remove incomplete output before HOLEN publishes it.
 - Review yt-dlp transfer retry policy using failure evidence before changing it. HOLEN pins `--retries 3` and `--fragment-retries 3` while current yt-dlp defaults are higher. Do not increase retries or add delays solely to match upstream; more retries/sleeps can increase failure latency, bandwidth use, and rate-limit pressure.
 - Startup measurement is technically reliable, but hosted-emulator absolute timing is too noisy for small optimization claims: the two green measurements differ by 1019 ms (~44% of the lower result). Use representative-device or phase-relative evidence before production startup optimization.
 
@@ -39,6 +40,8 @@
 - Packaged-runtime missing-fragment abort test `6879799b`: Android CI `33741738053` passed on 2026-09-03.
 - Fragment retry probe `59033f42`: Android CI `33746993258` verify passed, but instrumentation failed because the packaged yt-dlp runtime aborted on the first HTTP 503 with `--abort-on-unavailable-fragments`; it did not consume the configured fragment retry budget.
 - Corrected abort-priority regression test `6658d5b0`: Android CI `33752339316` and generic CI passed on 2026-09-03.
+- Retry-without-abort probe `6c022ea6`: generic CI passed, but Android CI `33758294917` instrumentation failed after one HTTP 503 because the probe forced `--retries 0`; this established that `--fragment-retries 3` alone did not recover that HTTP failure in the bundled yt-dlp `2025.11.12` runtime.
+- Production-mirroring retry probe `7036735b`: pending Android CI `33764121986`; it restores `--retries 3` alongside `--fragment-retries 3` while leaving abort disabled only for the probe.
 
 ## Known risks / review points
 - `--abort-on-unavailable-fragments` currently favors integrity over partial success and also takes priority over yt-dlp fragment retries for transient HTTP 503 responses. Until the post-retry integrity design is implemented and validated, fragmented downloads can fail on a single transient unavailable-fragment response.
