@@ -10,9 +10,11 @@
 - Added and validated startup, storage, transfer, post-processing, transport-error, fragment-error, fragment-integrity, and transient-fragment retry instrumentation coverage.
 - Fragment integrity uses `--abort-on-unavailable-fragments`; packaged-runtime tests prove transient HTTP 503 fragment failures recover inside the existing retry budget, while persistent 503 failures exhaust the bounded retries, fail cleanly, and do not publish incomplete media.
 - Closed the fragment retry/integrity investigation without increasing retry counts or adding redundant outer yt-dlp process restarts.
+- Prevented failed automatic/manual yt-dlp update checks from clearing HOLEN's otherwise working media runtime. Upstream youtubedl-android checks the network before replacing the binary and restores its bundled binary on install failure, so HOLEN's extra destructive reset only converted ordinary update failures into forced restarts.
 
 ## In progress
-- Evaluate extractor freshness/update behavior before changing the current seven-day stable-engine check cadence. Prefer a failure-triggered or otherwise bounded approach if it materially improves compatibility without adding startup/network churn.
+- Validate `fix(android): preserve engine after update failure` through Android CI, including lint/tests/release assembly/16-KB checks.
+- Evaluate extractor freshness/update cadence separately after update failure is safe; do not shorten the current seven-day check simply because yt-dlp releases frequently.
 - Do not add whole-process retry logic unless a representative failure is shown to escape yt-dlp's existing retry layers; process launch is expensive and extra retries would increase latency and duplicate work.
 - Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
 
@@ -24,7 +26,8 @@
 - Earlier retry probes `33746993258`, `33758294917`, `33764121986`, and `33775511969` exposed test-fixture/expectation mistakes and remain useful negative test evidence rather than product regressions.
 
 ## Known risks / weekly review
-- yt-dlp extractor compatibility changes frequently; HOLEN updates the embedded yt-dlp runtime separately from the Android wrapper, but the current seven-day automatic check may leave a broken extractor stale until the next check or a manual update. Do not shorten it without checking the resulting network/startup/maintenance cost.
+- The engine-update preservation fix is not considered validated until Android CI for `1dfd23e6` completes.
+- yt-dlp extractor compatibility changes frequently; HOLEN updates the embedded yt-dlp runtime separately from the Android wrapper. The current seven-day automatic check may leave a broken extractor stale, but more frequent checks also add network/maintenance churn.
 - yt-dlp process launch is structurally expensive under youtubedl-android; avoid unconditional restarts or dummy warm processes.
 - YouTube challenge/auth behavior continues to evolve; configured cookies remain the normal path and no-cookie retry stays explicit and user-driven.
 - Compare `agent-dev` against `main`, inspect the latest Android CI for the newest Android code commit, and merge only the changes you want.
