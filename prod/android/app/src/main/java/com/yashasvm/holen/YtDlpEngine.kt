@@ -265,6 +265,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                             "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
+                            "--abort-on-unavailable-fragments",
                             "--socket-timeout", "20",
                             "--progress",
                             "--progress-template",
