@@ -39,13 +39,16 @@ adb shell settings put global animator_duration_scale 1.0
 test "$(adb shell settings get global animator_duration_scale | tr -d '\r')" = "1.0"
 
 current_stage="app-startup-test"
+adb logcat -c
 ./gradlew connectedEmulatorDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.AppStartupTimingTest \
   -Pandroid.testInstrumentationRunnerArguments.holenAppStartupTiming=true \
   2>&1 | tee app/build/reports/startup/app-startup-gradle.txt
 current_stage="app-startup-report"
-adb shell run-as com.yashasvm.holen cat files/app-startup-timing.txt \
-  | tr -d '\r' \
+adb logcat -d -s HOLENAppStartup:I '*:S' \
+  | tee app/build/reports/startup/app-startup-logcat.txt
+grep -o 'app_home_ms=[0-9][0-9]*' app/build/reports/startup/app-startup-logcat.txt \
+  | tail -n 1 \
   | tee app/build/reports/startup/app-startup-timing.txt
 test -s app/build/reports/startup/app-startup-timing.txt
 grep -q '^app_home_ms=[0-9][0-9]*$' app/build/reports/startup/app-startup-timing.txt
