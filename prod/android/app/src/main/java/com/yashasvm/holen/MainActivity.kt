@@ -122,6 +122,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (viewModel.onboardingCompleted.value && !DownloadService.isRunning) {
+            YtDlpEngine.get(applicationContext).scheduleBackgroundRefreshIfDue()
+        }
+    }
+
     private fun chooseFolder() {
         folderPicker.launch(
             Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
