@@ -14,8 +14,8 @@
 - Failed yt-dlp update checks now retry after 24 hours instead of being suppressed for the normal seven-day successful-check interval; Android CI `33799324069` and generic CI passed.
 
 ## In progress
-- Audit fresh-install extractor freshness rather than shortening the normal successful update-check cadence. HOLEN already uses youtubedl-android 0.18.1, which remains the latest published wrapper release; dependency churn cannot currently provide a newer wrapper.
-- Upstream yt-dlp stable is newer than the wrapper's bundled runtime, so keep validating that first-run online self-update is reliable while preserving a usable bundled fallback for offline startup.
+- Remove the due yt-dlp network refresh from foreground startup while keeping local Python/yt-dlp warm-up. `agent-dev` now schedules the due stable refresh only after the activity backgrounds, skips configuration-change stops, and skips the hook while the download service is active. CI validation for the latest head is still pending.
+- After this startup-latency change is green, validate a narrowly classified stale-extractor recovery path before adding any automatic update-and-retry behavior. Auth, DRM, rate-limit, storage, cancellation, and ordinary network failures must never trigger an extractor-update retry.
 - Do not add whole-process retry logic unless a representative failure is shown to escape yt-dlp's existing retry layers; process launch is expensive and extra retries would increase latency and duplicate work.
 - Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
 
@@ -27,8 +27,9 @@
 - Earlier retry probes `33746993258`, `33758294917`, `33764121986`, and `33775511969` exposed test-fixture/expectation mistakes and remain useful negative test evidence rather than product regressions.
 
 ## Known risks / weekly review
-- yt-dlp extractor compatibility changes frequently. As of the current upstream check, yt-dlp stable is `2026.08.19`, while HOLEN's wrapper remains youtubedl-android `0.18.1`; fresh installs therefore depend on the runtime self-update path for current extractors when online.
-- Successful automatic engine checks remain weekly to avoid needless network/startup churn; failed checks use the validated shorter 24-hour retry path.
+- yt-dlp extractor compatibility changes frequently. HOLEN remains on youtubedl-android `0.18.1`; current extractors still depend on its supported runtime updater rather than dependency churn.
+- Successful automatic engine checks remain weekly; failed checks use the validated 24-hour retry cadence. The new background-only scheduling must still pass Android CI before it is treated as complete.
+- Android may kill a backgrounded process before a best-effort update finishes. The existing active engine is kept on update failure, and the next eligible background transition retries according to the saved cadence.
 - yt-dlp process launch is structurally expensive under youtubedl-android; avoid unconditional restarts or dummy warm processes.
 - YouTube challenge/auth behavior continues to evolve; configured cookies remain the normal path and no-cookie retry stays explicit and user-driven.
 - Compare `agent-dev` against `main`, inspect the latest Android CI for the newest Android code commit, and merge only the changes you want.
