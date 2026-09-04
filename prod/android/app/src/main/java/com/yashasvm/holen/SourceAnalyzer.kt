@@ -41,11 +41,7 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
             if (mode == AnalysisMode.QUICK && !isYoutubePlaylist(url)) {
                 quickYoutubeMetadata(url)?.let { return@withContext it }
             }
-            return@withContext if (processId == null) {
-                engine.analyze(url, mode)
-            } else {
-                engine.analyze(url, mode, processId)
-            }
+            return@withContext analyzeWithExtractorRecovery(url, mode, processId)
         }
         val probe = probe(endpoint)
         if (isDirectFile(probe.contentDisposition, probe.mimeType)) {
@@ -61,13 +57,24 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
                 sizeBytes = probe.contentLength,
             )
         } else {
+            analyzeWithExtractorRecovery(url, mode, processId)
+        }
+    }
+
+    private suspend fun analyzeWithExtractorRecovery(
+        url: String,
+        mode: AnalysisMode,
+        processId: String?,
+    ): SourceAnalysis = runWithSingleStaleExtractorRecovery(
+        operation = {
             if (processId == null) {
                 engine.analyze(url, mode)
             } else {
                 engine.analyze(url, mode, processId)
             }
-        }
-    }
+        },
+        refresh = { engine.updateStable() },
+    )
 
     private fun quickYoutubeMetadata(url: String): SourceAnalysis.Media? {
         val now = SystemClock.elapsedRealtime()
