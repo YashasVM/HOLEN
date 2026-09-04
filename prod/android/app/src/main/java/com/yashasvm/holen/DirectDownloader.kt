@@ -220,6 +220,7 @@ class DirectDownloader {
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 20_000
         private const val USER_AGENT = "Holen Android/1"
+        private const val LAST_MODIFIED_STRONG_GAP_SECONDS = 60L
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
 
         internal fun isAcceptedTransferResponse(
@@ -263,9 +264,13 @@ class DirectDownloader {
             val sent = responseDate?.trim()?.takeIf(::isSafeHeaderValue) ?: return null
             val modifiedInstant = parseHttpDate(modified) ?: return null
             val sentInstant = parseHttpDate(sent) ?: return null
-            // A cached Last-Modified value can be treated as a strong validator when the
-            // response Date is at least one second later (RFC 9110 section 8.8.2.2).
-            return modified.takeIf { sentInstant.epochSecond - modifiedInstant.epochSecond >= 1 }
+            // RFC 9110 permits a one-second gap when the client has reason to trust clock
+            // alignment. HOLEN cannot establish that for arbitrary direct-download origins, so
+            // keep the older conservative 60-second margin before treating Last-Modified as a
+            // strong If-Range validator. A false-positive validator can corrupt resumed bytes.
+            return modified.takeIf {
+                sentInstant.epochSecond - modifiedInstant.epochSecond >= LAST_MODIFIED_STRONG_GAP_SECONDS
+            }
         }
 
         private fun isStrongEtag(value: String): Boolean =

@@ -35,15 +35,26 @@ class DirectDownloaderResumeTest {
             DirectDownloader.selectResumeValidator(
                 "W/\"abc123\"",
                 "Sun, 30 Aug 2026 10:00:00 GMT",
-                "Sun, 30 Aug 2026 10:00:10 GMT",
+                "Sun, 30 Aug 2026 10:02:00 GMT",
             ),
         )
     }
 
     @Test
-    fun strongLastModifiedIsAcceptedWhenEtagIsAbsent() {
+    fun lastModifiedIsAcceptedWithConservativeClockMargin() {
         assertEquals(
             "Sun, 30 Aug 2026 10:00:00 GMT",
+            DirectDownloader.selectResumeValidator(
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:01:00 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun oneSecondLastModifiedGapDoesNotEnableResumeForUnknownOriginClock() {
+        assertNull(
             DirectDownloader.selectResumeValidator(
                 null,
                 "Sun, 30 Aug 2026 10:00:00 GMT",
@@ -92,7 +103,7 @@ class DirectDownloaderResumeTest {
                 "https://cdn.example.test/media.mp4",
                 null,
                 "Sun, 30 Aug 2026 10:00:00 GMT",
-                "Sun, 30 Aug 2026 10:00:01 GMT",
+                "Sun, 30 Aug 2026 10:01:00 GMT",
             ),
         )
         assertNull(
