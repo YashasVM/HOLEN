@@ -1,6 +1,10 @@
 package com.yashasvm.holen
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -71,5 +75,84 @@ class StaleExtractorRecoveryTest {
             "Unable to extract player response; please report this issue; post-processing failed",
         )
         messages.forEach { assertFalse(it, isStaleExtractorCandidate(it)) }
+    }
+
+    @Test
+    fun recoveryRunsMaintenanceAfterFailedAttemptAndRetriesOnce() = runBlocking {
+        val events = mutableListOf<String>()
+        var attempts = 0
+
+        val result = runWithSingleStaleExtractorRecovery(
+            operation = {
+                attempts++
+                events += "operation-$attempts"
+                if (attempts == 1) {
+                    throw IllegalStateException(
+                        "Unable to extract player response; please report this issue",
+                    )
+                }
+                "ok"
+            },
+            refresh = { events += "refresh" },
+        )
+
+        assertEquals("ok", result)
+        assertEquals(listOf("operation-1", "refresh", "operation-2"), events)
+        assertEquals(2, attempts)
+    }
+
+    @Test
+    fun nonCandidateFailureDoesNotRefreshOrRetry() = runBlocking {
+        val expected = IllegalStateException("HTTP Error 403")
+        var refreshes = 0
+        var attempts = 0
+
+        val thrown = runCatching {
+            runWithSingleStaleExtractorRecovery(
+                operation = {
+                    attempts++
+                    throw expected
+                },
+                refresh = { refreshes++ },
+            )
+        }.exceptionOrNull()
+
+        assertSame(expected, thrown)
+        assertEquals(1, attempts)
+        assertEquals(0, refreshes)
+    }
+
+    @Test
+    fun failedRefreshPreservesOriginalExtractorFailure() = runBlocking {
+        val original = IllegalStateException(
+            "Unable to extract player response; please report this issue",
+        )
+        val refreshFailure = IllegalStateException("offline")
+
+        val thrown = runCatching {
+            runWithSingleStaleExtractorRecovery(
+                operation = { throw original },
+                refresh = { throw refreshFailure },
+            )
+        }.exceptionOrNull()
+
+        assertSame(original, thrown)
+        assertEquals(listOf(refreshFailure), thrown?.suppressed?.toList())
+    }
+
+    @Test
+    fun cancellationNeverTriggersRecovery() = runBlocking {
+        var refreshes = 0
+        val cancellation = CancellationException("cancelled")
+
+        val thrown = runCatching {
+            runWithSingleStaleExtractorRecovery(
+                operation = { throw cancellation },
+                refresh = { refreshes++ },
+            )
+        }.exceptionOrNull()
+
+        assertSame(cancellation, thrown)
+        assertEquals(0, refreshes)
     }
 }
