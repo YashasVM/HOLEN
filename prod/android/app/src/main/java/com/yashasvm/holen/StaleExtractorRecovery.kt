@@ -76,9 +76,9 @@ internal fun isStaleExtractorCandidate(message: String): Boolean {
 
     if (Regex("""http error \d{3}""").containsMatchIn(normalized)) return false
 
-    // yt-dlp emits this report/update guidance when an extractor's parsing assumptions break.
+    // Generic "no formats" errors are not safe recovery signals: upstream uses the same text for
+    // site/content/cookie combinations that an engine refresh cannot fix. Restrict candidates to
+    // explicit extractor parsing failures accompanied by yt-dlp's bug-report guidance.
     if (!normalized.contains("please report this issue")) return false
-    return normalized.contains("no video formats found") ||
-        normalized.contains("unable to extract") ||
-        normalized.contains("failed to extract")
+    return normalized.contains("unable to extract") || normalized.contains("failed to extract")
 }

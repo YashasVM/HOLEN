@@ -9,11 +9,6 @@ class StaleExtractorRecoveryTest {
     fun highConfidenceExtractorBreakageQualifies() {
         assertTrue(
             isStaleExtractorCandidate(
-                "ERROR: [youtube] abc: No video formats found!; please report this issue on https://github.com/yt-dlp/yt-dlp/issues",
-            ),
-        )
-        assertTrue(
-            isStaleExtractorCandidate(
                 "ERROR: [site] abc: Unable to extract player response; please report this issue",
             ),
         )
@@ -27,8 +22,13 @@ class StaleExtractorRecoveryTest {
     }
 
     @Test
-    fun genericNoFormatsFailureDoesNotQualifyWithoutUpstreamBugGuidance() {
+    fun noFormatsFailureDoesNotQualifyEvenWithBugGuidance() {
         assertFalse(isStaleExtractorCandidate("ERROR: No video formats found"))
+        assertFalse(
+            isStaleExtractorCandidate(
+                "ERROR: [youtube] abc: No video formats found!; please report this issue on https://github.com/yt-dlp/yt-dlp/issues",
+            ),
+        )
     }
 
     @Test
