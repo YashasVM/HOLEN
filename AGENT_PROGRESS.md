@@ -16,7 +16,8 @@
 - Android CI `33831320310` passed after the teardown guard, including lint/tests/build, release APK assembly, 16 KB native-library verification, and the full instrumentation job. The earlier `33827812724` instrumentation failure was a lifecycle-hook regression caught before the task was closed.
 
 ## In progress
-- Validate a narrowly classified stale-extractor recovery path before adding any automatic update-and-retry behavior. Auth, DRM, rate-limit, storage, cancellation, and ordinary network failures must never trigger an extractor-update retry.
+- Added a deliberately strict stale-extractor candidate classifier plus exclusion-focused unit tests. It currently performs no updater or automatic retry action; validation must pass before that behavior is considered.
+- Candidate detection requires yt-dlp's explicit `please report this issue` guidance plus a parsing/extraction failure signal. Auth, DRM, HTTP status, region/media availability, requested-format, storage, post-processing, fragment, timeout, and transport failures are excluded first.
 - Do not add whole-process retry logic unless a representative failure is shown to escape yt-dlp's existing retry layers; process launch is expensive and extra retries would increase latency and duplicate work.
 - Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
 
@@ -29,6 +30,7 @@
 
 ## Known risks / weekly review
 - yt-dlp extractor compatibility changes frequently. HOLEN remains on youtubedl-android `0.18.1`; current extractors still depend on its supported runtime updater rather than dependency churn.
+- Stale-extractor classification is intentionally conservative because `No video formats found` can also appear for cookie/access conditions; false-positive automatic updater maintenance would add latency and hide the real action the user needs.
 - Successful automatic engine checks remain weekly; failed checks use the validated 24-hour retry cadence. Automatic updates are intentionally best-effort after backgrounding so they cannot block first metadata interaction.
 - Android may kill a backgrounded process before a best-effort update finishes. The existing active engine is kept on update failure, and the next eligible background transition retries according to the saved cadence.
 - yt-dlp process launch is structurally expensive under youtubedl-android; avoid unconditional restarts or dummy warm processes.
