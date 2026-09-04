@@ -19,6 +19,7 @@
 - Wired stale-extractor recovery into Android metadata analysis. A high-confidence extractor parsing failure now exits the normal engine reader gate, performs one stable-engine refresh, and retries metadata exactly once. Android CI `33851137357` passed lint/tests/build, release packaging/16 KB checks, and instrumentation.
 
 ## In progress
+- Measure the existing `--concurrent-fragments 8` Android policy before tuning it. Instrumentation commit `4985ea30` adds a delayed local HLS probe that verifies eight configured workers produce actual overlapping fragment requests and records peak concurrency / elapsed time without claiming a real-network speedup. Android CI `33870385790` is currently validating it.
 - Do not add whole-process retry logic unless a representative failure is shown to escape yt-dlp's existing retry layers; process launch is expensive and extra retries would increase latency and duplicate work.
 - Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
 
@@ -34,6 +35,7 @@
 - Stale-extractor classification is intentionally conservative. False-positive automatic updater maintenance would add latency and can hide the real action the user needs; generic no-format failures are therefore not automatic recovery candidates.
 - A high-confidence stale-extractor failure now attempts a stable-engine refresh before one metadata retry. If refresh itself fails, the original extractor error remains primary with the refresh error suppressed; auth, DRM, HTTP/rate-limit, storage, timeout/network, fragment, post-processing, and cancellation failures remain excluded by the classifier.
 - Concurrent stale failures can serialize into more than one stable update check because recovery is intentionally simple and per-analysis. The signal is narrow and engine maintenance is already serialized; avoid adding coordination unless this shows up in real telemetry or tests as meaningful overhead.
+- `--concurrent-fragments 8` can materially improve fragmented-media throughput but may also increase request bursts, socket pressure, battery/thermal load, and rate-limit exposure. Do not tune it from connection type alone; require Android measurements first.
 - Successful automatic engine checks remain weekly; failed checks use the validated 24-hour retry cadence. Automatic updates are intentionally best-effort after backgrounding so they cannot block first metadata interaction.
 - Android may kill a backgrounded process before a best-effort update finishes. The existing active engine is kept on update failure, and the next eligible background transition retries according to the saved cadence.
 - yt-dlp process launch is structurally expensive under youtubedl-android; avoid unconditional restarts or dummy warm processes.
