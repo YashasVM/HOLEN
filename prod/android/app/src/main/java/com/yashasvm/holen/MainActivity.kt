@@ -126,6 +126,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         if (
             !isChangingConfigurations &&
+            !isFinishing &&
             viewModel.onboardingCompleted.value &&
             !DownloadService.isRunning
         ) {
