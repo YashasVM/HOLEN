@@ -112,6 +112,7 @@ class YtDlpEngine private constructor(private val context: Context) {
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val operationGate = EngineOperationGate()
     private val downloadToolsPrewarmInFlight = AtomicBoolean(false)
+    private val automaticUpdateInFlight = AtomicBoolean(false)
 
     @Volatile
     private var initialized = false
@@ -198,18 +199,37 @@ class YtDlpEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Prepares only Python and yt-dlp during app idle time. FFmpeg stays lazy so a fresh-install
-     * metadata lookup never waits behind extraction of media tools it does not need.
+     * Prepares only Python and yt-dlp during app idle time. Network update checks are deliberately
+     * kept off the foreground startup path so the first metadata request cannot queue behind them.
      */
     suspend fun warmup() = withContext(Dispatchers.IO) {
         operationGate.withOperation { ensureInitialized(needsFfmpeg = false) }
-        val lastCheckAt = preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L)
-        val lastSuccessfulCheckAt = preferences.getLong(
-            HolenStore.PREF_ENGINE_LAST_SUCCESSFUL_UPDATE_AT,
-            0L,
-        )
-        if (isEngineCheckDue(lastCheckAt, lastSuccessfulCheckAt)) {
-            runCatching { updateStable() }
+    }
+
+    /**
+     * Performs a due stable-engine refresh only after the UI has moved to the background. The
+     * caller skips this while the download service is active, and this guard prevents duplicate
+     * background refreshes from repeated lifecycle transitions.
+     */
+    fun scheduleBackgroundRefreshIfDue() {
+        if (runtimeRestartRequired) return
+        if (!automaticUpdateInFlight.compareAndSet(false, true)) return
+        watchdogScope.launch(Dispatchers.IO) {
+            try {
+                val lastCheckAt = preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L)
+                val lastSuccessfulCheckAt = preferences.getLong(
+                    HolenStore.PREF_ENGINE_LAST_SUCCESSFUL_UPDATE_AT,
+                    0L,
+                )
+                if (isEngineCheckDue(lastCheckAt, lastSuccessfulCheckAt)) {
+                    updateStable()
+                }
+            } catch (_: Throwable) {
+                // Automatic refresh is best-effort. Manual updates still surface actionable errors,
+                // and failed checks retain the shorter retry cadence.
+            } finally {
+                automaticUpdateInFlight.set(false)
+            }
         }
     }
 
