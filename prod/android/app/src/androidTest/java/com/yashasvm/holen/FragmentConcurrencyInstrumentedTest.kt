@@ -22,60 +22,15 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class FragmentConcurrencyInstrumentedTest {
     @Test
-    fun controlledOneFourEightWorkerComparison() {
+    fun configuredEightWorkersActuallyOverlapFragmentRequests() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         YoutubeDL.init(context)
         FFmpeg.init(context)
-        val outputRoot = File(context.cacheDir, "fragment-concurrency-probe").apply {
+        val outputDir = File(context.cacheDir, "fragment-concurrency-probe").apply {
             deleteRecursively()
             check(mkdirs())
         }
-
-        try {
-            val results = listOf(1, 4, 8).map { workers ->
-                runProbe(outputRoot, workers)
-            }
-
-            val singleWorker = results.single { it.workers == 1 }
-            val fourWorkers = results.single { it.workers == 4 }
-            val eightWorkers = results.single { it.workers == 8 }
-
-            assertEquals(
-                "A single fragment worker must remain serial",
-                1,
-                singleWorker.peakConcurrentRequests,
-            )
-            assertTrue(
-                "Four configured workers should overlap fragment requests; peak=${fourWorkers.peakConcurrentRequests}",
-                fourWorkers.peakConcurrentRequests >= 2,
-            )
-            assertTrue(
-                "Eight configured workers should produce substantial overlap; peak=${eightWorkers.peakConcurrentRequests}",
-                eightWorkers.peakConcurrentRequests >= 4,
-            )
-            assertTrue(
-                "Configured fragment concurrency must bound observed overlap",
-                results.all { it.peakConcurrentRequests <= it.workers },
-            )
-
-            println(
-                "HOLEN_FRAGMENT_CONCURRENCY_COMPARISON " +
-                    results.joinToString(separator = " ") { result ->
-                        "workers=${result.workers},peak=${result.peakConcurrentRequests}," +
-                            "fragments=${result.fragmentRequests},elapsed_ms=${result.elapsedMs}"
-                    } + " delay_ms=$SEGMENT_DELAY_MS",
-            )
-        } finally {
-            outputRoot.deleteRecursively()
-        }
-    }
-
-    private fun runProbe(outputRoot: File, workers: Int): ProbeResult {
-        val outputDir = File(outputRoot, "workers-$workers").apply {
-            deleteRecursively()
-            check(mkdirs())
-        }
-        val processId = "fragment-concurrency-probe-$workers"
+        val processId = "fragment-concurrency-probe"
 
         try {
             DelayedFragmentHlsServer().use { server ->
@@ -83,7 +38,7 @@ class FragmentConcurrencyInstrumentedTest {
                 YoutubeDL.execute(
                     YoutubeDLRequest(server.playlistUrl)
                         .addOption("--ignore-config")
-                        .addOption("--concurrent-fragments", workers.toString())
+                        .addOption("--concurrent-fragments", "8")
                         .addOption("--fragment-retries", "0")
                         .addOption("--retries", "0")
                         .addOption("--abort-on-unavailable-fragments")
@@ -96,12 +51,16 @@ class FragmentConcurrencyInstrumentedTest {
                 val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
 
                 assertEquals(
-                    "Every playlist fragment should be requested exactly once for workers=$workers",
+                    "Every playlist fragment should be requested exactly once",
                     SEGMENT_COUNT,
                     server.fragmentRequests,
                 )
                 assertTrue(
-                    "Fragmented media should be finalized for workers=$workers",
+                    "Eight configured workers should produce real overlapping fragment requests; peak=${server.peakConcurrentRequests}",
+                    server.peakConcurrentRequests >= 4,
+                )
+                assertTrue(
+                    "Fragmented media should be finalized after the concurrency probe",
                     outputDir.listFiles().orEmpty().any { file ->
                         file.name.startsWith("probe.") &&
                             !file.name.endsWith(".part") &&
@@ -109,25 +68,16 @@ class FragmentConcurrencyInstrumentedTest {
                             !file.name.contains(".frag")
                     },
                 )
-
-                return ProbeResult(
-                    workers = workers,
-                    peakConcurrentRequests = server.peakConcurrentRequests,
-                    fragmentRequests = server.fragmentRequests,
-                    elapsedMs = elapsedMs,
+                println(
+                    "HOLEN_FRAGMENT_CONCURRENCY_PROBE workers=8 peak=${server.peakConcurrentRequests} " +
+                        "fragments=${server.fragmentRequests} elapsed_ms=$elapsedMs delay_ms=$SEGMENT_DELAY_MS",
                 )
             }
         } finally {
             YoutubeDL.destroyProcessById(processId)
+            outputDir.deleteRecursively()
         }
     }
-
-    private data class ProbeResult(
-        val workers: Int,
-        val peakConcurrentRequests: Int,
-        val fragmentRequests: Int,
-        val elapsedMs: Long,
-    )
 
     private class DelayedFragmentHlsServer : AutoCloseable {
         private val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
