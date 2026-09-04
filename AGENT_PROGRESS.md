@@ -14,7 +14,8 @@
 - Failed yt-dlp update checks now retry after 24 hours instead of being suppressed for the normal seven-day successful-check interval; Android CI `33799324069` and generic CI passed.
 
 ## In progress
-- Remove the due yt-dlp network refresh from foreground startup while keeping local Python/yt-dlp warm-up. `agent-dev` now schedules the due stable refresh only after the activity backgrounds, skips configuration-change stops, and skips the hook while the download service is active. CI validation for the latest head is still pending.
+- The due yt-dlp network refresh is off the foreground startup path: `warmup()` now performs local Python/yt-dlp initialization only, while due stable refreshes are scheduled after genuine backgrounding and skipped during configuration changes, active downloads, and Activity teardown.
+- Android CI `33827812724` exposed an instrumentation failure in the first background-refresh implementation even though lint/tests/build/release assembly/16-KB verification passed. The lifecycle hook could start a network refresh when instrumentation explicitly destroyed `MainActivity`; `agent-dev` now skips refresh while the Activity is finishing. Android CI `33831320310` is validating that correction.
 - After this startup-latency change is green, validate a narrowly classified stale-extractor recovery path before adding any automatic update-and-retry behavior. Auth, DRM, rate-limit, storage, cancellation, and ordinary network failures must never trigger an extractor-update retry.
 - Do not add whole-process retry logic unless a representative failure is shown to escape yt-dlp's existing retry layers; process launch is expensive and extra retries would increase latency and duplicate work.
 - Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
@@ -28,7 +29,7 @@
 
 ## Known risks / weekly review
 - yt-dlp extractor compatibility changes frequently. HOLEN remains on youtubedl-android `0.18.1`; current extractors still depend on its supported runtime updater rather than dependency churn.
-- Successful automatic engine checks remain weekly; failed checks use the validated 24-hour retry cadence. The new background-only scheduling must still pass Android CI before it is treated as complete.
+- Successful automatic engine checks remain weekly; failed checks use the validated 24-hour retry cadence. The background-only scheduling change is not complete until Android CI is green.
 - Android may kill a backgrounded process before a best-effort update finishes. The existing active engine is kept on update failure, and the next eligible background transition retries according to the saved cadence.
 - yt-dlp process launch is structurally expensive under youtubedl-android; avoid unconditional restarts or dummy warm processes.
 - YouTube challenge/auth behavior continues to evolve; configured cookies remain the normal path and no-cookie retry stays explicit and user-driven.
