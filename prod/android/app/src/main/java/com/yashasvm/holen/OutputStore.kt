@@ -13,7 +13,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
-import java.io.IOException
 import kotlin.coroutines.coroutineContext
 
 class OutputStore(private val context: Context) {
@@ -68,27 +67,43 @@ class OutputStore(private val context: Context) {
             tree,
             DocumentsContract.getTreeDocumentId(tree),
         )
-        val existing = childNames(tree)
-        val safeName = destinationName(sanitizeFileName(staged.fileName), existing)
-        val pending = PendingPublication(
-            jobId = jobId,
-            treeUri = tree.toString(),
-            fileName = safeName,
-            mimeType = staged.mimeType,
-            byteCount = staged.file.length(),
-            documentUri = null,
-        )
-        savePending(pending)
         var document: Uri? = null
+        var publishedName = sanitizeFileName(staged.fileName)
         try {
-            val created = DocumentsContract.createDocument(
-                resolver,
-                treeDocument,
-                staged.mimeType,
-                safeName,
-            ) ?: throw StorageException("The selected folder could not create a file.")
-            document = created
-            savePending(pending.copy(documentUri = created.toString()))
+            publicationReservationGate.withReservation {
+                val existing = childNames(tree)
+                val safeName = destinationName(publishedName, existing)
+                val pending = PendingPublication(
+                    jobId = jobId,
+                    treeUri = tree.toString(),
+                    fileName = safeName,
+                    mimeType = staged.mimeType,
+                    byteCount = staged.file.length(),
+                    documentUri = null,
+                )
+                savePending(pending)
+                val created = DocumentsContract.createDocument(
+                    resolver,
+                    treeDocument,
+                    staged.mimeType,
+                    safeName,
+                ) ?: throw StorageException("The selected folder could not create a file.")
+                document = created
+                val actualName = when (val inspected = inspectDocument(created)) {
+                    is DocumentInspection.Found -> inspected.details.fileName.takeIf(String::isNotBlank)
+                    DocumentInspection.NotFound,
+                    DocumentInspection.Unavailable,
+                    -> null
+                } ?: safeName
+                publishedName = actualName
+                savePending(
+                    pending.copy(
+                        fileName = actualName,
+                        documentUri = created.toString(),
+                    ),
+                )
+            }
+            val created = document ?: throw StorageException("The selected folder could not create a file.")
             val copied = resolver.openOutputStream(created, "w")?.use { output ->
                 FileInputStream(staged.file).use { input ->
                     val buffer = ByteArray(COPY_BUFFER_SIZE)
@@ -111,14 +126,12 @@ class OutputStore(private val context: Context) {
                 throw StorageException("The copied file did not match the completed download.")
             }
             staged.file.parentFile?.deleteRecursively()
-            PublishedFile(created, safeName, staged.mimeType, copied)
+            PublishedFile(created, publishedName, staged.mimeType, copied)
         } catch (error: Throwable) {
             val cleaned = document?.let { created ->
                 runCatching { DocumentsContract.deleteDocument(resolver, created) }
                     .getOrDefault(false)
             } ?: true
-            // Keep the journal when the provider refuses cleanup. Recovery can
-            // inspect/delete the partial file after the grant becomes available.
             if (cleaned) clearPending(jobId)
             throw error
         }
@@ -349,6 +362,7 @@ class OutputStore(private val context: Context) {
         private const val COPY_BUFFER_SIZE = 1024 * 1024
         private const val ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private val journalLock = Any()
+        private val publicationReservationGate = PublicationReservationGate()
 
         fun mimeTypeFor(fileName: String, fallback: String? = null): String {
             val extension = fileName.substringAfterLast('.', "").lowercase()
