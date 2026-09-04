@@ -49,7 +49,7 @@ internal object DirectDownloadRetryPolicy {
         nowMillis: Long = System.currentTimeMillis(),
     ): Boolean {
         if (retriesUsed >= MAX_RETRIES || error !is IOException) return false
-        if (error is SSLException || error is ProtocolException) return false
+        if (error is StorageException || error is SSLException || error is ProtocolException) return false
 
         val message = error.message.orEmpty()
         if (

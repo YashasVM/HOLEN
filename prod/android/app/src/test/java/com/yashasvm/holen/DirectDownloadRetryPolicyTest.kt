@@ -51,13 +51,14 @@ class DirectDownloadRetryPolicyTest {
     }
 
     @Test
-    fun doesNotRetryPermanentHttpOrSecurityFailures() {
+    fun doesNotRetryPermanentHttpSecurityOrStorageFailures() {
         listOf(401, 403, 404, 410, 429, 501).forEach { status ->
             assertFalse(
                 "HTTP $status should not be automatically retried",
                 DirectDownloadRetryPolicy.shouldRetry(IOException("Network response $status"), 0),
             )
         }
+        assertFalse(DirectDownloadRetryPolicy.shouldRetry(StorageException("disk full"), 0))
         assertFalse(DirectDownloadRetryPolicy.shouldRetry(SSLHandshakeException("certificate"), 0))
         assertFalse(DirectDownloadRetryPolicy.shouldRetry(ProtocolException("bad response"), 0))
         assertFalse(DirectDownloadRetryPolicy.shouldRetry(IOException("Too many redirects."), 0))
