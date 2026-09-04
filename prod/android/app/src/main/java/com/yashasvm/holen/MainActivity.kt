@@ -124,7 +124,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (viewModel.onboardingCompleted.value && !DownloadService.isRunning) {
+        if (
+            !isChangingConfigurations &&
+            viewModel.onboardingCompleted.value &&
+            !DownloadService.isRunning
+        ) {
             YtDlpEngine.get(applicationContext).scheduleBackgroundRefreshIfDue()
         }
     }
