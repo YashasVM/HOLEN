@@ -1,5 +1,7 @@
 package com.yashasvm.holen
 
+import kotlinx.coroutines.CancellationException
+
 /**
  * Identifies only high-confidence yt-dlp extractor breakage that may justify a one-time engine
  * refresh before retrying. False positives are intentionally more costly than false negatives:
@@ -81,4 +83,35 @@ internal fun isStaleExtractorCandidate(message: String): Boolean {
     // explicit extractor parsing failures accompanied by yt-dlp's bug-report guidance.
     if (!normalized.contains("please report this issue")) return false
     return normalized.contains("unable to extract") || normalized.contains("failed to extract")
+}
+
+/**
+ * Runs one operation attempt and, only for a high-confidence stale-extractor failure, performs
+ * maintenance before exactly one retry. The operation must acquire/release any normal engine gate
+ * inside [operation]; [refresh] is intentionally invoked only after that failed attempt returned,
+ * so exclusive maintenance is never requested while the caller still owns a reader operation.
+ */
+internal suspend fun <T> runWithSingleStaleExtractorRecovery(
+    operation: suspend () -> T,
+    refresh: suspend () -> Unit,
+): T {
+    val firstError = try {
+        return operation()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        if (!isStaleExtractorCandidate(error)) throw error
+        error
+    }
+
+    try {
+        refresh()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (refreshError: Throwable) {
+        firstError.addSuppressed(refreshError)
+        throw firstError
+    }
+
+    return operation()
 }
