@@ -154,6 +154,18 @@ class DirectDownloaderResumeTest {
     }
 
     @Test
+    fun staleResumeStateIsRemovedBeforeFreshTransfer() {
+        val resumeFile = File.createTempFile("holen-resume", ".state")
+        try {
+            resumeFile.writeText("stale")
+            DirectDownloader.clearResumeState(resumeFile)
+            assertFalse(resumeFile.exists())
+        } finally {
+            resumeFile.delete()
+        }
+    }
+
+    @Test
     fun staleResumeStateThatCannotBeRemovedIsAStorageFailure() {
         val parent = createTempDir(prefix = "holen-resume-")
         val occupiedResumePath = File(parent, "download.resume").apply {
