@@ -33,6 +33,18 @@ class PublicationStorageTest {
     }
 
     @Test
+    fun customFailureMessageIsUsedForDeletionErrors() {
+        val cause = IOException("provider delete failed")
+        try {
+            publicationStorage<Unit>("The saved file could not be deleted.") { throw cause }
+            fail("Expected provider deletion failure to be classified as storage")
+        } catch (error: StorageException) {
+            assertEquals("The saved file could not be deleted.", error.message)
+            assertSame(cause, error.cause)
+        }
+    }
+
+    @Test
     fun existingStorageFailureIsPreserved() {
         val expected = StorageException("already classified")
         try {
