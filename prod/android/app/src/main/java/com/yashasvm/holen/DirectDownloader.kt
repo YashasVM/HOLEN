@@ -7,7 +7,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
@@ -107,12 +106,16 @@ class DirectDownloader {
                     connection.header("Date"),
                 )
                 if (state != null) {
-                    validatorFile.writeText(encodeResumeState(state))
+                    try {
+                        validatorFile.writeText(encodeResumeState(state))
+                    } catch (error: IOException) {
+                        throw StorageException("Could not save download resume state.", error)
+                    }
                 } else {
                     validatorFile.delete()
                 }
                 requireNotNull(connection.body).byteStream().use { input ->
-                    FileOutputStream(part, existing > 0).use { output ->
+                    StorageFileOutput.open(part, existing > 0).use { output ->
                         val buffer = ByteArray(COPY_BUFFER_SIZE)
                         while (true) {
                             currentCoroutineContext().ensureActive()
@@ -143,7 +146,7 @@ class DirectDownloader {
                                 lastBytes = downloaded
                             }
                         }
-                        output.fd.sync()
+                        output.sync()
                     }
                 }
             }
