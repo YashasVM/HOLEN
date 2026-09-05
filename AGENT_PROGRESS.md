@@ -9,9 +9,10 @@
 - Shared Android staging preparation now fails fast with `StorageException` when the private staging directory cannot be created. Unit coverage includes successful creation and a real filesystem path conflict. Generic CI and Android CI passed on `352ae7df`.
 - SAF publication now classifies a missing or empty completed staging file as `StorageException` instead of `IllegalArgumentException`. Generic CI, Android verify, and Android instrumentation all passed for `856e1f58`.
 - SAF publication now requires the pending-publication journal write to succeed before document creation/copy can continue. A failed synchronous `SharedPreferences.commit()` is classified as `StorageException` instead of silently proceeding without durable recovery state. Generic CI and Android CI passed for `0034560f`.
+- SAF output open/write/flush/close and staging-read failures are now classified as storage/finalization failures while preserving coroutine cancellation and already-classified `StorageException`s. Generic CI `33953826790` and Android CI `33953826791` passed for `e9dc3141`.
 
 ## In progress
-- Audit SAF provider publication failures next. The current copy path verifies the number of source bytes read but provider `openOutputStream`/write/flush failures can still surface as raw provider exceptions; only change this if failure classification can be improved without masking cancellation or creating false integrity failures on providers with delayed/unknown size metadata.
+- SAF `createDocument()` provider failures are now routed through the same storage classifier with a creation-specific message. Regression coverage was added on `6d328e61`; generic and Android CI are still pending for that tip.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -19,6 +20,7 @@
 - `352ae7df`: generic CI `33943292084` passed and Android CI `33943292094` passed.
 - `856e1f58`: generic CI `33945930546` passed; Android verify and instrumentation in run `33945930536` both passed.
 - `0034560f`: Android CI run `33948484123` passed. The subsequent `agent-dev` progress-only tip also passed generic CI (`33948497433`).
+- `e9dc3141`: generic CI `33953826790` and Android CI `33953826791` passed.
 
 ## Known risks / weekly review
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
