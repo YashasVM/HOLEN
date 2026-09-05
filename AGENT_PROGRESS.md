@@ -12,9 +12,10 @@
 - SAF output open/write/flush/close and staging-read failures are now classified as storage/finalization failures while preserving coroutine cancellation and already-classified `StorageException`s. Generic CI `33953826790` and Android CI `33953826791` passed for `e9dc3141`.
 - SAF `createDocument()` provider failures are now classified as storage/finalization failures with a creation-specific message. Regression coverage on `6d328e61` passed generic CI plus Android verify and instrumentation.
 - Explicit user-requested SAF deletion now classifies provider exceptions as `StorageException("The saved file could not be deleted.")` while preserving the provider's boolean-false path and the deliberately best-effort publication rollback behavior. Generic CI and Android CI passed for `b4d13da1`/the following progress tip.
+- yt-dlp rate-limit failures are classified separately from generic transport failures. HTTP 429, yt-dlp's documented HTTP 402 anti-abuse response, and status-less messages such as `Too Many Requests` / `rate limit exceeded` tell the user to wait instead of immediately retrying. Generic CI `33964543888` and Android CI `33964529639` passed.
 
 ## In progress
-- yt-dlp rate-limit failures are being classified separately from generic transport failures. HTTP 429, yt-dlp's documented HTTP 402 anti-abuse response, and status-less messages such as `Too Many Requests` / `rate limit exceeded` now tell the user to wait instead of immediately retrying. Regression coverage is committed on `0a3b1ac6`; CI is pending.
+- Rotated/stale yt-dlp account cookies are now classified as an authentication-refresh failure instead of generic network or bot-check advice. The classifier recognizes yt-dlp's current YouTube warning that provided account cookies are no longer valid/likely rotated, and gives it priority over a combined `Sign in to confirm you're not a bot` error. Production change is `676e6c94`; focused regression coverage is `a8f6c26a`; CI is pending.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -26,7 +27,9 @@
 - `6d328e61`: generic CI `33956629862` passed; Android verify and instrumentation in run `33956629863` both passed.
 - `9efb6b0e`: progress-only tip passed generic CI `33956653605`; Android CI did not rerun because no Android source changed.
 - `b4d13da1`: Android CI `33961872379` passed; the following progress-only tip `46794189` passed generic CI `33961882127`.
-- yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance, and a current August 2026 yt-dlp issue still shows HTTP 429 as an active real-world failure mode. HOLEN's new classifier follows that upstream behavior without changing retry counts or bypassing access controls.
+- `0a3b1ac6`: Android CI `33964529639` passed; the following `cb4b01c4` progress tip passed generic CI `33964543888`.
+- yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance, and a current August 2026 yt-dlp issue still shows HTTP 429 as an active real-world failure mode. HOLEN's classifier follows that upstream behavior without changing retry counts or bypassing access controls.
+- Current yt-dlp YouTube extractor code explicitly warns when account cookies stop being valid after rotation, and 2026 upstream reports show that this can happen during real download sessions. HOLEN now recognizes that exact failure mode rather than treating refreshable authentication state as a generic retry problem.
 
 ## Known risks / weekly review
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
