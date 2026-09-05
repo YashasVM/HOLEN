@@ -34,4 +34,31 @@ class OutputStoreStorageTest {
             occupiedPath.delete()
         }
     }
+
+    @Test
+    fun missingCompletedStagingFileIsClassifiedAsStorage() {
+        val parent = createTempDirectory("holen-output-store-").toFile()
+        val missing = File(parent, "missing.mp4")
+        try {
+            OutputStore.validateStagedFile(missing)
+            fail("Expected missing staged output to fail")
+        } catch (error: StorageException) {
+            assertEquals("The completed staging file is missing. Retry the download.", error.message)
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun emptyCompletedStagingFileIsClassifiedAsStorage() {
+        val empty = File.createTempFile("holen-output-store-", ".mp4")
+        try {
+            OutputStore.validateStagedFile(empty)
+            fail("Expected empty staged output to fail")
+        } catch (error: StorageException) {
+            assertEquals("The completed staging file is missing. Retry the download.", error.message)
+        } finally {
+            empty.delete()
+        }
+    }
 }
