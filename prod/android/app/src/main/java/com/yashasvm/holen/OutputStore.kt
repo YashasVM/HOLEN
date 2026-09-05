@@ -102,24 +102,26 @@ class OutputStore(private val context: Context) {
                 )
             }
             val created = document ?: throw StorageException("The selected folder could not create a file.")
-            val copied = resolver.openOutputStream(created, "w")?.use { output ->
-                FileInputStream(staged.file).use { input ->
-                    val buffer = ByteArray(COPY_BUFFER_SIZE)
-                    var count = 0L
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        if (isCancelled()) {
-                            throw kotlinx.coroutines.CancellationException("Finalization cancelled")
+            val copied = publicationStorage {
+                resolver.openOutputStream(created, "w")?.use { output ->
+                    FileInputStream(staged.file).use { input ->
+                        val buffer = ByteArray(COPY_BUFFER_SIZE)
+                        var count = 0L
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            if (isCancelled()) {
+                                throw kotlinx.coroutines.CancellationException("Finalization cancelled")
+                            }
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            count += read
                         }
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        count += read
+                        output.flush()
+                        count
                     }
-                    output.flush()
-                    count
-                }
-            } ?: throw StorageException("The selected folder could not be written.")
+                } ?: throw StorageException("The selected folder could not be written.")
+            }
             if (copied != staged.file.length()) {
                 throw StorageException("The copied file did not match the completed download.")
             }
