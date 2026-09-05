@@ -1,5 +1,7 @@
 package com.yashasvm.holen
 
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
 
@@ -27,6 +29,23 @@ internal class YtDlpDiagnosticTail(
 
     @Synchronized
     fun snapshot(): String = buffer.toString().trim()
+}
+
+internal fun executeYtDlpDownload(
+    request: YoutubeDLRequest,
+    processId: String,
+    isCancelled: () -> Boolean,
+    callback: (Float, Long, String) -> Unit,
+) = run {
+    val diagnostics = YtDlpDiagnosticTail()
+    try {
+        YoutubeDL.execute(request, processId, true) { percent, eta, line ->
+            diagnostics.add(line)
+            callback(percent, eta, line)
+        }
+    } catch (error: Throwable) {
+        throw withYtDlpDiagnostics(error, diagnostics.snapshot(), isCancelled())
+    }
 }
 
 internal fun withYtDlpDiagnostics(
