@@ -365,6 +365,10 @@ class YtDlpEngine private constructor(private val context: Context) {
                 }
                 version
             } catch (error: Throwable) {
+                // youtubedl-android checks the network before replacing the active binary and
+                // restores its bundled binary if installation itself fails. Clearing HOLEN's
+                // whole runtime here would turn an ordinary offline update check into a forced
+                // restart even though the previous engine is still usable.
                 throw IOException("Engine update failed. The current engine was kept.", error)
             }
         }
@@ -390,14 +394,19 @@ class YtDlpEngine private constructor(private val context: Context) {
                 try {
                     YoutubeDL.init(context)
                     preferences.edit {
-                        putString(HolenStore.PREF_ENGINE_VERSION, YoutubeDL.version(context) ?: bundledVersion)
+                        putString(
+                            HolenStore.PREF_ENGINE_VERSION,
+                            YoutubeDL.version(context) ?: bundledVersion,
+                        )
                     }
                     initialized = true
                 } catch (firstError: Throwable) {
                     try {
                         clearRuntimeLocked(requiresRestart = false)
                         YoutubeDL.init(context)
-                        preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion) }
+                        preferences.edit {
+                            putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
+                        }
                         initialized = true
                     } catch (fallbackError: Throwable) {
                         throw IOException(
@@ -482,7 +491,8 @@ class YtDlpEngine private constructor(private val context: Context) {
             for (index in 0 until minOf(entries.length(), limit)) {
                 val item = entries.optJSONObject(index) ?: continue
                 val id = item.optString("id").ifBlank { index.toString() }
-                val candidate = item.optString("webpage_url").ifBlank { item.optString("url") }
+                val candidate = item.optString("webpage_url")
+                    .ifBlank { item.optString("url") }
                 if (!candidate.startsWith("https://")) continue
                 add(
                     PlaylistEntry(
