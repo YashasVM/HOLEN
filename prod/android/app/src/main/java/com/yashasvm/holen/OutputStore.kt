@@ -316,7 +316,9 @@ class OutputStore(private val context: Context) {
                 pending.documentUri?.let { put("uri", it) }
             },
         )
-        preferences.edit(commit = true) { putString(PREF_PENDING_PUBLICATIONS, root.toString()) }
+        ensurePublicationJournalSaved(
+            preferences.edit().putString(PREF_PENDING_PUBLICATIONS, root.toString()).commit(),
+        )
     }
 
     private fun clearPending(jobId: String) = synchronized(journalLock) {
@@ -372,6 +374,12 @@ class OutputStore(private val context: Context) {
         internal fun validateStagedFile(file: File) {
             if (!file.isFile || file.length() <= 0) {
                 throw StorageException("The completed staging file is missing. Retry the download.")
+            }
+        }
+
+        internal fun ensurePublicationJournalSaved(saved: Boolean) {
+            if (!saved) {
+                throw StorageException("Could not save download finalization state.")
             }
         }
 
