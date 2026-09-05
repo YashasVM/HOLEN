@@ -80,12 +80,14 @@ class OutputStore(private val context: Context) {
                     documentUri = null,
                 )
                 savePending(pending)
-                val created = DocumentsContract.createDocument(
-                    resolver,
-                    treeDocument,
-                    staged.mimeType,
-                    safeName,
-                ) ?: throw StorageException("The selected folder could not create a file.")
+                val created = publicationStorage("The selected folder could not create a file.") {
+                    DocumentsContract.createDocument(
+                        resolver,
+                        treeDocument,
+                        staged.mimeType,
+                        safeName,
+                    ) ?: throw StorageException("The selected folder could not create a file.")
+                }
                 document = created
                 val actualName = when (val inspected = inspectDocument(created)) {
                     is DocumentInspection.Found -> inspected.details.fileName.takeIf(String::isNotBlank)
