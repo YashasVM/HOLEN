@@ -61,4 +61,19 @@ class OutputStoreStorageTest {
             empty.delete()
         }
     }
+
+    @Test
+    fun failedPublicationJournalCommitIsClassifiedAsStorage() {
+        try {
+            OutputStore.ensurePublicationJournalSaved(false)
+            fail("Expected failed journal commit to fail")
+        } catch (error: StorageException) {
+            assertEquals("Could not save download finalization state.", error.message)
+        }
+    }
+
+    @Test
+    fun successfulPublicationJournalCommitIsAccepted() {
+        OutputStore.ensurePublicationJournalSaved(true)
+    }
 }
