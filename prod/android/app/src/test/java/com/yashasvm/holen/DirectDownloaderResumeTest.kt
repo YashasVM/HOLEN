@@ -1,10 +1,12 @@
 package com.yashasvm.holen
 
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class DirectDownloaderResumeTest {
@@ -136,5 +138,18 @@ class DirectDownloaderResumeTest {
             "download-download.part",
             DirectDownloader.completionFileName("download.part"),
         )
+    }
+
+    @Test
+    fun stagingDirectoryPreparationFailureIsClassifiedAsStorage() {
+        val occupiedPath = File.createTempFile("holen-staging", ".tmp")
+        try {
+            DirectDownloader.preparePrivateDownloadDirectory(occupiedPath)
+            fail("Expected staging-path conflict to fail")
+        } catch (error: StorageException) {
+            assertEquals("Could not prepare private download storage.", error.message)
+        } finally {
+            occupiedPath.delete()
+        }
     }
 }
