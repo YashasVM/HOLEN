@@ -110,7 +110,7 @@ class DirectDownloader {
                         throw StorageException("Could not save download resume state.", error)
                     }
                 } else {
-                    validatorFile.delete()
+                    clearResumeState(validatorFile)
                 }
                 requireNotNull(connection.body).byteStream().use { input ->
                     StorageFileOutput.open(part, existing > 0).use { output ->
@@ -227,6 +227,12 @@ class DirectDownloader {
         internal fun preparePrivateDownloadDirectory(directory: File) {
             if (!directory.isDirectory && !directory.mkdirs()) {
                 throw StorageException("Could not prepare private download storage.")
+            }
+        }
+
+        internal fun clearResumeState(file: File) {
+            if (file.exists() && !file.delete()) {
+                throw StorageException("Could not clear stale download resume state.")
             }
         }
 

@@ -152,4 +152,21 @@ class DirectDownloaderResumeTest {
             occupiedPath.delete()
         }
     }
+
+    @Test
+    fun staleResumeStateThatCannotBeRemovedIsAStorageFailure() {
+        val parent = createTempDir(prefix = "holen-resume-")
+        val occupiedResumePath = File(parent, "download.resume").apply {
+            mkdir()
+            File(this, "blocker").writeText("x")
+        }
+        try {
+            DirectDownloader.clearResumeState(occupiedResumePath)
+            fail("Expected stale resume-state cleanup to fail")
+        } catch (error: StorageException) {
+            assertEquals("Could not clear stale download resume state.", error.message)
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
 }
