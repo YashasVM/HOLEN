@@ -47,6 +47,8 @@ fun friendlyFailure(error: Throwable): String {
         normalized.contains("media engine reset is pending") ||
             normalized.contains("close and reopen holen") ->
             "The media engine was reset. Close and reopen HOLEN before analyzing or downloading media."
+        isStaleCookieFailure(normalized) ->
+            "The saved account cookies are no longer valid. Export fresh cookies from a signed-in browser session, replace them in Settings, then retry."
         normalized.contains("confirm you're not a bot") ||
             normalized.contains("confirm you’re not a bot") ||
             normalized.contains("verify you are human") ||
@@ -136,6 +138,13 @@ private fun isRateLimitFailure(message: String): Boolean = listOf(
     "rate-limit exceeded",
     "rate limited",
     "rate-limited",
+).any(message::contains)
+
+private fun isStaleCookieFailure(message: String): Boolean = listOf(
+    "account cookies are no longer valid",
+    "cookies are no longer valid",
+    "cookies have likely been rotated",
+    "cookies were rotated",
 ).any(message::contains)
 
 private fun isAgeRestrictedFailure(message: String): Boolean = listOf(
