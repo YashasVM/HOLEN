@@ -287,6 +287,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                             "--embed-metadata",
                             "--downloader", "libaria2c.so",
                             "--downloader", "dash,m3u8:native",
+                            "--downloader-args", "aria2c:--max-tries=4 --connect-timeout=20 --timeout=20",
                             "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
