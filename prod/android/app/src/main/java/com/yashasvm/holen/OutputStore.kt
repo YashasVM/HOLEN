@@ -180,7 +180,9 @@ class OutputStore(private val context: Context) {
     fun pendingPublicationIds(): Set<String> = pendingPublications().keys
 
     suspend fun deleteDocument(uri: Uri): Boolean = withContext(Dispatchers.IO) {
-        DocumentsContract.deleteDocument(context.contentResolver, uri)
+        publicationStorage("The saved file could not be deleted.") {
+            DocumentsContract.deleteDocument(context.contentResolver, uri)
+        }
     }
 
     fun openIntent(job: DownloadJob): Intent? {
