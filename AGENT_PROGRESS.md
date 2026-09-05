@@ -13,9 +13,10 @@
 - SAF `createDocument()` provider failures are now classified as storage/finalization failures with a creation-specific message. Regression coverage on `6d328e61` passed generic CI plus Android verify and instrumentation.
 - Explicit user-requested SAF deletion now classifies provider exceptions as `StorageException("The saved file could not be deleted.")` while preserving the provider's boolean-false path and the deliberately best-effort publication rollback behavior. Generic CI and Android CI passed for `b4d13da1`/the following progress tip.
 - yt-dlp rate-limit failures are classified separately from generic transport failures. HTTP 429, yt-dlp's documented HTTP 402 anti-abuse response, and status-less messages such as `Too Many Requests` / `rate limit exceeded` tell the user to wait instead of immediately retrying. Generic CI `33964543888` and Android CI `33964529639` passed.
+- Rotated/stale yt-dlp account cookies are classified as an authentication-refresh failure instead of generic network or bot-check advice. The classifier recognizes yt-dlp's current YouTube warning that account cookies are no longer valid/likely rotated and prioritizes it over a combined bot-check error. Generic CI `33967431291`, Android CI `33967431296`, and the following progress-tip generic CI `33967446685` passed.
 
 ## In progress
-- Rotated/stale yt-dlp account cookies are now classified as an authentication-refresh failure instead of generic network or bot-check advice. The classifier recognizes yt-dlp's current YouTube warning that provided account cookies are no longer valid/likely rotated, and gives it priority over a combined `Sign in to confirm you're not a bot` error. Production change is `676e6c94`; focused regression coverage is `a8f6c26a`; CI is pending.
+- Preserve yt-dlp failure diagnostics from the real Android download execution path. HOLEN currently calls `YoutubeDL.execute(..., redirectErrorStream = true, ...)` so progress and diagnostics arrive through the callback, but youtubedl-android throws failed executions from its separate stderr buffer. Upstream wrapper source shows that buffer is empty when stderr has been redirected into stdout, so authentication/rate-limit/extractor details can be lost before `friendlyFailure()` sees them. Fix this without regressing progress callbacks or cancellation semantics.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -28,8 +29,10 @@
 - `9efb6b0e`: progress-only tip passed generic CI `33956653605`; Android CI did not rerun because no Android source changed.
 - `b4d13da1`: Android CI `33961872379` passed; the following progress-only tip `46794189` passed generic CI `33961882127`.
 - `0a3b1ac6`: Android CI `33964529639` passed; the following `cb4b01c4` progress tip passed generic CI `33964543888`.
-- yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance, and a current August 2026 yt-dlp issue still shows HTTP 429 as an active real-world failure mode. HOLEN's classifier follows that upstream behavior without changing retry counts or bypassing access controls.
-- Current yt-dlp YouTube extractor code explicitly warns when account cookies stop being valid after rotation, and 2026 upstream reports show that this can happen during real download sessions. HOLEN now recognizes that exact failure mode rather than treating refreshable authentication state as a generic retry problem.
+- `a8f6c26a`: Android CI `33967431296` passed; generic CI `33967431291` passed; progress-only tip `24d61053` passed generic CI `33967446685`.
+- youtubedl-android 0.18.x execution source starts both stdout/stderr readers, but with `redirectErrorStream=true` stderr is merged into stdout. On non-zero exit it still constructs `YoutubeDLException` only from `errBuffer`. This is direct upstream evidence that HOLEN's current download invocation can discard detailed yt-dlp failure text even though the callback observed it.
+- yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance. HOLEN's classifier follows that upstream behavior without changing retry counts or bypassing access controls.
+- Current yt-dlp YouTube extractor behavior warns when account cookies stop being valid after rotation; HOLEN recognizes that failure mode, but the execution-path diagnostic preservation issue above must be fixed for reliable real-world delivery of that warning.
 
 ## Known risks / weekly review
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
