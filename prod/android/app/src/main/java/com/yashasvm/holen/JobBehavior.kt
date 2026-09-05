@@ -52,6 +52,8 @@ fun friendlyFailure(error: Throwable): String {
             normalized.contains("verify you are human") ||
             normalized.contains("unusual traffic") ->
             "The source asked for a bot check. Wait a little, then retry; valid cookies may help for content you can access."
+        isRateLimitFailure(normalized) ->
+            "The source is rate-limiting downloads. Wait before retrying; repeated retries can extend the limit."
         isAgeRestrictedFailure(normalized) ->
             "This video needs age verification. Use fresh cookies from an account permitted to watch it, then retry."
         isLoginRequiredFailure(normalized) ->
@@ -123,10 +125,18 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     } else {
         "The media is no longer available (HTTP $status), or the source changed its URL. Refresh the link and retry."
     }
-    429 -> "The source is rate-limiting downloads (HTTP 429). Wait before retrying; repeated retries can extend the limit."
+    402, 429 -> "The source is rate-limiting downloads (HTTP $status). Wait before retrying; repeated retries can extend the limit."
     in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
     else -> "The source returned HTTP $status. Check the link and try again."
 }
+
+private fun isRateLimitFailure(message: String): Boolean = listOf(
+    "too many requests",
+    "rate limit exceeded",
+    "rate-limit exceeded",
+    "rate limited",
+    "rate-limited",
+).any(message::contains)
 
 private fun isAgeRestrictedFailure(message: String): Boolean = listOf(
     "age-restricted",
