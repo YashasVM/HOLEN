@@ -59,9 +59,7 @@ class OutputStore(private val context: Context) {
     ): PublishedFile = withContext(Dispatchers.IO) {
         val tree = treeUri ?: throw StorageException("Download folder permission is missing.")
         if (!hasValidTreeGrant()) throw StorageException("Download folder permission was revoked.")
-        require(staged.file.isFile && staged.file.length() > 0) {
-            "The completed staging file is missing. Retry the download."
-        }
+        validateStagedFile(staged.file)
         val resolver = context.contentResolver
         val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
             tree,
@@ -369,6 +367,12 @@ class OutputStore(private val context: Context) {
                 throw StorageException("Could not prepare private download storage.")
             }
             return directory
+        }
+
+        internal fun validateStagedFile(file: File) {
+            if (!file.isFile || file.length() <= 0) {
+                throw StorageException("The completed staging file is missing. Retry the download.")
+            }
         }
 
         fun mimeTypeFor(fileName: String, fallback: String? = null): String {
