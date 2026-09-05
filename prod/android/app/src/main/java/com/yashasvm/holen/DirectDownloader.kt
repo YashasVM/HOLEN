@@ -33,9 +33,7 @@ class DirectDownloader {
     ): StagedDownload = withContext(Dispatchers.IO) {
         cancelled.set(false)
         if (isCancelled()) throw CancellationException("Download cancelled")
-        check(directory.isDirectory || directory.mkdirs()) {
-            "Could not prepare private download storage."
-        }
+        preparePrivateDownloadDirectory(directory)
         // These names are deliberately not derived from the response. A hostile
         // Content-Disposition value must never collide with resumable state.
         val part = File(directory, PART_FILE_NAME)
@@ -225,6 +223,12 @@ class DirectDownloader {
         private const val USER_AGENT = "Holen Android/1"
         private const val LAST_MODIFIED_STRONG_GAP_SECONDS = 60L
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+
+        internal fun preparePrivateDownloadDirectory(directory: File) {
+            if (!directory.isDirectory && !directory.mkdirs()) {
+                throw StorageException("Could not prepare private download storage.")
+            }
+        }
 
         internal fun isAcceptedTransferResponse(
             completedResume: Boolean,
