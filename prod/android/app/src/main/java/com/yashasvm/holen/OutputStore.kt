@@ -40,7 +40,7 @@ class OutputStore(private val context: Context) {
     }
 
     fun stagingDirectory(jobId: String): File =
-        File(stagingRootDirectory(), jobId).apply { mkdirs() }
+        prepareStagingDirectory(File(stagingRootDirectory(), jobId))
 
     private fun stagingRootDirectory(): File {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
@@ -363,6 +363,13 @@ class OutputStore(private val context: Context) {
         private const val ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private val journalLock = Any()
         private val publicationReservationGate = PublicationReservationGate()
+
+        internal fun prepareStagingDirectory(directory: File): File {
+            if (!directory.isDirectory && !directory.mkdirs()) {
+                throw StorageException("Could not prepare private download storage.")
+            }
+            return directory
+        }
 
         fun mimeTypeFor(fileName: String, fallback: String? = null): String {
             val extension = fileName.substringAfterLast('.', "").lowercase()
