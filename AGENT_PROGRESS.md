@@ -16,7 +16,7 @@
 - Rotated/stale yt-dlp account cookies are classified as an authentication-refresh failure instead of generic network or bot-check advice. The classifier recognizes yt-dlp's current YouTube warning that account cookies are no longer valid/likely rotated and prioritizes it over a combined bot-check error. Generic CI `33967431291`, Android CI `33967431296`, and the following progress-tip generic CI `33967446685` passed.
 
 ## In progress
-- Preserve yt-dlp failure diagnostics from the real Android download execution path. HOLEN currently calls `YoutubeDL.execute(..., redirectErrorStream = true, ...)` so progress and diagnostics arrive through the callback, but youtubedl-android throws failed executions from its separate stderr buffer. Upstream wrapper source shows that buffer is empty when stderr has been redirected into stdout, so authentication/rate-limit/extractor details can be lost before `friendlyFailure()` sees them. Fix this without regressing progress callbacks or cancellation semantics.
+- Preserve yt-dlp failure diagnostics from the real Android download path. The implementation now keeps a bounded non-progress tail from the existing merged callback and, on failed execution, attaches that text to the thrown failure while preserving cancellation. This directly addresses youtubedl-android's empty `errBuffer` when HOLEN uses stderr redirection for live progress. Focused unit tests cover progress filtering, empty-wrapper errors, and cancellation; generic/Android CI are still running, so this is not yet marked complete.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -30,11 +30,13 @@
 - `b4d13da1`: Android CI `33961872379` passed; the following progress-only tip `46794189` passed generic CI `33961882127`.
 - `0a3b1ac6`: Android CI `33964529639` passed; the following `cb4b01c4` progress tip passed generic CI `33964543888`.
 - `a8f6c26a`: Android CI `33967431296` passed; generic CI `33967431291` passed; progress-only tip `24d61053` passed generic CI `33967446685`.
-- youtubedl-android 0.18.x execution source starts both stdout/stderr readers, but with `redirectErrorStream=true` stderr is merged into stdout. On non-zero exit it still constructs `YoutubeDLException` only from `errBuffer`. This is direct upstream evidence that HOLEN's current download invocation can discard detailed yt-dlp failure text even though the callback observed it.
+- Current diagnostic-preservation tip `8fae2df0`: generic CI `33973598736` and Android CI `33973598919` started and are still in progress.
+- youtubedl-android 0.18.x execution source starts both stdout/stderr readers, but with `redirectErrorStream=true` stderr is merged into stdout. On non-zero exit it still constructs `YoutubeDLException` only from `errBuffer`. This is direct upstream evidence that HOLEN's prior download invocation could discard detailed yt-dlp failure text even though the callback observed it.
 - yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance. HOLEN's classifier follows that upstream behavior without changing retry counts or bypassing access controls.
-- Current yt-dlp YouTube extractor behavior warns when account cookies stop being valid after rotation; HOLEN recognizes that failure mode, but the execution-path diagnostic preservation issue above must be fixed for reliable real-world delivery of that warning.
+- Current yt-dlp YouTube extractor behavior warns when account cookies stop being valid after rotation; HOLEN recognizes that failure mode, and the in-progress execution-path fix is intended to ensure the real Android failure path retains that warning.
 
 ## Known risks / weekly review
+- The diagnostic tail is intentionally bounded and excludes HOLEN's high-frequency progress marker, but it can still contain ordinary yt-dlp informational lines preceding the final error. The user-facing classifier selects known auth/rate-limit/extractor patterns before falling back to generic text.
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
 - Publication rollback deletion remains best-effort by design. If provider deletion fails, the pending-publication journal is retained for conservative recovery rather than masking the original finalization failure.
 - Direct-download resume intentionally prefers corruption safety over reuse: strong ETags are preferred, Last-Modified-only state uses a conservative clock margin, and changed signed/redirect targets restart rather than append bytes.
