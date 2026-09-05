@@ -43,7 +43,7 @@ internal fun executeYtDlpDownload(
             diagnostics.add(line)
             callback(percent, eta, line)
         }
-    } catch (error: Throwable) {
+    } catch (error: Exception) {
         throw withYtDlpDiagnostics(error, diagnostics.snapshot(), isCancelled())
     }
 }
@@ -54,7 +54,9 @@ internal fun withYtDlpDiagnostics(
     cancelled: Boolean,
 ): Throwable {
     if (error is CancellationException) return error
-    if (cancelled) return CancellationException("Download cancelled", error)
+    if (cancelled) {
+        return CancellationException("Download cancelled").apply { initCause(error) }
+    }
 
     val tail = diagnostics.trim()
     if (tail.isEmpty()) return error
