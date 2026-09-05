@@ -25,7 +25,23 @@ class FriendlyFailureTest {
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 404: Not Found")).contains("no longer available"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("repeated retries"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 402: Payment Required")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 503: Service Unavailable")).contains("temporarily unavailable"))
+    }
+
+    @Test
+    fun textualRateLimitsAreActionableWithoutAnHttpStatus() {
+        val tooMany = friendlyFailure(
+            IllegalStateException("ERROR: Unable to download API page: Too Many Requests"),
+        )
+        val explicitLimit = friendlyFailure(
+            IllegalStateException("ERROR: Source rate limit exceeded; try again later"),
+        )
+
+        assertTrue(tooMany.contains("rate-limiting"))
+        assertTrue(tooMany.contains("Wait before retrying"))
+        assertTrue(explicitLimit.contains("rate-limiting"))
+        assertFalse(tooMany.contains("network transfer failed", ignoreCase = true))
     }
 
     @Test
