@@ -11,9 +11,10 @@
 - SAF publication now requires the pending-publication journal write to succeed before document creation/copy can continue. A failed synchronous `SharedPreferences.commit()` is classified as `StorageException` instead of silently proceeding without durable recovery state. Generic CI and Android CI passed for `0034560f`.
 - SAF output open/write/flush/close and staging-read failures are now classified as storage/finalization failures while preserving coroutine cancellation and already-classified `StorageException`s. Generic CI `33953826790` and Android CI `33953826791` passed for `e9dc3141`.
 - SAF `createDocument()` provider failures are now classified as storage/finalization failures with a creation-specific message. Regression coverage on `6d328e61` passed generic CI plus Android verify and instrumentation.
+- Explicit user-requested SAF deletion now classifies provider exceptions as `StorageException("The saved file could not be deleted.")` while preserving the provider's boolean-false path and the deliberately best-effort publication rollback behavior. Generic CI and Android CI passed for `b4d13da1`/the following progress tip.
 
 ## In progress
-- Explicit user-requested SAF deletion now classifies provider exceptions as `StorageException("The saved file could not be deleted.")` while preserving the existing boolean false path and leaving publication rollback cleanup best-effort. Regression coverage is committed on `b4d13da1`; CI is pending.
+- yt-dlp rate-limit failures are being classified separately from generic transport failures. HTTP 429, yt-dlp's documented HTTP 402 anti-abuse response, and status-less messages such as `Too Many Requests` / `rate limit exceeded` now tell the user to wait instead of immediately retrying. Regression coverage is committed on `0a3b1ac6`; CI is pending.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -24,6 +25,8 @@
 - `e9dc3141`: generic CI `33953826790` and Android CI `33953826791` passed.
 - `6d328e61`: generic CI `33956629862` passed; Android verify and instrumentation in run `33956629863` both passed.
 - `9efb6b0e`: progress-only tip passed generic CI `33956653605`; Android CI did not rerun because no Android source changed.
+- `b4d13da1`: Android CI `33961872379` passed; the following progress-only tip `46794189` passed generic CI `33961882127`.
+- yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance, and a current August 2026 yt-dlp issue still shows HTTP 429 as an active real-world failure mode. HOLEN's new classifier follows that upstream behavior without changing retry counts or bypassing access controls.
 
 ## Known risks / weekly review
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
