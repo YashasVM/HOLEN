@@ -38,6 +38,48 @@ class YtDlpDiagnosticTailTest {
     }
 
     @Test
+    fun `preserved stale cookie diagnostic reaches friendly failure classification`() {
+        val result = withYtDlpDiagnostics(
+            IOException(""),
+            "WARNING: The account cookies are no longer valid. They may have been rotated.\nERROR: Sign in to confirm you're not a bot",
+            cancelled = false,
+        )
+
+        assertEquals(
+            "The saved account cookies are no longer valid. Export fresh cookies from a signed-in browser session, replace them in Settings, then retry.",
+            friendlyFailure(result),
+        )
+    }
+
+    @Test
+    fun `preserved rate limit diagnostic reaches friendly failure classification`() {
+        val result = withYtDlpDiagnostics(
+            IOException(""),
+            "ERROR: HTTP Error 429: Too Many Requests",
+            cancelled = false,
+        )
+
+        assertEquals(
+            "The source is rate-limiting downloads. Wait before retrying; repeated retries can extend the limit.",
+            friendlyFailure(result),
+        )
+    }
+
+    @Test
+    fun `preserved authentication diagnostic reaches friendly failure classification`() {
+        val result = withYtDlpDiagnostics(
+            IOException(""),
+            "ERROR: This video is private. Please sign in",
+            cancelled = false,
+        )
+
+        assertEquals(
+            "This source needs a signed-in account. Add fresh cookies from an account permitted to access it, then retry.",
+            friendlyFailure(result),
+        )
+    }
+
+    @Test
     fun `cancellation is preserved instead of becoming a diagnostic failure`() {
         val original = IOException("wrapper failed")
         val result = withYtDlpDiagnostics(
