@@ -10,10 +10,10 @@
 - Added stale/rotated YouTube-cookie classification and prioritization over generic bot-check advice.
 - Preserved a bounded 8 KiB non-progress diagnostic tail from real Android yt-dlp executions so stderr redirected into the callback is not lost before `friendlyFailure()`. End-to-end tests verify stale-cookie, HTTP 429/rate-limit, and account-required diagnostics reach the classifier. Generic and Android CI passed.
 - Audited app-level retry behavior: normal yt-dlp failures are not automatically requeued by `DownloadService`; HOLEN already caps yt-dlp transfer and fragment retries at 3 rather than upstream's default 10.
+- Aligned aria2 external HTTP failures with HOLEN's native downloader budget in `75c65db1`: `aria2c:--max-tries=4 --connect-timeout=20 --timeout=20`, with no positive `--retry-wait`. Regression coverage in `a0dcfb0f` passed generic CI `33997398948` and Android CI `33997399017`, including instrumentation.
 
 ## In progress
-- Aria2 external HTTP failure policy is now implemented on `agent-dev` in `75c65db1` and locked by regression coverage in `a0dcfb0f`: `aria2c:--max-tries=4 --connect-timeout=20 --timeout=20`. Four total aria2 attempts matches yt-dlp's initial attempt plus HOLEN's three configured retries, and the 20-second connect/read limits match HOLEN's socket timeout. `--retry-wait` remains unset so HOLEN does not opt into aria2's separate HTTP 503 retry behavior.
-- Generic CI `33997398948` passed for `a0dcfb0f`. Android CI `33997399017` is still running; do not treat the aria2 policy as fully validated until verify/instrumentation finish.
+- Added Android loopback instrumentation in `13a7595b` that initializes the bundled `libaria2c.so`, lets yt-dlp perform its generic media probe, forces the first two aria2 transfer attempts to return HTTP 500, and asserts recovery on the third transfer attempt within the configured four-attempt budget. Generic CI `33999844652` and Android CI `33999844695` are running; do not treat this as validated until instrumentation finishes.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -26,12 +26,12 @@
 - Android yt-dlp integrations using `libaria2c.so` accept downloader arguments under the `aria2c:` namespace.
 
 ## Known risks / weekly review
-- The new aria2 timeout policy can fail unusually slow or severely degraded HTTP endpoints sooner than aria2's defaults. This is intentional bounded-failure behavior, but Android CI does not constitute a real lossy-network benchmark; inspect real-world resume/failure behavior before merging if this area is critical.
-- The aria2 regression test currently guards the exact request configuration as a source contract; it protects against accidental policy drift but does not simulate aria2's network retry loop.
+- The new aria2 timeout policy can fail unusually slow or severely degraded HTTP endpoints sooner than aria2's defaults. This is intentional bounded-failure behavior; the new loopback retry probe covers deterministic transient HTTP failure recovery but is not a real lossy-network benchmark.
+- The aria2 source-contract test protects exact request configuration. The new Android probe exercises the bundled external downloader retry loop, but timeout/interruption resume behavior still needs separate evidence if it can be tested deterministically without flaky CI.
 - The diagnostic tail is bounded and excludes HOLEN's high-frequency progress marker, but can contain ordinary yt-dlp informational lines before the final error. Specific auth/rate-limit/extractor patterns are classified before generic fallback.
 - Direct-download resume favors corruption safety: changed signed/redirect targets restart rather than append bytes.
 - SAF publication retains conservative recovery state when provider cleanup fails; rollback and post-completion journal clearing remain best-effort where throwing could destroy or misreport an already published file.
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless Android packaging materially changes.
 
 ## Next review target
-- Finish Android CI for the aria2 policy. If green, run or add the strongest practical Android external-download smoke/failure probe available for timeout, interruption, and resume behavior before considering further retry/concurrency tuning.
+- Finish CI for the bundled aria2 retry probe. If green, add a deterministic partial-transfer interruption/resume probe only if it can verify real byte-range continuation without introducing timing-dependent CI; otherwise move to the next evidence-backed Android download bottleneck.
