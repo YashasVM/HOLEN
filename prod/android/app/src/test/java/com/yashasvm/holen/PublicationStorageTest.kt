@@ -21,6 +21,18 @@ class PublicationStorageTest {
     }
 
     @Test
+    fun customFailureMessageIsUsedForCreationErrors() {
+        val cause = IOException("provider create failed")
+        try {
+            publicationStorage<Unit>("The selected folder could not create a file.") { throw cause }
+            fail("Expected provider creation failure to be classified as storage")
+        } catch (error: StorageException) {
+            assertEquals("The selected folder could not create a file.", error.message)
+            assertSame(cause, error.cause)
+        }
+    }
+
+    @Test
     fun existingStorageFailureIsPreserved() {
         val expected = StorageException("already classified")
         try {
