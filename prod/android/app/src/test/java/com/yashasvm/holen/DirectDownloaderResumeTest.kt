@@ -1,6 +1,7 @@
 package com.yashasvm.holen
 
 import java.io.File
+import kotlin.io.path.createTempDirectory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -167,7 +168,7 @@ class DirectDownloaderResumeTest {
 
     @Test
     fun staleResumeStateThatCannotBeRemovedIsAStorageFailure() {
-        val parent = createTempDir(prefix = "holen-resume-")
+        val parent = createTempDirectory("holen-resume-").toFile()
         val occupiedResumePath = File(parent, "download.resume").apply {
             mkdir()
             File(this, "blocker").writeText("x")
