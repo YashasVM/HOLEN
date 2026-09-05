@@ -19,6 +19,7 @@
 - Retry-path audit found no second automatic job retry after a normal yt-dlp failure: `DownloadService` transitions the job directly to `FAILED`. HOLEN already limits yt-dlp transfer and fragment retries to 3 each rather than upstream's default 10, so no additional retry reduction was made without representative failure evidence.
 
 ## In progress
+- Audit the aria2 external-downloader path before changing retry/timeout behavior. Upstream yt-dlp's `Aria2cFD` does not translate yt-dlp's generic `retries` or socket-timeout settings into aria2 arguments; aria2 therefore keeps its own retry/timeout defaults for ordinary HTTP(S) transfers unless HOLEN passes explicit `aria2c:` downloader args. Add a targeted failure-path test before deciding whether to align aria2 with HOLEN's 3-retry / 20-second policy.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -38,9 +39,11 @@
 - yt-dlp's upstream FAQ groups HTTP 429 and HTTP 402 under request blocking/overuse guidance. HOLEN's classifier follows that upstream behavior without changing retry counts or bypassing access controls.
 - Current yt-dlp YouTube extractor behavior warns when account cookies stop being valid after rotation; the real Android failure path now retains that warning for classification.
 - Upstream yt-dlp currently defaults both `--retries` and `--fragment-retries` to 10; HOLEN explicitly uses 3 for each. Normal yt-dlp failures are not requeued by the Android service; only explicit service timeout recovery returns an interrupted job to `QUEUED`.
+- Current upstream yt-dlp `Aria2cFD` builds aria2 with its own fixed external-downloader options and maps rate limit, proxy, TLS, timestamps, progress, and resume state, but it does not map yt-dlp's `retries` or socket timeout. aria2 1.37 defaults `--max-tries` to 5 and connection/read timeouts to 60 seconds, so HOLEN's existing `--retries 3` / `--socket-timeout 20` do not by themselves bound aria2 HTTP failure latency.
 
 ## Known risks / weekly review
 - The diagnostic tail is intentionally bounded and excludes HOLEN's high-frequency progress marker, but it can still contain ordinary yt-dlp informational lines preceding the final error. The user-facing classifier selects known auth/rate-limit/extractor patterns before falling back to generic text.
+- aria2 currently has a different effective retry/timeout policy from yt-dlp's native downloader. Do not change it blindly: lowering retries can reduce resilience on flaky mobile networks, while leaving the mismatch can delay failure classification. Validate with controlled connection-drop/timeout cases first.
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
 - Publication rollback deletion remains best-effort by design. If provider deletion fails, the pending-publication journal is retained for conservative recovery rather than masking the original finalization failure.
 - Direct-download resume intentionally prefers corruption safety over reuse: strong ETags are preferred, Last-Modified-only state uses a conservative clock margin, and changed signed/redirect targets restart rather than append bytes.
