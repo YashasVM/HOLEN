@@ -13,7 +13,7 @@
 - SAF `createDocument()` provider failures are now classified as storage/finalization failures with a creation-specific message. Regression coverage on `6d328e61` passed generic CI plus Android verify and instrumentation.
 
 ## In progress
-- Audit SAF cleanup/delete failure semantics. Publication failure cleanup already keeps the recovery journal whenever provider deletion fails, which is the safe behavior; avoid turning best-effort cleanup into errors that could delete or misclassify an already completed file.
+- Explicit user-requested SAF deletion now classifies provider exceptions as `StorageException("The saved file could not be deleted.")` while preserving the existing boolean false path and leaving publication rollback cleanup best-effort. Regression coverage is committed on `b4d13da1`; CI is pending.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -27,6 +27,7 @@
 
 ## Known risks / weekly review
 - `clearPending` remains best-effort by design: making post-completion journal clearing throw would risk turning an already completed job into cleanup/error handling that may delete a successfully published file. A stale journal can instead be reconciled safely on a later service start.
+- Publication rollback deletion remains best-effort by design. If provider deletion fails, the pending-publication journal is retained for conservative recovery rather than masking the original finalization failure.
 - Direct-download resume intentionally prefers corruption safety over reuse: strong ETags are preferred, Last-Modified-only state uses a conservative clock margin, and changed signed/redirect targets restart rather than append bytes.
 - SAF publication still has a tiny unavoidable process-death window between provider document creation and journaling its returned URI/name; the pre-create journal stores the collision-free destination name so recovery can locate it conservatively.
 - The SAF copy path currently checks bytes read from the staging file, not provider-reported persisted size. Do not add immediate size-equality enforcement unless Android provider semantics support it reliably; providers may report unknown or delayed size metadata.
