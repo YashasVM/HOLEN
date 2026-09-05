@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "android-v*"
+    branches:
+      - "release/android-v*"
 
 # Each job starts read-only. Only the job that creates the release can write
 # repository contents, and it only runs after all checks have passed.
@@ -17,6 +19,7 @@ jobs:
     outputs:
       version_name: ${{ steps.version.outputs.version_name }}
       version_code: ${{ steps.version.outputs.version_code }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
     steps:
       # actions/checkout v4.4.0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -44,7 +47,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          ref_name="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="$ref_name"
+            release_commit="$(git rev-parse "${tag}^{commit}")"
+          elif [[ "${GITHUB_REF_TYPE}" == "branch" && "$ref_name" =~ ^release/(android-v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            tag="${BASH_REMATCH[1]}"
+            release_commit="$(git rev-parse HEAD)"
+          else
+            echo "Release refs must be android-v<major>.<minor>.<patch> tags or release/android-v<major>.<minor>.<patch> branches." >&2
+            exit 1
+          fi
           if [[ ! "$tag" =~ ^android-v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "Release tags must use android-v<major>.<minor>.<patch>." >&2
             exit 1
@@ -63,7 +76,6 @@ jobs:
             exit 1
           }
 
-          release_commit="$(git rev-parse "${tag}^{commit}")"
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$release_commit" origin/main || {
             echo "The tagged commit must be reachable from main." >&2
@@ -86,8 +98,8 @@ jobs:
             }
           done < <(git tag -l 'android-v*')
 
-          printf 'VERSION_NAME=%s\nVERSION_CODE=%s\n' "$version_name" "$version_code" >> "$GITHUB_ENV"
-          printf 'version_name=%s\nversion_code=%s\n' "$version_name" "$version_code" >> "$GITHUB_OUTPUT"
+          printf 'VERSION_NAME=%s\nVERSION_CODE=%s\nRELEASE_TAG=%s\n' "$version_name" "$version_code" "$tag" >> "$GITHUB_ENV"
+          printf 'version_name=%s\nversion_code=%s\nrelease_tag=%s\n' "$version_name" "$version_code" "$tag" >> "$GITHUB_OUTPUT"
       - name: Lint and run unit tests
         working-directory: prod/android
         run: ./gradlew lintEmulatorDebug testEmulatorDebugUnitTest
@@ -129,6 +141,7 @@ jobs:
     env:
       VERSION_NAME: ${{ needs.validate.outputs.version_name }}
       VERSION_CODE: ${{ needs.validate.outputs.version_code }}
+      RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
     steps:
       # actions/checkout v4.4.0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -243,7 +256,7 @@ jobs:
             local file="$1"
             local attempt
             for attempt in 1 2 3; do
-              if gh release upload "$GITHUB_REF_NAME" "$file" --clobber; then
+              if gh release upload "$RELEASE_TAG" "$file" --clobber; then
                 return 0
               fi
               echo "Upload attempt $attempt failed for $file." >&2
@@ -252,19 +265,19 @@ jobs:
             return 1
           }
 
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             backup_dir="$RUNNER_TEMP/release-backup"
             mkdir -p "$backup_dir"
-            gh release download "$GITHUB_REF_NAME" --dir "$backup_dir"
+            gh release download "$RELEASE_TAG" --dir "$backup_dir"
 
             rollback_release_assets() {
               local file name
               for file in release/*; do
                 name="$(basename "$file")"
                 if [[ -f "$backup_dir/$name" ]]; then
-                  gh release upload "$GITHUB_REF_NAME" "$backup_dir/$name" --clobber || true
+                  gh release upload "$RELEASE_TAG" "$backup_dir/$name" --clobber || true
                 else
-                  gh release delete-asset "$GITHUB_REF_NAME" "$name" --yes >/dev/null 2>&1 || true
+                  gh release delete-asset "$RELEASE_TAG" "$name" --yes >/dev/null 2>&1 || true
                 fi
               done
             }
@@ -278,7 +291,7 @@ jobs:
             done
 
             mapfile -t expected_assets < <(for file in release/*; do basename "$file"; done | sort)
-            mapfile -t published_assets < <(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+            mapfile -t published_assets < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)
             for expected in "${expected_assets[@]}"; do
               printf '%s\n' "${published_assets[@]}" | grep -Fxq "$expected" || {
                 echo "Published release is missing expected asset $expected; restoring previous assets." >&2
@@ -287,16 +300,24 @@ jobs:
               }
             done
 
-            gh release edit "$GITHUB_REF_NAME" \
+            gh release edit "$RELEASE_TAG" \
               --title "HOLEN V${VERSION_NAME}" \
               --notes-file "$notes_file" \
               --draft=false \
               --prerelease=false \
               --latest
           else
-            gh release create "$GITHUB_REF_NAME" release/* \
-              --verify-tag \
-              --title "HOLEN V${VERSION_NAME}" \
-              --notes-file "$notes_file" \
-              --latest
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+              gh release create "$RELEASE_TAG" release/* \
+                --verify-tag \
+                --title "HOLEN V${VERSION_NAME}" \
+                --notes-file "$notes_file" \
+                --latest
+            else
+              gh release create "$RELEASE_TAG" release/* \
+                --target "$GITHUB_SHA" \
+                --title "HOLEN V${VERSION_NAME}" \
+                --notes-file "$notes_file" \
+                --latest
+            fi
           fi
