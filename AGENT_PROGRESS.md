@@ -6,19 +6,20 @@
 - `agent-dev` was fast-forwarded to `4b46036d` so autonomous work continues from the current user-controlled baseline. No autonomous change was merged to `main` by the agent.
 
 ## Completed since weekly review
-- None yet. The previous Android reliability/performance batch is now part of the user-reviewed `main` baseline.
+- Shared Android staging preparation now fails fast with `StorageException` when the private staging directory cannot be created. Unit coverage includes successful creation and a real filesystem path conflict. Generic CI and Android CI passed on `352ae7df`.
 
 ## In progress
-- Continue the direct-download local-storage/recovery audit from the new baseline. Resume metadata cleanup is corruption-safe; the next target is staging finalization/replacement behavior (`completed.delete()` + `renameTo`) and whether any failure can cause data loss, unsafe reuse, or unnecessary redownloads.
+- SAF publication now classifies a missing or empty completed staging file as `StorageException` instead of `IllegalArgumentException`, so local finalization loss is reported as storage failure rather than falling through generic handling. Regression coverage exists for both missing and zero-byte staged outputs; CI is still running on `856e1f58`.
+- Continue the Android local-storage/finalization audit after this change is validated, prioritizing failures that can cause unsafe reuse, unnecessary redownloads, or misleading network/extractor errors.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
 ## Validation / evidence
-- PR #19 generic CI passed and Android instrumentation passed. Android verify failed only because `createTempDir` was treated as a compile error; the user corrected that with `db27987a` using `createTempDirectory`.
-- Fresh CI for the synchronized `agent-dev` baseline `4b46036d` is running; do not treat the new baseline as fully revalidated on `agent-dev` until those workflows finish.
+- `352ae7df`: generic CI `33943292084` passed and Android CI `33943292094` passed.
+- `856e1f58`: fresh generic CI `33945930546` and Android CI `33945930536` are in progress; do not treat the staged-output classification change as completed until both finish successfully.
 
 ## Known risks / weekly review
-- Direct-download staging finalization currently removes an existing completed staging file and then uses `File.renameTo`; failure is surfaced as a `StorageException`, but replacement semantics are still being audited before changing them.
+- The new staged-output classification is intentionally narrow and does not change the SAF copy algorithm or download bytes; its remaining risk is ordinary regression risk pending CI.
 - Direct-download resume intentionally prefers corruption safety over reuse: strong ETags are preferred, Last-Modified-only state uses a conservative clock margin, and changed signed/redirect targets restart rather than append bytes.
 - SAF publication still has a tiny unavoidable process-death window between provider document creation and journaling its returned URI/name; no heuristic recovery is used because matching the wrong user document would be worse than leaving an orphan.
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless upstream Android packaging itself materially changes.
