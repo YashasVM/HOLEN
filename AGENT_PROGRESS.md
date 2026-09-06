@@ -17,7 +17,7 @@
 - Deferred the automatic GitHub app-update request in `016c186f` until yt-dlp warmup has completed and HOLEN is idle. A first interactive analysis wins over non-essential update traffic; manual Settings checks remain immediate. Generic CI `34015248604` and Android CI `34015248605` passed.
 
 ## In progress
-- Audit duplicate cookie work on metadata analysis. With configured cookies, `SourceAnalyzer` currently reaches `CookieStore.cacheKey()` and the same request then calls `cookieArguments()`: both paths independently read and fully validate the cookie file. Any fix must preserve cache/auth correctness under atomic cookie replacement rather than merely memoizing stale file state.
+- Remove duplicate cookie parsing from authenticated metadata analysis. `CookieStore.cacheKey()` now uses an in-process cookie-state generation instead of rereading, validating, and SHA-256 hashing the cookie file before the same request validates it again for `--cookies`. Successful save/clear/invalid-state deletion advances the generation, preserving metadata-cache hits within one authentication state while isolating replacements. Android instrumentation covers stable keys within a state and key changes across save/replace/clear. CI is pending.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -39,7 +39,7 @@
 - SAF publication retains conservative recovery state when provider cleanup fails; rollback and post-completion journal clearing remain best-effort where throwing could destroy or misreport an already published file.
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless Android packaging materially changes.
 - Automatic app-update discovery may be postponed until the next launch when the user starts interactive analysis before warmup completes. This is intentional prioritization of the download path; manual update checks remain available.
-- Do not optimize the duplicate cookie read with a timestamp/length-only cache: an atomic replacement can preserve those attributes while changing authentication bytes, which could make analysis-cache identity disagree with the cookies actually sent to yt-dlp.
+- Cookie cache identity now relies on HOLEN's in-process mutation generation instead of hashing bytes. The cookie file lives in app-private `noBackupFilesDir`, all normal runtime mutations use `CookieStore`, and process restart clears the in-memory metadata cache. Self-review rejected a per-request unique-key variant because it would create never-reused cache entries.
 
 ## Next review target
-- Design a single validated cookie-request snapshot shared by analysis cache identity and yt-dlp arguments, or skip the optimization if that cannot be done without introducing stale-auth/cache races. Avoid speculative fragment-concurrency changes.
+- Finish generic + Android CI for the cookie-state generation change. If green, close this duplicate-work task and inspect the next evidence-backed Android download/startup bottleneck rather than tuning fragment concurrency speculatively.
