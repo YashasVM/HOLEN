@@ -1,6 +1,7 @@
 package com.yashasvm.holen
 
 import java.io.File
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -41,7 +42,7 @@ class DownloadPipelineTest {
 
     @Test
     fun fallbackProgressIgnoresYtDlpFragmentAndJournalFiles() {
-        val directory = createTempDir(prefix = "holen-progress-")
+        val directory = Files.createTempDirectory("holen-progress-").toFile()
         try {
             val media = File(directory, "video.mp4.part").apply { writeBytes(ByteArray(8)) }
             val numberedFragment = File(directory, "video.mp4.part-Frag49.part").apply {
