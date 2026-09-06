@@ -28,6 +28,8 @@ class YtDlpTemporaryFileNameTest {
             "clip (HOLEN).mp4",
             "audio.m4a",
             "part-Frag documentary.mp4",
+            "clip.part-Frag documentary.mp4",
+            "clip.part-Frag1-final.mp4",
         ).forEach { fileName ->
             assertFalse(
                 "$fileName must remain eligible as completed media",
