@@ -1,42 +1,47 @@
-# Agent progress
+# Android Agent Progress
 
-## Baseline
-- `main` remains user-controlled at `4b46036d` (`ci(android): allow controlled release branches`). Autonomous work is only on `agent-dev`.
-- Weekly PR #19 was merged by the user. No autonomous merge, tag, or release to `main` has been performed.
+## Branch baseline
 
-## Completed since weekly review
-- Hardened Android staging/SAF publication failures and recovery, including durable pending-publication state and actionable storage/finalization errors.
-- Improved yt-dlp diagnostics for HTTP 429/402, textual rate limits, stale/rotated YouTube cookies, account-required failures, and HTTP 416 resume-range failures.
-- Preserved a bounded 8 KiB yt-dlp diagnostic tail so real stderr reaches Android failure classification.
-- Bounded yt-dlp/aria2 retry behavior and aligned aria2 external HTTP attempts/timeouts with HOLEN's direct downloader. A loopback instrumentation probe confirmed bundled aria2 recovers from transport-level connection drops.
-- Reduced cookie-validation allocations and removed duplicate cookie parsing/hashing from authenticated metadata analysis while preserving cache identity across cookie state changes.
-- Deferred automatic GitHub update traffic until yt-dlp warmup completes and HOLEN is idle, so first interactive analysis is prioritized.
-- Corrected fallback progress filtering for real yt-dlp numbered fragment temp names (`.part-Frag49.part` / `.part-Frag1`); final Android CI is green.
-- Prevented numbered yt-dlp fragment artifacts from being accepted as completed media when authoritative `after_move:filepath` output is unavailable. The predicate is restricted to numbered yt-dlp suffixes so legitimate titles containing `part-Frag` remain valid. Generic CI `34050305437` and Android CI `34050305494` both passed.
-- Direct HTTPS downloads now honor valid bounded `Retry-After` values for HTTP 503. Invalid or >30-second values keep HOLEN's existing bounded exponential fallback, and HTTP 429 behavior is unchanged. Generic CI `34040813801` and Android CI `34040813804` both passed.
+- Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
+- Current baseline inspected before this update: `main` `4b46036d`, with `agent-dev` cleanly ahead and not behind.
 
-## In progress
-- Audit first-download latency and staging/disk work using the existing cold-engine, local-transfer, and storage instrumentation before changing runtime behavior. Current code already keeps FFmpeg/aria2 extraction off app startup and metadata critical paths, then best-effort prewarms them only after successful full analysis; no additional startup change is justified without measurement.
-- Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
-- Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
-- SAF destination collision discovery remains intentionally conservative. `publish()` enumerates destination names before `createDocument()` so the durable pre-create journal records a deterministic collision-free name. Removing that scan without another crash-safe identity would create a recovery gap if a `DocumentsProvider` changes the requested display name before HOLEN persists the returned URI.
+## Completed since the last weekly review
 
-## Evidence / validation
-- Upstream yt-dlp issue logs show native fragmented downloads can leave names such as `*.part-Frag1`, `*.part-Frag1.part`, and numbered `*.part-FragN.part` files. HOLEN's completed-file fallback now rejects those temporary artifacts while regression tests preserve legitimate filenames containing the same text.
-- Generic CI `34050305437` and Android CI `34050305494` passed for the narrowed fragment-completion safeguard. The Android run completed successfully on 2026-09-06 after lint/unit tests, release APK assembly, 16 KB verification, and instrumentation.
-- Aria2 policy/retry work, cookie hardening, deferred startup update checks, cookie-state cache generation, HTTP 416 guidance, numbered fragment-progress filtering, and HTTP 503 `Retry-After` scheduling all have green generic + Android CI from their final code tips.
-- Current youtubedl-android upstream still documents `0.18.1`, matching HOLEN, so no wrapper dependency bump is justified.
-- HTTP `Retry-After` is explicitly defined for `503 Service Unavailable` as the server's estimate for when service becomes available again. HOLEN already captured the header in `DirectHttpException`; the completed change only uses it for 503 backoff when it passes the existing 30-second safety bound.
-- HOLEN explicitly routes DASH/HLS through yt-dlp's native fragment downloader rather than aria2c. This also avoids the fragmented-manifest aria2c security class fixed by yt-dlp 2026.06.09; ordinary direct media transfers may still use bundled aria2c.
-- Existing Android startup instrumentation separately measures cold `YoutubeDL.init`, FFmpeg init, aria2c init, yt-dlp process launch, local extractor overhead, 64 MiB private-storage write/fsync, and fresh/resumed 64 MiB loopback transfers. This is the preferred evidence source before touching startup or transfer buffering.
-- No throughput or startup speedup is claimed without device/network measurement.
+- Hardened Android staging/SAF publication and crash recovery without weakening collision safety.
+- Improved yt-dlp failure classification, bounded diagnostic-tail handling, retry/recovery behavior, cookie/auth handling, and deferred update traffic.
+- Added and validated fragmented-download integrity/retry/concurrency coverage.
+- Fixed fallback progress accounting so numbered yt-dlp `.part-FragN` artifacts are not counted as completed progress.
+- Prevented numbered yt-dlp fragment temp files from being selected as completed media while preserving legitimate filenames containing `part-Frag` text.
+- Direct HTTP downloads now honor bounded `Retry-After` guidance for HTTP 503 while retaining HOLEN's retry cap.
 
-## Known risks / weekly review
-- Aria2/direct HTTP retry budgets intentionally fail severely degraded endpoints sooner than upstream defaults.
-- Restart-based yt-dlp/aria2 byte-range continuation is not claimed as deterministic CI coverage; destructive partial cleanup is avoided without proof that HOLEN-owned staging is stale.
-- SAF publication remains conservative around provider failures because throwing or deleting after a successful provider write can misreport or destroy a valid file. The destination-folder name enumeration is retained until a crash-safe alternative exists.
-- The fallback staging sampler still traverses the job staging directory after two seconds without extractor progress; its cadence is unchanged because no representative device evidence supports tuning it.
-- Automatic app-update discovery can be postponed until the next launch when an interactive request starts first; manual update checks remain immediate.
+## Current work: first-download / metadata latency
 
-## Next review target
-- Use the existing cold-engine/storage/transfer timing data to identify whether engine extraction, process launch, private-storage writes/fsync, or local transfer buffering is the dominant first-download cost. Change code only if the measured bottleneck has a material, low-regression fix.
+Recent successful Android CI artifacts were compared instead of tuning by guesswork. Across four validated emulator runs (`34037712634`, `34040813804`, `34047099663`, `34050305494`):
+
+- yt-dlp process launch stayed roughly **1.85–2.35 s**.
+- cold `YoutubeDL.init` varied roughly **0.90–3.24 s**.
+- local extractor work beyond process startup was only **0–365 ms**.
+- 64 MiB private-storage write was **22–40 ms**, with fsync **45–77 ms**.
+- 64 MiB loopback fresh transfer was **255–330 ms**; resumed-half transfer was **121–135 ms**.
+- FFmpeg cold extraction was **1.28–2.49 s**, but production already keeps it off metadata/app-startup critical paths and prewarms it after successful full analysis.
+
+The evidence therefore does **not** support spending effort on transfer buffers, fsync, SAF copies, or fragment concurrency as the next latency optimization. The dominant measured cost is process/runtime startup. No production behavior was changed merely to move that work earlier: warming yt-dlp at app launch would shift latency into foreground startup rather than prove a net user-visible win.
+
+The next useful measurement is whether repeated yt-dlp process launches remain near ~2 s after the first process has exited. If yes, this is persistent per-process overhead and optimization should focus on avoiding redundant yt-dlp executions in the analyze→download flow where correctness permits. If a second launch is much cheaper, an idle-time/cache-warming strategy can be evaluated separately.
+
+## Validation / reviewer state
+
+- Latest generic CI on the prior `agent-dev` tip passed.
+- Latest production Android change (`dc97caf1`) passed instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification in Android CI `34050305494`.
+- No open PRs or issues were present at the start of this run.
+- Recent PR #19 has no submitted reviews or inline review comments. CodeRabbit only posted its automatic-review skip notice; there is no actionable CodeRabbit or `Yashas's code review bot:` feedback.
+
+## Known risks / review points
+
+- SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
+- Restart-based yt-dlp/aria2 byte-range continuation is not claimed as deterministically end-to-end validated.
+- Emulator timing is useful for bottleneck ranking, not a claim of phone-level absolute latency or a promised speedup.
+
+## Highest-value next step
+
+Measure first-vs-repeat yt-dlp process-launch cost under the same Android instrumentation environment. Only then decide whether to optimize persistent process overhead, idle-time warming, or redundant analyze→download execution; do not tune storage or concurrency based on the current evidence.
