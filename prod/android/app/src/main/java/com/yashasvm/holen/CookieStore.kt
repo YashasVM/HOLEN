@@ -18,7 +18,6 @@ internal data class CookieHealth(
 class CookieStore(context: Context) {
     private val cookieFile = File(context.noBackupFilesDir, "auth/cookies.txt")
     private val stateGeneration = AtomicLong()
-    private val authenticatedCacheSequence = AtomicLong()
 
     fun validFile(): File? = cookieFile.takeIf {
         readBoundedCookieBytes(it)?.let(::validateCookieBytes) == true
@@ -70,24 +69,20 @@ class CookieStore(context: Context) {
     }
 
     /**
-     * Metadata fetched with configured cookies must not be reused after authentication state
-     * changes. More importantly, hashing the cookie file here forced every authenticated
-     * analysis to read and validate the same file twice: once for the cache key and again before
-     * passing --cookies to yt-dlp. Authenticated analyses therefore receive a per-request key and
-     * intentionally do not hit one another's in-memory metadata entries. Unauthenticated analyses
-     * retain normal cache reuse within the current cookie-state generation.
+     * A cache identity only needs to distinguish cookie states created during this process; it
+     * does not need to re-read and hash the cookie bytes on every metadata request. HOLEN changes
+     * its private cookie file only through save/clear/validation, and each successful mutation
+     * advances this generation. That preserves same-session metadata cache hits while removing a
+     * second full cookie-file read/validation before yt-dlp receives --cookies.
      *
-     * save/clear advance the generation. If authentication changes between this method and
-     * cookieArguments(), the result produced by that request cannot be reused by either the old or
-     * new state, avoiding a cache/authentication identity race without locks or cookie copies.
+     * If authentication changes between this method and cookieArguments(), the request may use
+     * the newer state but its result is stored under the older generation. Since generations only
+     * move forward, that entry cannot be reused by the new state. A process restart also clears
+     * the in-memory metadata cache, so restored private state does not need a persistent counter.
      */
     internal fun cacheKey(): String {
         val generation = stateGeneration.get()
-        return if (cookieFile.isFile) {
-            "cookies:$generation:${authenticatedCacheSequence.incrementAndGet()}"
-        } else {
-            "no-cookies:$generation"
-        }
+        return if (cookieFile.isFile) "cookies:$generation" else "no-cookies:$generation"
     }
 
     /**
