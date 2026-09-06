@@ -30,7 +30,7 @@ class Aria2RetryInstrumentedTest {
         }
 
         try {
-            RetryMediaServer(failuresAfterProbe = 2).use { server ->
+            RetryMediaServer(disconnectsAfterProbe = 2).use { server ->
                 val response = YoutubeDL.execute(
                     YoutubeDLRequest(server.mediaUrl)
                         .addOption("--ignore-config")
@@ -46,12 +46,12 @@ class Aria2RetryInstrumentedTest {
                 )
 
                 assertEquals(
-                    "yt-dlp should probe once, then aria2 should recover after two transient failures",
+                    "yt-dlp should probe once, then aria2 should recover after two transport disconnects",
                     4,
                     server.totalRequests,
                 )
                 assertEquals(
-                    "aria2 should use three transfer attempts when the first two fail",
+                    "aria2 should use three transfer attempts when the first two disconnect",
                     3,
                     server.downloadRequests,
                 )
@@ -67,7 +67,7 @@ class Aria2RetryInstrumentedTest {
     }
 
     private class RetryMediaServer(
-        private val failuresAfterProbe: Int,
+        private val disconnectsAfterProbe: Int,
     ) : AutoCloseable {
         private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         private val totalRequestCount = AtomicInteger(0)
@@ -110,17 +110,18 @@ class Aria2RetryInstrumentedTest {
             }
 
             val downloadAttempt = downloadRequestCount.incrementAndGet()
-            if (downloadAttempt <= failuresAfterProbe) {
-                respond(socket, 500, "text/plain", "temporary failure".toByteArray())
-            } else {
-                respond(socket, 200, "video/mp4", MEDIA_BYTES)
+            if (downloadAttempt <= disconnectsAfterProbe) {
+                // Close the accepted connection without an HTTP response. aria2 does not retry
+                // ordinary HTTP 5xx responses with HOLEN's policy, but transport failures are
+                // exactly what --max-tries is intended to recover from.
+                return
             }
+            respond(socket, 200, "video/mp4", MEDIA_BYTES)
         }
 
         private fun respond(socket: Socket, status: Int, contentType: String, body: ByteArray) {
             val reason = when (status) {
                 200 -> "OK"
-                500 -> "Internal Server Error"
                 else -> "Not Found"
             }
             socket.getOutputStream().buffered().use { output ->
