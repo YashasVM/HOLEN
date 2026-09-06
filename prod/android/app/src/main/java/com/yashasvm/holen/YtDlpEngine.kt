@@ -640,13 +640,14 @@ class YtDlpEngine private constructor(private val context: Context) {
             ).any(normalized::contains)
         }
 
+        internal fun isYtDlpTemporaryFileName(fileName: String): Boolean =
+            fileName.endsWith(".part") ||
+                fileName.endsWith(".ytdl") ||
+                fileName.endsWith(".temp") ||
+                fileName.contains(".part-Frag")
+
         private fun completedFiles(directory: File): Sequence<File> = directory.walkTopDown()
-            .filter { file ->
-                file.isFile &&
-                    !file.name.endsWith(".part") &&
-                    !file.name.endsWith(".ytdl") &&
-                    !file.name.endsWith(".temp")
-            }
+            .filter { file -> file.isFile && !isYtDlpTemporaryFileName(file.name) }
 
         private fun completedOutputFrom(output: String, directory: File): File? {
             val directoryPath = directory.canonicalFile.toPath()
@@ -654,8 +655,9 @@ class YtDlpEngine private constructor(private val context: Context) {
                 .map(String::trim)
                 .mapNotNull { line -> runCatching { File(line).canonicalFile }.getOrNull() }
                 .lastOrNull { file ->
-                    file.isFile && file.toPath().startsWith(directoryPath) &&
-                        !file.name.endsWith(".part") && !file.name.endsWith(".ytdl")
+                    file.isFile &&
+                        file.toPath().startsWith(directoryPath) &&
+                        !isYtDlpTemporaryFileName(file.name)
                 }
         }
 
