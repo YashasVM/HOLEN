@@ -19,7 +19,7 @@ class CookieStore(context: Context) {
     private val cookieFile = File(context.noBackupFilesDir, "auth/cookies.txt")
 
     fun validFile(): File? = cookieFile.takeIf {
-        it.isFile && runCatching { validateCookieBytes(it.readBytes()) }.getOrDefault(false)
+        readBoundedCookieBytes(it)?.let(::validateCookieBytes) == true
     }
 
     fun validateExisting(): Boolean {
@@ -57,8 +57,8 @@ class CookieStore(context: Context) {
     internal fun cookieArguments(): List<String> =
         cookieArguments(validFile())
 
-    internal fun health(): CookieHealth? = validFile()?.let { file ->
-        runCatching { inspectCookieBytes(file.readBytes()) }.getOrNull()
+    internal fun health(): CookieHealth? = readBoundedCookieBytes(cookieFile)?.let { bytes ->
+        runCatching { inspectCookieBytes(bytes) }.getOrNull()
     }
 
     /**
@@ -68,12 +68,23 @@ class CookieStore(context: Context) {
      * different cookie contents.
      */
     internal fun cacheKey(): String = runCatching {
-        if (!cookieFile.isFile) return@runCatching "no-cookies"
-        val bytes = cookieFile.readBytes()
+        val bytes = readBoundedCookieBytes(cookieFile) ?: return@runCatching "no-cookies"
         if (!validateCookieBytes(bytes)) return@runCatching "no-cookies"
         val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
         digest.joinToString("") { byte -> "%02x".format(byte) }
     }.getOrDefault("no-cookies")
+
+    /**
+     * Refuse oversized or empty on-disk cookie files before allocating a byte array for them.
+     * HOLEN only writes bounded files itself, but this also makes corrupted/restored private
+     * state fail cheaply instead of creating an avoidable memory spike during app startup.
+     */
+    private fun readBoundedCookieBytes(file: File): ByteArray? {
+        if (!file.isFile) return null
+        val length = file.length()
+        if (length <= 0L || length > MAX_BYTES) return null
+        return file.readBytes().takeIf { it.isNotEmpty() && it.size <= MAX_BYTES }
+    }
 
     companion object {
         const val MAX_BYTES = 1024 * 1024
@@ -104,15 +115,16 @@ class CookieStore(context: Context) {
             if (text.any { it == '\u0000' || (it < ' ' && it != '\t' && it != '\r' && it != '\n') }) {
                 return null
             }
-            val lines = text.lineSequence().toList()
-            val first = lines.firstOrNull()?.removePrefix("\uFEFF")?.trimEnd() ?: return null
+            val lines = text.lineSequence().iterator()
+            if (!lines.hasNext()) return null
+            val first = lines.next().removePrefix("\uFEFF").trimEnd()
             if (first != "# Netscape HTTP Cookie File" && first != "# HTTP Cookie File") return null
             var dataLines = 0
             var usableCookies = 0
             var expiredCookies = 0
             var hasYoutubeCookies = false
-            for (rawLine in lines.drop(1)) {
-                val line = rawLine.trimEnd('\r')
+            while (lines.hasNext()) {
+                val line = lines.next().trimEnd('\r')
                 if (line.isBlank() || (line.startsWith("#") && !line.startsWith("#HttpOnly_"))) continue
                 val fields = line.split('\t')
                 if (fields.size != 7 || fields[0].isBlank() || fields[2].isBlank() || fields[5].isBlank()) {
