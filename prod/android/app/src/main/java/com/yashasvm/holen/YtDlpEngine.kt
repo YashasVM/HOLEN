@@ -530,6 +530,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         private const val ANALYSIS_PROCESS_PREFIX = "analysis-"
         private const val RESTART_REQUIRED_MESSAGE =
             "Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."
+        private val FRAGMENT_TEMP_FILE_REGEX = Regex("\\.part-Frag\\d+(?:\\.part)?$")
 
         private fun playlistPreviewLimit(mode: AnalysisMode): Int = when (mode) {
             AnalysisMode.QUICK -> QUICK_PLAYLIST_PREVIEW_LIMIT
@@ -644,7 +645,7 @@ class YtDlpEngine private constructor(private val context: Context) {
             fileName.endsWith(".part") ||
                 fileName.endsWith(".ytdl") ||
                 fileName.endsWith(".temp") ||
-                fileName.contains(".part-Frag")
+                FRAGMENT_TEMP_FILE_REGEX.containsMatchIn(fileName)
 
         private fun completedFiles(directory: File): Sequence<File> = directory.walkTopDown()
             .filter { file -> file.isFile && !isYtDlpTemporaryFileName(file.name) }
