@@ -51,6 +51,19 @@ class DirectDownloadRetryPolicyTest {
     }
 
     @Test
+    fun serviceUnavailableHonorsBoundedRetryAfter() {
+        val now = Instant.parse("2026-09-01T12:00:00Z").toEpochMilli()
+        val retryAfter = DirectHttpException(503, "7")
+
+        assertTrue(DirectDownloadRetryPolicy.shouldRetry(retryAfter, 0, now))
+        assertEquals(7_000L, DirectDownloadRetryPolicy.backoffMillis(retryAfter, 0, now))
+
+        val invalidRetryAfter = DirectHttpException(503, "60")
+        assertTrue(DirectDownloadRetryPolicy.shouldRetry(invalidRetryAfter, 0, now))
+        assertEquals(1_000L, DirectDownloadRetryPolicy.backoffMillis(invalidRetryAfter, 0, now))
+    }
+
+    @Test
     fun doesNotRetryPermanentHttpSecurityOrStorageFailures() {
         listOf(401, 403, 404, 410, 429, 501).forEach { status ->
             assertFalse(
