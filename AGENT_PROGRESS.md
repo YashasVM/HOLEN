@@ -16,9 +16,10 @@
 - Reduced Android cookie-validation allocation pressure in `3433c78c`: oversized/empty private cookie files are rejected before `readBytes()`, and Netscape parsing now streams the line sequence instead of materializing every line into a list. `ae8a277c` covers 5,000 valid cookies plus oversized input; generic CI `34012751328` and Android CI `34012751359` passed.
 - Deferred the automatic GitHub app-update request in `016c186f` until yt-dlp warmup has completed and HOLEN is idle. A first interactive analysis wins over non-essential update traffic; manual Settings checks remain immediate. Generic CI `34015248604` and Android CI `34015248605` passed.
 - Removed duplicate authenticated-cookie parsing from metadata analysis: `CookieStore.cacheKey()` now uses an in-process cookie-state generation instead of rereading, validating, and hashing the cookie file before the same request validates it again for `--cookies`. Cache hits remain stable within one auth state and are isolated across save/replace/clear. Generic CI `34020613842` and Android CI `34020613848` passed.
+- Added explicit HTTP 416 resume-range guidance in `c1546121`. Extractor failures now explain that the saved byte range no longer matches what the source accepts and direct-file failures explain HOLEN's existing clean-restart behavior. Regression coverage was added in `a8e48615`.
 
 ## In progress
-- Audit duplicate startup SAF grant validation. `MainViewModel` validates `OutputStore.hasValidTreeGrant()` during initialization, while `MainActivity` immediately calls `recoverQueue()`, which validates the same persisted-permission list again before checking recoverable work. This is a concrete duplicate startup read; consolidate only if the shared-result lifetime can remain correct across permission changes.
+- Validate the HTTP 416 classification changes in generic and Android CI. Do not auto-delete yt-dlp/aria2 staging solely from a 416 until HOLEN can prove the failure is caused by incompatible local partial state rather than extractor/server behavior.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -32,6 +33,8 @@
 - Deferred update check is green: generic CI `34015248604` and Android CI `34015248605` passed. This removes non-essential startup/network overlap without claiming a measured latency delta.
 - Cookie-state cache generation is green: generic CI `34020613842` and Android CI `34020613848` passed, including instrumentation coverage for stable same-state keys and isolation across cookie save/replace/clear.
 - Current youtubedl-android upstream still documents `0.18.1`, matching HOLEN, so no wrapper dependency bump is justified.
+- Upstream yt-dlp issue #12994 documents a concrete resume failure where HTTP 416 can recur when a Range header survives the retry path; open 2026 issue #16051 shows 416 remains observable in current extractor flows. This supports specific user guidance, but not indiscriminate deletion of HOLEN staging.
+- HOLEN's native direct downloader already discards incompatible partial state and retries without Range when a resume response is not a valid 200/206 continuation. That path therefore does not need a new destructive cleanup policy.
 
 ## Known risks / weekly review
 - The aria2 timeout policy can fail unusually slow or severely degraded HTTP endpoints sooner than aria2's defaults. This is intentional bounded-failure behavior; loopback probes are reliability checks, not real-network performance benchmarks.
@@ -42,7 +45,7 @@
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless Android packaging materially changes.
 - Automatic app-update discovery may be postponed until the next launch when the user starts interactive analysis before warmup completes. This is intentional prioritization of the download path; manual update checks remain available.
 - Cookie cache identity now relies on HOLEN's in-process mutation generation instead of hashing bytes. The cookie file lives in app-private `noBackupFilesDir`, all normal runtime mutations use `CookieStore`, and process restart clears the in-memory metadata cache. Self-review rejected a per-request unique-key variant because it would create never-reused cache entries.
-- Startup SAF grant validation is currently duplicated across init and queue recovery. Any consolidation must not cache a stale grant across later user revocation/selection events.
+- HTTP 416 from yt-dlp/aria2 is now classified separately, but autonomous code does not yet delete partial media on that signal. This is intentional until the failure can be tied safely to local stale state rather than a source/extractor condition.
 
 ## Next review target
-- Consolidate the duplicate startup SAF permission validation only if it can share the initial result safely without weakening later permission checks. Otherwise leave it alone and move to the next measured Android startup/download bottleneck.
+- Finish CI for the HTTP 416 classification. If green, reproduce the failure with the real bundled downloader on a deterministic Android path before considering targeted staging invalidation. If reproduction remains unreliable, leave partial preservation intact and move to the next evidence-backed Android bottleneck.
