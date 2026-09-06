@@ -14,9 +14,10 @@
 - Validated bundled aria2 transport recovery in `fa898de9`: after yt-dlp's media probe, a loopback server drops the first two aria2 connections before any HTTP response and the third succeeds. Generic CI `34002624933` and Android CI `34002624856` passed.
 - Retired the synthetic aria2 restart/Range probe in `aba7362b` after two instrumentation failures showed the test was asserting unstable downloader internals rather than a reliable HOLEN contract. The proven transport-retry coverage remains; production resume behavior was not weakened.
 - Reduced Android cookie-validation allocation pressure in `3433c78c`: oversized/empty private cookie files are rejected before `readBytes()`, and Netscape parsing now streams the line sequence instead of materializing every line into a list. `ae8a277c` covers 5,000 valid cookies plus oversized input; generic CI `34012751328` and Android CI `34012751359` passed.
+- Deferred the automatic GitHub app-update request in `016c186f` until yt-dlp warmup has completed and HOLEN is idle. A first interactive analysis wins over non-essential update traffic; manual Settings checks remain immediate. Generic CI `34015248604` and Android CI `34015248605` passed.
 
 ## In progress
-- `016c186f` defers the automatic GitHub app-update request until yt-dlp warmup has completed and HOLEN is idle. If a first interactive analysis is already active at that point, the non-essential automatic check is skipped for that session rather than competing for startup/network resources. Manual Settings checks remain immediate. CI is pending.
+- Audit duplicate cookie work on metadata analysis. With configured cookies, `SourceAnalyzer` currently reaches `CookieStore.cacheKey()` and the same request then calls `cookieArguments()`: both paths independently read and fully validate the cookie file. Any fix must preserve cache/auth correctness under atomic cookie replacement rather than merely memoizing stale file state.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -27,8 +28,8 @@
 - Aria2 transport retry probe `fa898de9`: generic CI `34002624933` and Android CI `34002624856` passed, confirming bundled aria2 recovers from transport-level connection failures within the configured attempt budget.
 - Cleanup after removal of the unstable Range probe is green: CI `34010103142` and Android CI `34010092441` passed.
 - Cookie hardening is green: generic CI `34012751328` and Android CI `34012751359` passed. The change is allocation hardening supported by code-path evidence; no wall-clock startup speedup is claimed.
+- Deferred update check is green: generic CI `34015248604` and Android CI `34015248605` passed. This removes non-essential startup/network overlap without claiming a measured latency delta.
 - Current youtubedl-android upstream still documents `0.18.1`, matching HOLEN, so no wrapper dependency bump is justified.
-- Android performance guidance recommends keeping non-essential initialization off the startup critical path. HOLEN's prior automatic update request was launched directly from `MainViewModel.init`; `016c186f` removes that overlap without delaying manual update checks.
 
 ## Known risks / weekly review
 - The aria2 timeout policy can fail unusually slow or severely degraded HTTP endpoints sooner than aria2's defaults. This is intentional bounded-failure behavior; loopback probes are reliability checks, not real-network performance benchmarks.
@@ -38,6 +39,7 @@
 - SAF publication retains conservative recovery state when provider cleanup fails; rollback and post-completion journal clearing remain best-effort where throwing could destroy or misreport an already published file.
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless Android packaging materially changes.
 - Automatic app-update discovery may be postponed until the next launch when the user starts interactive analysis before warmup completes. This is intentional prioritization of the download path; manual update checks remain available.
+- Do not optimize the duplicate cookie read with a timestamp/length-only cache: an atomic replacement can preserve those attributes while changing authentication bytes, which could make analysis-cache identity disagree with the cookies actually sent to yt-dlp.
 
 ## Next review target
-- Finish generic and Android CI for `016c186f`. If green, inspect the next measurable startup/download duplicate-work candidate rather than tuning fragment concurrency without evidence.
+- Design a single validated cookie-request snapshot shared by analysis cache identity and yt-dlp arguments, or skip the optimization if that cannot be done without introducing stale-auth/cache races. Avoid speculative fragment-concurrency changes.
