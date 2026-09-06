@@ -15,9 +15,10 @@
 - Retired the synthetic aria2 restart/Range probe in `aba7362b` after two instrumentation failures showed the test was asserting unstable downloader internals rather than a reliable HOLEN contract. The proven transport-retry coverage remains; production resume behavior was not weakened.
 - Reduced Android cookie-validation allocation pressure in `3433c78c`: oversized/empty private cookie files are rejected before `readBytes()`, and Netscape parsing now streams the line sequence instead of materializing every line into a list. `ae8a277c` covers 5,000 valid cookies plus oversized input; generic CI `34012751328` and Android CI `34012751359` passed.
 - Deferred the automatic GitHub app-update request in `016c186f` until yt-dlp warmup has completed and HOLEN is idle. A first interactive analysis wins over non-essential update traffic; manual Settings checks remain immediate. Generic CI `34015248604` and Android CI `34015248605` passed.
+- Removed duplicate authenticated-cookie parsing from metadata analysis: `CookieStore.cacheKey()` now uses an in-process cookie-state generation instead of rereading, validating, and hashing the cookie file before the same request validates it again for `--cookies`. Cache hits remain stable within one auth state and are isolated across save/replace/clear. Generic CI `34020613842` and Android CI `34020613848` passed.
 
 ## In progress
-- Remove duplicate cookie parsing from authenticated metadata analysis. `CookieStore.cacheKey()` now uses an in-process cookie-state generation instead of rereading, validating, and SHA-256 hashing the cookie file before the same request validates it again for `--cookies`. Successful save/clear/invalid-state deletion advances the generation, preserving metadata-cache hits within one authentication state while isolating replacements. Android instrumentation covers stable keys within a state and key changes across save/replace/clear. CI is pending.
+- Audit duplicate startup SAF grant validation. `MainViewModel` validates `OutputStore.hasValidTreeGrant()` during initialization, while `MainActivity` immediately calls `recoverQueue()`, which validates the same persisted-permission list again before checking recoverable work. This is a concrete duplicate startup read; consolidate only if the shared-result lifetime can remain correct across permission changes.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
 
@@ -29,6 +30,7 @@
 - Cleanup after removal of the unstable Range probe is green: CI `34010103142` and Android CI `34010092441` passed.
 - Cookie hardening is green: generic CI `34012751328` and Android CI `34012751359` passed. The change is allocation hardening supported by code-path evidence; no wall-clock startup speedup is claimed.
 - Deferred update check is green: generic CI `34015248604` and Android CI `34015248605` passed. This removes non-essential startup/network overlap without claiming a measured latency delta.
+- Cookie-state cache generation is green: generic CI `34020613842` and Android CI `34020613848` passed, including instrumentation coverage for stable same-state keys and isolation across cookie save/replace/clear.
 - Current youtubedl-android upstream still documents `0.18.1`, matching HOLEN, so no wrapper dependency bump is justified.
 
 ## Known risks / weekly review
@@ -40,6 +42,7 @@
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless Android packaging materially changes.
 - Automatic app-update discovery may be postponed until the next launch when the user starts interactive analysis before warmup completes. This is intentional prioritization of the download path; manual update checks remain available.
 - Cookie cache identity now relies on HOLEN's in-process mutation generation instead of hashing bytes. The cookie file lives in app-private `noBackupFilesDir`, all normal runtime mutations use `CookieStore`, and process restart clears the in-memory metadata cache. Self-review rejected a per-request unique-key variant because it would create never-reused cache entries.
+- Startup SAF grant validation is currently duplicated across init and queue recovery. Any consolidation must not cache a stale grant across later user revocation/selection events.
 
 ## Next review target
-- Finish generic + Android CI for the cookie-state generation change. If green, close this duplicate-work task and inspect the next evidence-backed Android download/startup bottleneck rather than tuning fragment concurrency speculatively.
+- Consolidate the duplicate startup SAF permission validation only if it can share the initial result safely without weakening later permission checks. Otherwise leave it alone and move to the next measured Android startup/download bottleneck.
