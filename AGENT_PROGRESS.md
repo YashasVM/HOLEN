@@ -19,10 +19,11 @@
 - Added explicit HTTP 416 resume-range guidance in `c1546121`. Extractor failures now explain that the saved byte range no longer matches what the source accepts and direct-file failures explain HOLEN's existing clean-restart behavior. Regression coverage in `a8e48615` passed generic CI `34028932940` and Android CI `34028932905`.
 
 ## In progress
-- Corrected fallback staging-progress filtering in `ec2b9fc9`: yt-dlp fragment temp files are numbered (`.part-Frag49.part` / `.part-Frag1`), so the previous `endsWith(".part-Frag")` check never matched them. The fallback sampler now excludes the actual numbered fragment temp names instead of potentially counting transient fragment bytes alongside the aggregate staged media. `7e35d35d` adds focused regression coverage; generic and Android CI are running.
+- Corrected fallback staging-progress filtering in `ec2b9fc9`: yt-dlp fragment temp files are numbered (`.part-Frag49.part` / `.part-Frag1`), so the previous `endsWith(".part-Frag")` check never matched them. The fallback sampler now excludes actual numbered fragment temp names instead of potentially counting transient fragment bytes alongside the aggregate staged media.
+- Android instrumentation for `7e35d35d` passed, but the verify job failed because its new unit test used Kotlin's deprecated-at-error `createTempDir` helper. `b0f4bac7` replaces only that test helper with `Files.createTempDirectory`; generic and Android CI are rerunning. Production filtering code was not changed by the CI repair.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
-- Audit the next Android-only bottleneck from production paths; avoid another synthetic aria2 Range probe unless a deterministic user-visible contract can be tested.
+- Audit the next Android-only bottleneck from production paths only after the fragment-progress task is green; avoid another synthetic aria2 Range probe unless a deterministic user-visible contract can be tested.
 
 ## Evidence / validation
 - Diagnostic preservation: generic CI `33973598736`, Android CI `33973598919`, and progress-tip CI `33973633724` passed.
@@ -34,6 +35,7 @@
 - Deferred update check is green: generic CI `34015248604` and Android CI `34015248605` passed. This removes non-essential startup/network overlap without claiming a measured latency delta.
 - Cookie-state cache generation is green: generic CI `34020613842` and Android CI `34020613848` passed, including instrumentation coverage for stable same-state keys and isolation across cookie save/replace/clear.
 - HTTP 416 guidance is green: generic CI `34028932940` and Android CI `34028932905` passed; the progress-tip generic CI `34028950678` also passed.
+- Fragment-progress instrumentation passed in Android CI `34034664175`; its verify job failed before APK/16-KB verification because `createTempDir` is rejected by the current Kotlin toolchain. `b0f4bac7` uses `java.nio.file.Files.createTempDirectory` instead, and replacement CI is pending.
 - Current youtubedl-android upstream still documents `0.18.1`, matching HOLEN, so no wrapper dependency bump is justified.
 - Upstream yt-dlp issue #12994 documents a concrete resume failure where HTTP 416 can recur when a Range header survives the retry path; open 2026 issue #16051 shows 416 remains observable in current extractor flows. This supports specific user guidance, but not indiscriminate deletion of HOLEN staging.
 - HOLEN's native direct downloader already discards incompatible partial state and retries without Range when a resume response is not a valid 200/206 continuation. That path therefore does not need a new destructive cleanup policy.
@@ -52,4 +54,4 @@
 - The fallback staging sampler still traverses the job staging directory after two seconds without extractor progress. The numbered-fragment fix prevents transient fragment bytes from being misclassified, but scan cadence should not be tuned without device evidence because the fallback exists specifically for extractors that stop emitting progress.
 
 ## Next review target
-- Finish generic + Android validation for numbered fragment-temp filtering. If green, inspect the next evidence-backed Android startup/download bottleneck; do not tune fragment worker count or fallback scan cadence without representative measurements.
+- Finish generic + Android validation for `b0f4bac7`. If green, close numbered fragment-temp filtering and inspect the next evidence-backed Android startup/download bottleneck; do not tune fragment worker count or fallback scan cadence without representative measurements.
