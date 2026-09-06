@@ -26,24 +26,24 @@ class CookieCacheKeyInstrumentedTest {
     }
 
     @Test
-    fun authenticatedAnalysesDoNotReuseMetadataCacheKeys() {
+    fun cookieStateGenerationPreservesHitsAndIsolatesChanges() {
         val noCookiesKey = store.cacheKey()
         assertEquals(noCookiesKey, store.cacheKey())
 
         store.save(validCookies("first"))
         val firstAuthenticatedKey = store.cacheKey()
-        val secondAuthenticatedKey = store.cacheKey()
-
-        assertNotEquals(firstAuthenticatedKey, secondAuthenticatedKey)
+        assertEquals(firstAuthenticatedKey, store.cacheKey())
         assertTrue(store.cookieArguments().contains("--cookies"))
 
         store.save(validCookies("second"))
         val replacementKey = store.cacheKey()
-        assertNotEquals(secondAuthenticatedKey, replacementKey)
+        assertNotEquals(firstAuthenticatedKey, replacementKey)
+        assertEquals(replacementKey, store.cacheKey())
 
         store.clear()
         val clearedKey = store.cacheKey()
         assertNotEquals(noCookiesKey, clearedKey)
+        assertNotEquals(replacementKey, clearedKey)
         assertEquals(clearedKey, store.cacheKey())
     }
 
