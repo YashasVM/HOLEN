@@ -642,6 +642,9 @@ private class ProgressWriter(
     }
 }
 
+internal fun isStagingProgressPayload(file: java.io.File): Boolean =
+    file.isFile && !file.name.endsWith(".ytdl") && !file.name.contains(".part-Frag")
+
 /**
  * Samples the extractor's private staging area while a transfer is active.
  * This remains useful when an extractor omits progress lines, while the normal
@@ -689,9 +692,7 @@ private class StagingProgressSampler(
 
         val bytes = directory.takeIf(java.io.File::isDirectory)
             ?.walkTopDown()
-            ?.filter { file ->
-                file.isFile && !file.name.endsWith(".ytdl") && !file.name.endsWith(".part-Frag")
-            }
+            ?.filter(::isStagingProgressPayload)
             ?.sumOf(java.io.File::length)
             ?: return
         if (bytes <= previousBytes) return
