@@ -6,7 +6,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicLong
 
 internal data class CookieHealth(
     val totalCookies: Int,
@@ -17,6 +17,8 @@ internal data class CookieHealth(
 
 class CookieStore(context: Context) {
     private val cookieFile = File(context.noBackupFilesDir, "auth/cookies.txt")
+    private val stateGeneration = AtomicLong()
+    private val authenticatedCacheSequence = AtomicLong()
 
     fun validFile(): File? = cookieFile.takeIf {
         readBoundedCookieBytes(it)?.let(::validateCookieBytes) == true
@@ -25,7 +27,7 @@ class CookieStore(context: Context) {
     fun validateExisting(): Boolean {
         if (!cookieFile.exists()) return false
         if (runCatching { validFile() != null }.getOrDefault(false)) return true
-        cookieFile.delete()
+        if (cookieFile.delete()) stateGeneration.incrementAndGet()
         return false
     }
 
@@ -47,12 +49,18 @@ class CookieStore(context: Context) {
                     StandardCopyOption.REPLACE_EXISTING,
                 )
             }.getOrElse { throw IOException(ERROR_SAVE) }
+            stateGeneration.incrementAndGet()
         } finally {
             temporary.delete()
         }
     }
 
-    fun clear(): Boolean = !cookieFile.exists() || cookieFile.delete()
+    fun clear(): Boolean {
+        if (!cookieFile.exists()) return true
+        val deleted = cookieFile.delete()
+        if (deleted) stateGeneration.incrementAndGet()
+        return deleted
+    }
 
     internal fun cookieArguments(): List<String> =
         cookieArguments(validFile())
@@ -62,17 +70,25 @@ class CookieStore(context: Context) {
     }
 
     /**
-     * A non-reversible state marker for metadata caching. A changed cookie file must never reuse
-     * a result fetched with the previous account/session. Hash the exact bytes that passed
-     * validation so cache-key generation performs one file read and cannot race a second read of
-     * different cookie contents.
+     * Metadata fetched with configured cookies must not be reused after authentication state
+     * changes. More importantly, hashing the cookie file here forced every authenticated
+     * analysis to read and validate the same file twice: once for the cache key and again before
+     * passing --cookies to yt-dlp. Authenticated analyses therefore receive a per-request key and
+     * intentionally do not hit one another's in-memory metadata entries. Unauthenticated analyses
+     * retain normal cache reuse within the current cookie-state generation.
+     *
+     * save/clear advance the generation. If authentication changes between this method and
+     * cookieArguments(), the result produced by that request cannot be reused by either the old or
+     * new state, avoiding a cache/authentication identity race without locks or cookie copies.
      */
-    internal fun cacheKey(): String = runCatching {
-        val bytes = readBoundedCookieBytes(cookieFile) ?: return@runCatching "no-cookies"
-        if (!validateCookieBytes(bytes)) return@runCatching "no-cookies"
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        digest.joinToString("") { byte -> "%02x".format(byte) }
-    }.getOrDefault("no-cookies")
+    internal fun cacheKey(): String {
+        val generation = stateGeneration.get()
+        return if (cookieFile.isFile) {
+            "cookies:$generation:${authenticatedCacheSequence.incrementAndGet()}"
+        } else {
+            "no-cookies:$generation"
+        }
+    }
 
     /**
      * Refuse oversized or empty on-disk cookie files before allocating a byte array for them.
