@@ -25,23 +25,24 @@ Recent successful Android CI artifacts were compared instead of tuning by guessw
 - 64 MiB loopback fresh transfer was **255–330 ms**; resumed-half transfer was **121–135 ms**.
 - FFmpeg cold extraction was **1.28–2.49 s**, but production already keeps it off metadata/app-startup critical paths and prewarms it after successful full analysis.
 
-The evidence therefore does **not** support spending effort on transfer buffers, fsync, SAF copies, or fragment concurrency as the next latency optimization. The dominant measured cost is process/runtime startup. No production behavior was changed merely to move that work earlier: warming yt-dlp at app launch would shift latency into foreground startup rather than prove a net user-visible win.
+The evidence does **not** support transfer-buffer, fsync, SAF-copy, or fragment-concurrency tuning as the next latency optimization. The dominant measured cost is process/runtime startup, and moving yt-dlp initialization into foreground app startup would only shift latency without proving a net win.
 
-The next useful measurement is whether repeated yt-dlp process launches remain near ~2 s after the first process has exited. If yes, this is persistent per-process overhead and optimization should focus on avoiding redundant yt-dlp executions in the analyze→download flow where correctness permits. If a second launch is much cheaper, an idle-time/cache-warming strategy can be evaluated separately.
+A dedicated opt-in instrumentation probe now measures two back-to-back `yt-dlp --version` executions after `YoutubeDL.init`, producing `process_launch_first_ms` and `process_launch_repeat_ms`. Android CI `34059630027` is validating the probe and will show whether ~2 s is persistent per-process overhead or mainly a first-launch effect. No production behavior was changed for this measurement.
 
 ## Validation / reviewer state
 
-- Latest generic CI on the prior `agent-dev` tip passed.
 - Latest production Android change (`dc97caf1`) passed instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification in Android CI `34050305494`.
+- Repeated-process-launch measurement commits are under validation in Android CI `34059630027`; generic CI is also running for the current measurement tip.
 - No open PRs or issues were present at the start of this run.
-- Recent PR #19 has no submitted reviews or inline review comments. CodeRabbit only posted its automatic-review skip notice; there is no actionable CodeRabbit or `Yashas's code review bot:` feedback.
+- Recent PR #19 has no submitted reviews or inline review comments; there is no actionable CodeRabbit or `Yashas's code review bot:` feedback.
 
 ## Known risks / review points
 
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Restart-based yt-dlp/aria2 byte-range continuation is not claimed as deterministically end-to-end validated.
 - Emulator timing is useful for bottleneck ranking, not a claim of phone-level absolute latency or a promised speedup.
+- The new repeat-launch probe is measurement-only and should not drive a production optimization until its CI result is stable and interpretable.
 
 ## Highest-value next step
 
-Measure first-vs-repeat yt-dlp process-launch cost under the same Android instrumentation environment. Only then decide whether to optimize persistent process overhead, idle-time warming, or redundant analyze→download execution; do not tune storage or concurrency based on the current evidence.
+Finish Android CI for the repeated yt-dlp launch probe. If repeat launch remains near the first launch, inspect the analyze→download path for avoidable second yt-dlp executions; if repeat launch is materially cheaper, evaluate idle-time warming only if it improves user-visible latency without hurting app startup, memory, or battery.
