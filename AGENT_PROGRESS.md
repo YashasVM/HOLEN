@@ -13,23 +13,24 @@
 - Aligned aria2 external HTTP failures with HOLEN's native downloader budget in `75c65db1`: `aria2c:--max-tries=4 --connect-timeout=20 --timeout=20`, with no positive `--retry-wait`. Regression coverage in `a0dcfb0f` passed generic CI `33997398948` and Android CI `33997399017`, including instrumentation.
 - Validated bundled aria2 transport recovery in `fa898de9`: after yt-dlp's media probe, a loopback server drops the first two aria2 connections before any HTTP response and the third succeeds. Generic CI `34002624933` and Android CI `34002624856` passed.
 - Retired the synthetic aria2 restart/Range probe in `aba7362b` after two instrumentation failures showed the test was asserting unstable downloader internals rather than a reliable HOLEN contract. The proven transport-retry coverage remains; production resume behavior was not weakened.
+- Reduced Android cookie-validation allocation pressure in `3433c78c`: oversized/empty private cookie files are rejected before `readBytes()`, and Netscape parsing now streams the line sequence instead of materializing every line into a list. `ae8a277c` adds large-set and oversized-input regression coverage. No speedup is claimed until CI/performance evidence supports one.
 
 ## In progress
+- Validate the bounded-cookie parsing change through generic and Android CI.
 - Keep exact-URL scoping for resumed signed/redirected downloads unless representation equivalence can be proven safely.
 - Keep current yt-dlp fragment concurrency/retry policy unchanged unless representative Android/network evidence justifies tuning it.
-- Move next to a measured Android download bottleneck rather than adding more synthetic aria2 retry/resume tests.
+- Continue profiling startup/download duplicate work; a due app-update request currently starts during ViewModel initialization and can overlap engine warmup/shared-link analysis, but this has not been changed yet because the scheduling trade-off needs a cleaner design.
 
 ## Evidence / validation
 - Diagnostic preservation: generic CI `33973598736`, Android CI `33973598919`, and progress-tip CI `33973633724` passed.
 - End-to-end diagnostic classification `a25c8eb7`: generic CI `33976216094` and Android CI `33976216058` passed.
 - Aria2 policy integration: generic CI `33997398948` and Android CI `33997399017` passed, including instrumentation and 16 KB native compatibility checks.
 - Aria2 transport retry probe `fa898de9`: generic CI `34002624933` and Android CI `34002624856` passed, confirming bundled aria2 recovers from transport-level connection failures within the configured attempt budget.
+- Cleanup after removal of the unstable Range probe is green: CI `34010103142` and Android CI `34010092441` passed.
 - `250b44a7` passed generic CI and Android verify/build/16 KB checks but failed instrumentation because it assumed aria2 would issue a Range request during an internal retry in the same invocation.
 - `f48e1013` also passed generic CI while Android verify/build/16 KB checks passed; only instrumentation failed. Because the restart-based probe remained tied to opaque yt-dlp/aria2 temporary-file/control-file behavior, the test was removed instead of weakening production behavior or continuing test-only churn.
-- Aria2 audit: current yt-dlp ordinary external downloads invoke the external downloader once; HOLEN routes DASH/m3u8 to the native downloader, so aria2's own retry budget is not multiplied by yt-dlp retries for HOLEN's ordinary HTTP(S) path.
-- Aria2 1.37 defines `--max-tries` as total attempts and defaults to 5; yt-dlp `--retries 3` means three retries after the initial attempt. Matching the existing HOLEN budget therefore requires `--max-tries=4`, not 3.
-- Aria2's default connection/read timeouts are longer than HOLEN's 20-second native policy. Positive `--retry-wait` changes HTTP 503 retry behavior, so the aligned policy intentionally leaves it unset.
-- Failed instrumentation `33999844695` remains useful negative evidence: returning HTTP 500 caused bundled aria2 to exit with code 22 rather than retry, confirming HOLEN is not silently broadening ordinary HTTP 5xx retries.
+- Current youtubedl-android upstream still documents `0.18.1`, matching HOLEN, so no wrapper dependency bump is justified this run.
+- Cookie parsing is capped at 1 MiB by product policy. The previous parser converted the full byte array to text and then called `lineSequence().toList()`, creating an avoidable list of every cookie line; the new parser iterates the sequence directly. The new test covers 5,000 valid cookies plus an oversized input. CI is pending.
 
 ## Known risks / weekly review
 - The aria2 timeout policy can fail unusually slow or severely degraded HTTP endpoints sooner than aria2's defaults. This is intentional bounded-failure behavior; loopback probes are reliability checks, not real-network performance benchmarks.
@@ -40,4 +41,4 @@
 - yt-dlp/extractor compatibility remains dynamic. Runtime updating is preferred over dependency churn unless Android packaging materially changes.
 
 ## Next review target
-- Confirm CI is green after `aba7362b`, then profile or instrument the next material Android download/startup bottleneck. Prefer evidence from real download flows, allocation/copy paths, startup timing, or reproducible network behavior over further synthetic retry micro-tests.
+- Finish CI for `ae8a277c`. If green, measure or remove one source of startup/download duplicate work rather than tuning fragment concurrency without evidence; the first candidate is avoiding non-essential maintenance/network work on the first interactive analysis path.
