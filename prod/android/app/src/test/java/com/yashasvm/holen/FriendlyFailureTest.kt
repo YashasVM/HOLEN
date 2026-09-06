@@ -12,6 +12,8 @@ class FriendlyFailureTest {
         assertTrue(friendlyFailure(IOException("Network response 403")).contains("access"))
         assertTrue(friendlyFailure(IOException("Network response 404")).contains("no longer available"))
         assertTrue(friendlyFailure(IOException("Network response 410")).contains("fresh download URL"))
+        assertTrue(friendlyFailure(IOException("Network response 416")).contains("saved resume range"))
+        assertTrue(friendlyFailure(IOException("Network response 416")).contains("restart the direct transfer"))
         assertTrue(friendlyFailure(IOException("Network response 429")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IOException("Network response 503")).contains("temporarily unavailable"))
         assertTrue(friendlyFailure(IOException("Network response 418")).contains("HTTP 418"))
@@ -20,9 +22,15 @@ class FriendlyFailureTest {
     @Test
     fun extractorHttpFailuresAreClassifiedWithoutPretendingRateLimitsAreBotChecks() {
         val forbidden = friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden"))
+        val staleRange = friendlyFailure(
+            IllegalStateException("ERROR: unable to download video data: HTTP Error 416: Requested range not satisfiable"),
+        )
         assertTrue(forbidden.contains("retry once without cookies"))
         assertTrue(forbidden.contains("refresh the cookies/account access"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 404: Not Found")).contains("no longer available"))
+        assertTrue(staleRange.contains("saved download range"))
+        assertTrue(staleRange.contains("Re-analyze"))
+        assertTrue(staleRange.contains("fresh download"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("repeated retries"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 402: Payment Required")).contains("rate-limiting"))
