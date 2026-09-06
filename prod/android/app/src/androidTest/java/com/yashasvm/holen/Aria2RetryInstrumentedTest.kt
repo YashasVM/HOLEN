@@ -68,7 +68,7 @@ class Aria2RetryInstrumentedTest {
     }
 
     @Test
-    fun externalDownloaderResumesPartialTransferWithRangeRequest() {
+    fun externalDownloaderResumesPartialTransferAcrossRestart() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         YoutubeDL.init(context)
         Aria2c.init(context)
@@ -76,28 +76,55 @@ class Aria2RetryInstrumentedTest {
             deleteRecursively()
             check(mkdirs())
         }
+        val outputTemplate = File(outputDir, "resume.%(ext)s").absolutePath
 
         try {
-            PartialTransferServer().use { server ->
+            RestartResumeServer().use { server ->
+                var firstFailed = false
+                try {
+                    YoutubeDL.execute(
+                        YoutubeDLRequest(server.mediaUrl)
+                            .addOption("--ignore-config")
+                            .addOption("--downloader", "libaria2c.so")
+                            .addOption(
+                                "--downloader-args",
+                                "aria2c:--max-tries=1 --connect-timeout=5 --timeout=5 --allow-overwrite=true --split=1 --max-connection-per-server=1",
+                            )
+                            .addOption("--no-playlist")
+                            .addOption("--output", outputTemplate),
+                        RESUME_FIRST_PROCESS_ID,
+                        null,
+                    )
+                } catch (_: Exception) {
+                    firstFailed = true
+                }
+                assertTrue("The deliberately interrupted first transfer must fail", firstFailed)
+                assertTrue(
+                    "Interrupted aria2 download should leave resumable state on disk",
+                    outputDir.listFiles().orEmpty().any { it.length() > 0L },
+                )
+
                 val response = YoutubeDL.execute(
                     YoutubeDLRequest(server.mediaUrl)
                         .addOption("--ignore-config")
                         .addOption("--downloader", "libaria2c.so")
                         .addOption(
                             "--downloader-args",
-                            "aria2c:--max-tries=4 --connect-timeout=5 --timeout=5 --allow-overwrite=true --split=1 --max-connection-per-server=1",
+                            "aria2c:--max-tries=4 --connect-timeout=5 --timeout=5 --allow-overwrite=true --split=1 --max-connection-per-server=1 --continue=true",
                         )
                         .addOption("--no-playlist")
-                        .addOption("--output", File(outputDir, "resume.%(ext)s").absolutePath),
-                    RESUME_PROCESS_ID,
+                        .addOption("--output", outputTemplate),
+                    RESUME_SECOND_PROCESS_ID,
                     null,
                 )
 
                 val resumedFrom = server.resumeOffset
-                assertNotNull("aria2 should retry the interrupted transfer with a Range request", resumedFrom)
-                assertTrue("Range retry should continue after already received bytes", resumedFrom!! > 0)
+                assertNotNull("Restarted aria2 download should request the remaining bytes with Range", resumedFrom)
+                assertTrue("Range restart should continue after already received bytes", resumedFrom!! > 0)
                 assertTrue("Successful resumed download should return yt-dlp output", response.out.isNotBlank())
-                val output = outputDir.listFiles().orEmpty().firstOrNull { it.name.startsWith("resume.") }
+                val output = outputDir.listFiles().orEmpty().firstOrNull {
+                    it.name.startsWith("resume.") && !it.name.endsWith(".aria2")
+                }
                 assertTrue("Resumed aria2 download should be finalized", output?.isFile == true)
                 assertEquals(RESUME_MEDIA_BYTES.size.toLong(), output?.length())
                 assertTrue(
@@ -107,7 +134,8 @@ class Aria2RetryInstrumentedTest {
             }
         } finally {
             outputDir.deleteRecursively()
-            YoutubeDL.destroyProcessById(RESUME_PROCESS_ID)
+            YoutubeDL.destroyProcessById(RESUME_FIRST_PROCESS_ID)
+            YoutubeDL.destroyProcessById(RESUME_SECOND_PROCESS_ID)
         }
     }
 
@@ -165,13 +193,13 @@ class Aria2RetryInstrumentedTest {
         }
     }
 
-    private class PartialTransferServer : AutoCloseable {
+    private class RestartResumeServer : AutoCloseable {
         private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         private val requestCount = AtomicInteger(0)
         @Volatile private var closed = false
         @Volatile var resumeOffset: Int? = null
             private set
-        private val worker = thread(name = "holen-aria2-resume-http", isDaemon = true) {
+        private val worker = thread(name = "holen-aria2-restart-resume-http", isDaemon = true) {
             while (!closed) {
                 try {
                     server.accept().use(::serve)
@@ -193,20 +221,23 @@ class Aria2RetryInstrumentedTest {
             when (requestCount.incrementAndGet()) {
                 1 -> respond(socket, 200, "video/mp4", RESUME_MEDIA_BYTES)
                 2 -> sendInterruptedBody(socket)
-                else -> {
-                    val offset = request.headers["range"]
-                        ?.substringAfter("bytes=", "")
-                        ?.substringBefore('-')
-                        ?.toIntOrNull()
-                    if (offset == null || offset <= 0 || offset >= RESUME_MEDIA_BYTES.size) {
-                        respond(socket, 416, "text/plain", ByteArray(0))
-                        return
-                    }
-                    resumeOffset = offset
-                    val remaining = RESUME_MEDIA_BYTES.copyOfRange(offset, RESUME_MEDIA_BYTES.size)
-                    respondPartial(socket, offset, remaining)
-                }
+                3 -> respond(socket, 200, "video/mp4", RESUME_MEDIA_BYTES)
+                else -> serveRangeResume(socket, request)
             }
+        }
+
+        private fun serveRangeResume(socket: Socket, request: Request) {
+            val offset = request.headers["range"]
+                ?.substringAfter("bytes=", "")
+                ?.substringBefore('-')
+                ?.toIntOrNull()
+            if (offset == null || offset <= 0 || offset >= RESUME_MEDIA_BYTES.size) {
+                respond(socket, 416, "text/plain", ByteArray(0))
+                return
+            }
+            resumeOffset = offset
+            val remaining = RESUME_MEDIA_BYTES.copyOfRange(offset, RESUME_MEDIA_BYTES.size)
+            respondPartial(socket, offset, remaining)
         }
 
         private fun sendInterruptedBody(socket: Socket) {
@@ -251,7 +282,8 @@ class Aria2RetryInstrumentedTest {
 
     private companion object {
         const val PROCESS_ID = "aria2-retry-probe"
-        const val RESUME_PROCESS_ID = "aria2-resume-probe"
+        const val RESUME_FIRST_PROCESS_ID = "aria2-resume-first-probe"
+        const val RESUME_SECOND_PROCESS_ID = "aria2-resume-second-probe"
         val MEDIA_BYTES = ByteArray(32 * 1024) { index -> (index and 0xff).toByte() }
         val RESUME_MEDIA_BYTES = ByteArray(256 * 1024) { index -> ((index * 31) and 0xff).toByte() }
 
