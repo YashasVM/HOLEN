@@ -127,6 +127,11 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     } else {
         "The media is no longer available (HTTP $status), or the source changed its URL. Refresh the link and retry."
     }
+    416 -> if (directFile) {
+        "The server rejected the saved resume range (HTTP 416). Retry the download; HOLEN will restart the direct transfer if the remote file changed."
+    } else {
+        "The source rejected the saved download range (HTTP 416). Re-analyze the link before retrying; if it repeats, remove the failed item and start a fresh download because the remote media may have changed."
+    }
     402, 429 -> "The source is rate-limiting downloads (HTTP $status). Wait before retrying; repeated retries can extend the limit."
     in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
     else -> "The source returned HTTP $status. Check the link and try again."
