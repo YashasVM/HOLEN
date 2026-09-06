@@ -42,6 +42,7 @@ internal object DirectDownloadRetryPolicy {
     private const val BASE_BACKOFF_MS = 1_000L
     private const val MAX_RETRY_AFTER_MS = 30_000L
     private val RETRYABLE_HTTP_CODES = setOf(408, 500, 502, 503, 504)
+    private val RETRY_AFTER_HTTP_CODES = setOf(429, 503)
 
     fun shouldRetry(
         error: Throwable,
@@ -76,7 +77,7 @@ internal object DirectDownloadRetryPolicy {
         retriesUsed: Int,
         nowMillis: Long = System.currentTimeMillis(),
     ): Long {
-        if (error is DirectHttpException && error.statusCode == 429) {
+        if (error is DirectHttpException && error.statusCode in RETRY_AFTER_HTTP_CODES) {
             retryAfterMillis(error.retryAfter, nowMillis)?.let { return it }
         }
         return BASE_BACKOFF_MS shl retriesUsed.coerceIn(0, MAX_RETRIES - 1)
