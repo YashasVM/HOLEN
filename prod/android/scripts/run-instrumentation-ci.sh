@@ -80,6 +80,23 @@ grep -q 'transfer_resume_offset_bytes=' app/build/reports/startup/engine-startup
 grep -q 'transfer_resume_ms=' app/build/reports/startup/engine-startup-timing.txt
 cat app/build/reports/startup/engine-startup-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
+current_stage="repeat-yt-dlp-launch-test"
+adb logcat -c
+./gradlew connectedEmulatorDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.RepeatedYtDlpLaunchTimingTest \
+  -Pandroid.testInstrumentationRunnerArguments.holenRepeatedLaunchTiming=true \
+  2>&1 | tee app/build/reports/startup/repeated-yt-dlp-launch-gradle.txt
+current_stage="repeat-yt-dlp-launch-report"
+adb logcat -d -s HOLENRepeatLaunch:I '*:S' \
+  | tee app/build/reports/startup/repeated-yt-dlp-launch-logcat.txt
+grep -o 'process_launch_first_ms=[0-9][0-9]* process_launch_repeat_ms=[0-9][0-9]*' app/build/reports/startup/repeated-yt-dlp-launch-logcat.txt \
+  | tail -n 1 \
+  | tee app/build/reports/startup/repeated-yt-dlp-launch-timing.txt
+test -s app/build/reports/startup/repeated-yt-dlp-launch-timing.txt
+grep -q 'process_launch_first_ms=[0-9][0-9]*' app/build/reports/startup/repeated-yt-dlp-launch-timing.txt
+grep -q 'process_launch_repeat_ms=[0-9][0-9]*' app/build/reports/startup/repeated-yt-dlp-launch-timing.txt
+cat app/build/reports/startup/repeated-yt-dlp-launch-timing.txt >> "$GITHUB_STEP_SUMMARY"
+
 current_stage="full-instrumentation-suite"
 ./gradlew connectedEmulatorDebugAndroidTest \
   2>&1 | tee app/build/reports/startup/full-instrumentation-gradle.txt
