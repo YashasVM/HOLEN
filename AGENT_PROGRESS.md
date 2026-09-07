@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 127 commits ahead and 0 behind before the latest lifecycle test commit.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 129 commits ahead and 0 behind before the latest service-level recovery test commit.
 
 ## Completed since the last weekly review
 
@@ -17,31 +17,33 @@
 - Investigated current YouTube EJS support. youtubedl-android `0.18.1` supplies QuickJS but not matching EJS solver scripts, while naive `ejs:github` use would repeatedly fetch because the wrapper disables yt-dlp caching unless an explicit cache directory is supplied.
 - Hosted GitHub runners cannot defensibly validate live YouTube EJS behavior because YouTube returns HTTP 429. The live EJS probe is opt-in behind `HOLEN_EJS_REMOTE_PROBE=true`; production does not enable `ejs:github`.
 - Completed deterministic low-level yt-dlp/aria2 restart-resume validation. Android CI `34135963372` passed both verify and instrumentation after the loopback fixture was corrected to honor bounded byte ranges. The test retains partial media plus `.aria2` state, kills the first yt-dlp process, launches a fresh process, requires a non-zero completed-piece `Range`, and verifies byte-identical final output.
+- Validated HOLEN's store/output recovery boundary in Android CI `34141010546`. A known interrupted media job keeps deliberately old partial media plus `.aria2` state through orphan cleanup and `requeueInterrupted()`, proving the underlying recovery primitives do not discard resume data.
 
-## Current work: HOLEN lifecycle preservation of resumable staging
+## Current work: service-level restart recovery
 
-The low-level aria2 mechanism is now proven. The remaining app-level question is whether HOLEN's own restart recovery preserves the same state. Production startup calls `OutputStore.cleanOrphanStaging()` and then requeues interrupted `RUNNING`/`FINALIZING` jobs; explicit user cancellation intentionally clears staging, while timeout/process interruption is expected to keep it.
+The remaining lifecycle question is whether `DownloadService` itself performs the startup recovery/requeue sequence without discarding staging before resumed work is reclaimed.
 
-Commit `1d6a74cc` adds an Android instrumentation test for that boundary. It creates a known `RUNNING` media job with deliberately old partial media and `.aria2` control files, runs startup orphan cleanup with a future clock, verifies both files survive because the job is still known, requeues interrupted work, and verifies the job becomes `QUEUED` without deleting either resumable file. This changes test coverage only; production behavior is unchanged.
+Commit `63fc03d8` adds an Android instrumentation test that seeds a `RUNNING` media job with resumable staging, starts the real `DownloadService`, requires the job to be requeued and reclaimed with reset display progress, then holds the resumed extractor request on a loopback fixture while asserting both the partial media and `.aria2` state still exist. This is test coverage only; production behavior is unchanged.
 
 ## Validation / reviewer state
 
 - Latest production Android change (`dc97caf1`) passed instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification in Android CI `34050305494`.
 - EJS diagnostic/runner work passed through Android CI `34093307496` with the live network probe disabled by default.
 - Low-level restart/resume Android CI `34135963372` passed both verify and instrumentation, completing the fresh-process aria2 Range/integrity proof.
-- The new HOLEN lifecycle staging-preservation instrumentation test is awaiting fresh CI on `1d6a74cc`.
+- HOLEN lifecycle staging-preservation Android CI `34141010546` passed both verify and instrumentation.
+- Service-level recovery test `63fc03d8` is currently under fresh CI validation.
 - No open PRs or issues were present in the latest inspection.
-- PR #19 has no submitted reviews; there is no actionable CodeRabbit or `Yashas's code review bot:` feedback.
+- PR #19 has no actionable review feedback; CodeRabbit only reports that automatic review is skipped for the repository's current star count. No `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
 
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Emulator timing ranks bottlenecks but is not a claim of phone-level absolute latency or promised speedup.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent. Keep production remote EJS disabled until acquisition/cache reuse can be validated on a suitable network.
-- HOLEN's app-level restart path is not considered fully validated until the new lifecycle staging-preservation test passes in Android CI.
+- Service-level restart recovery is not considered fully validated until `63fc03d8` passes instrumentation; the lower-level staging and aria2 mechanisms are already proven.
 - Explicit user cancellation deliberately deletes staging and therefore does not offer pause/resume semantics; interrupted service/process recovery is a separate path that preserves resumable state.
 - Current yt-dlp's `Aria2cFD` deliberately appends some fixed aria2 flags after configured downloader arguments, including `--always-resume=false`; future production tuning must account for those enforced options rather than assuming earlier duplicate arguments win.
 
 ## Highest-value next step
 
-Validate `1d6a74cc` in Android CI. If green, add one service-level recovery test that exercises `DownloadService` startup/requeue behavior rather than only the underlying store/output primitives; only change production code if that higher-level test exposes a real lifecycle bug.
+Validate `63fc03d8` in Android CI. If green, close the restart/resume investigation as proven through the service boundary and move to the next material Android reliability/performance gap instead of adding more redundant resume tests. If it fails, fix the service-level lifecycle issue or the test fixture based on the observed failure without weakening staging-preservation assertions.
