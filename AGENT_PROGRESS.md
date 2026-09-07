@@ -30,11 +30,13 @@ The first Android EJS probe exposed two important integration facts before any p
 
 Commit `48958dab` corrected the probe by using a dedicated explicit cache and recording extraction exceptions. Corrected Android CI `34074610213` passed completely, including instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification.
 
-The corrected artifact did not yet validate cache reuse: both EJS attempts exited through the wrapper exception path (`exit=-1`), with first attempt 8722 ms and second attempt 7416 ms. Both reported remote-component signals and neither reported a cache-hit signal. The repeated yt-dlp process probe in the same run measured 1837 ms first launch vs 951 ms repeated launch, so most of the 7–9 second EJS probe time is not ordinary process startup alone.
+The corrected artifact did not validate cache reuse: both EJS attempts exited through the wrapper exception path (`exit=-1`), with first attempt 8722 ms and second attempt 7416 ms. Both reported remote-component signals and neither reported a cache-hit signal. The repeated yt-dlp process probe in the same run measured 1837 ms first launch vs 951 ms repeated launch, so most of the 7–9 second EJS probe time was not ordinary process startup alone.
 
-Commit `9a4ea84a` preserved bounded first/cached EJS failure diagnostics in logcat, and commit `519d7e7d` surfaced them in the workflow summary. Android CI `34081234406` then identified the actual blocker: both attempts were rejected by YouTube with HTTP 429 (`Too Many Requests`) before meaningful EJS/cache behavior could be established. The run still passed instrumentation, lint/tests/build, APK assembly, and 16 KB native-library verification. Its first attempt took 12147 ms and repeated attempt 10308 ms, so repeating the same network-blocked extraction was expensive and produced no useful cache evidence.
+Commit `9a4ea84a` preserved bounded first/cached EJS failure diagnostics, and commit `519d7e7d` surfaced them in the workflow summary. Android CI `34081234406` identified the actual blocker: both attempts were rejected by YouTube with HTTP 429 (`Too Many Requests`) before meaningful EJS/cache behavior could be established. Commit `a59fd619` then classified HTTP 429 and skipped the redundant cached-reuse attempt when the first request was already upstream-blocked.
 
-Commit `a59fd619` classifies HTTP 429 as an upstream-blocked probe and skips the redundant cached-reuse attempt when the first request is already rate-limited. Commit `cac53d9d` added explicit upstream-blocked fields to the CI summary, but it also accidentally replaced unrelated, already-working instrumentation-runner logic with a stale variant. Android CI `34084984641` consequently failed in the instrumentation job while its independent verify job still passed lint/tests/build and 16 KB native-library verification. Commit `deb8b64b` restores the established runner and retains only the intended EJS summary-field additions.
+Commit `cac53d9d` accidentally replaced unrelated, already-working instrumentation-runner logic with a stale variant while adding EJS summary fields. Commit `deb8b64b` restored the established runner, and Android CI `34088583867` passed completely, closing that regression.
+
+Hosted GitHub runners are not a defensible place to keep probing live YouTube EJS behavior: the runner IP is being rate-limited, so the test consumes time without validating remote-component acquisition or cache reuse. Commit `9c78e049` therefore stops running the live EJS probe by default in Android CI. The probe remains available behind `HOLEN_EJS_REMOTE_PROBE=true` for an environment where YouTube access is suitable for compatibility validation.
 
 Production analysis/download behavior remains unchanged: no request enables `ejs:github`, and Android version metadata was not changed.
 
@@ -43,11 +45,12 @@ Production analysis/download behavior remains unchanged: no request enables `ejs
 - Latest production Android change (`dc97caf1`) passed instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification in Android CI `34050305494`.
 - Repeated-process-launch measurement CI `34059630027` passed.
 - Corrected EJS probe Android CI `34074610213` passed completely.
-- EJS diagnostic-preservation Android CI `34078013194` passed completely; its instrumentation and verification jobs both succeeded.
-- EJS surfaced-diagnostics Android CI `34081234406` passed completely and identified upstream YouTube HTTP 429 as the current probe blocker.
-- Rate-limit-reporting Android CI `34084984641` failed in instrumentation because the CI script was unintentionally regressed; its verify job still passed. Commit `deb8b64b` restores the prior runner and awaits fresh Android CI validation.
+- EJS diagnostic-preservation Android CI `34078013194` passed completely.
+- EJS surfaced-diagnostics Android CI `34081234406` passed completely and identified upstream YouTube HTTP 429 as the probe blocker.
+- Restored instrumentation runner Android CI `34088583867` passed completely.
+- Commit `9c78e049` now awaits Android CI validation with the unreliable live EJS probe skipped by default.
 - No open PRs or issues were present at the start of this run.
-- No actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
+- Recent PR #19 has no submitted reviews; no actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
 
 ## Known risks / review points
 
@@ -57,8 +60,8 @@ Production analysis/download behavior remains unchanged: no request enables `ejs
 - Reusing analysis output for download is currently rejected because signed media URLs, cookies/auth state, format selection, and extractor behavior can change between analysis and download.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent.
 - Enabling `ejs:github` without an explicit cache strategy would add repeated remote-component network cost because youtubedl-android disables yt-dlp caching by default.
-- The EJS probe is currently blocked by YouTube rate limiting on GitHub-hosted emulator runners, so it still has not demonstrated a successful first EJS fetch or cache reuse. Do not add a production remote-component flag from this evidence.
+- A successful first EJS acquisition plus cached reuse still has not been demonstrated on Android. Keep production EJS remote-components disabled until this is validated in a network environment that is not blocked by YouTube.
 
 ## Highest-value next step
 
-Validate commit `deb8b64b` in Android CI first. If the restored instrumentation runner is green and GitHub-hosted runners remain rate-limited, stop spending cycles on live YouTube EJS extraction there and build a deterministic compatibility check for remote-component acquisition/cache state that does not depend on YouTube accepting the runner IP.
+Validate commit `9c78e049` in Android CI. If green, treat the hosted-runner EJS investigation as intentionally blocked rather than repeatedly retrying it, then return to the highest-value Android reliability gap: deterministic restart/resume validation across the real yt-dlp/aria2 download path.
