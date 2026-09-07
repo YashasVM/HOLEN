@@ -217,9 +217,12 @@ class Aria2ResumeInstrumentedTest {
                 return
             }
 
-            val start = range.removePrefix("bytes=").substringBefore('-').toIntOrNull() ?: 0
-            val body = MEDIA_BYTES.copyOfRange(start.coerceAtMost(MEDIA_BYTES.size), MEDIA_BYTES.size)
-            respondPartial(socket, start, body)
+            val parsedRange = parseRange(range)
+            if (parsedRange == null) {
+                respond(socket, 416, ByteArray(0))
+                return
+            }
+            respondPartial(socket, parsedRange.first, parsedRange.last)
         }
 
         private fun respondHeldPartial(socket: Socket) {
@@ -235,17 +238,30 @@ class Aria2ResumeInstrumentedTest {
             releaseFirstResponse.await(15, TimeUnit.SECONDS)
         }
 
-        private fun respondPartial(socket: Socket, start: Int, body: ByteArray) {
+        private fun respondPartial(socket: Socket, start: Int, endInclusive: Int) {
+            val body = MEDIA_BYTES.copyOfRange(start, endInclusive + 1)
             socket.getOutputStream().buffered().use { output ->
                 output.write("HTTP/1.1 206 Partial Content\r\n".toByteArray())
                 output.write("Content-Type: video/mp4\r\n".toByteArray())
                 output.write("Content-Length: ${body.size}\r\n".toByteArray())
-                output.write("Content-Range: bytes $start-${MEDIA_BYTES.lastIndex}/${MEDIA_BYTES.size}\r\n".toByteArray())
+                output.write("Content-Range: bytes $start-$endInclusive/${MEDIA_BYTES.size}\r\n".toByteArray())
                 output.write("Accept-Ranges: bytes\r\n".toByteArray())
                 output.write("Connection: close\r\n\r\n".toByteArray())
                 output.write(body)
                 output.flush()
             }
+        }
+
+        private fun parseRange(header: String): IntRange? {
+            if (!header.startsWith("bytes=")) return null
+            val value = header.removePrefix("bytes=")
+            if (',' in value) return null
+            val start = value.substringBefore('-').toIntOrNull() ?: return null
+            if (start !in MEDIA_BYTES.indices) return null
+            val requestedEnd = value.substringAfter('-', "").toIntOrNull()
+            val end = (requestedEnd ?: MEDIA_BYTES.lastIndex).coerceAtMost(MEDIA_BYTES.lastIndex)
+            if (end < start) return null
+            return start..end
         }
 
         override fun close() {
@@ -287,7 +303,11 @@ class Aria2ResumeInstrumentedTest {
         }
 
         fun respond(socket: Socket, status: Int, body: ByteArray) {
-            val reason = if (status == 200) "OK" else "Not Found"
+            val reason = when (status) {
+                200 -> "OK"
+                416 -> "Range Not Satisfiable"
+                else -> "Not Found"
+            }
             socket.getOutputStream().buffered().use { output ->
                 output.write("HTTP/1.1 $status $reason\r\n".toByteArray())
                 output.write("Content-Type: video/mp4\r\n".toByteArray())
