@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` is ahead with no drift from `main` detected in this run.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` remains ahead with no drift from `main` detected in this run.
 
 ## Completed since the last weekly review
 
@@ -18,6 +18,7 @@
 - Closed service-level restart recovery in Android CI `34153823593`: both instrumentation and verify passed, including lint/tests/build, release APK assembly, 16 KB native-library verification, and the real `DownloadService` reclaim/staging-preservation probe.
 - Enabled the official yt-dlp `ejs:github` remote component for full YouTube analysis and YouTube downloads, with an explicit reusable Android cache. Quick shared-link analysis and non-YouTube extractors remain unchanged. Android CI `34158081428` and `34158104192`, plus generic CI `34158104213`, passed for the production policy and host-coverage tests.
 - Strengthened the opt-in Android EJS compatibility probe so a usable-network run must prove successful first extraction, non-empty cache creation, successful second extraction, and retained cache state. Android CI `34161519848` passed verify/instrumentation for this test change; the live EJS probe itself remained intentionally skipped in normal hosted CI.
+- Fixed the strict EJS probe report parser so it consumes the new cache file/byte counters. Android CI `34164996314` and generic CI `34164996308` passed for the parser change.
 
 ## Performance evidence
 
@@ -36,14 +37,13 @@ These numbers rank emulator-side bottlenecks only. They do not claim absolute ph
 
 Upstream yt-dlp's current EJS guidance requires a supported JavaScript runtime plus solver scripts for YouTube challenge solving. HOLEN already exposes bundled QuickJS, and production now enables the official `ejs:github` distribution with an explicit cache for full YouTube operations.
 
-The deterministic policy/build path is green. Commit `839e5907` tightened the opt-in live probe, but review of the CI harness found that its report parser still expected the old field layout and would reject the newly added cache file/byte counters. Commit `f3c7fb01` updates the parser and its checks to consume those counters, so a future opt-in run can report the strict probe result instead of failing during summary extraction. Production download behavior is unchanged.
+The deterministic policy, build, instrumentation, and strict-probe parsing paths are green. Live EJS extraction remains deliberately unclaimed because hosted GitHub runner traffic has been rate-limited by YouTube. No further production fallback is justified without a non-rate-limited Android/network run that can distinguish solver compatibility from network blocking.
 
 ## Validation / reviewer state
 
-- Android CI `34161519848`: passed both verify and instrumentation for the stricter EJS probe code. The live EJS test was skipped by design because `HOLEN_EJS_REMOTE_PROBE` was not enabled.
-- The opt-in harness now validates and reports `first_cache_files`, `first_cache_bytes`, `cached_cache_files`, and `cached_cache_bytes` in addition to exit/status fields.
-- Fresh CI is pending for the parser-only `f3c7fb01` change.
-- The live EJS probe remains opt-in because hosted GitHub runners have returned YouTube HTTP 429; no live compatibility claim is made from a blocked environment.
+- Android CI `34164996314`: passed for the strict EJS parser fix.
+- Generic CI `34164996308`: passed for the same parser fix.
+- Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
@@ -57,4 +57,4 @@ The deterministic policy/build path is green. Commit `839e5907` tightened the op
 
 ## Highest-value next step
 
-Validate CI for `f3c7fb01`. Once green, run the opt-in EJS probe on a non-rate-limited Android/network environment; if that succeeds, close the EJS task. If it fails, use its exact first-fetch/cache diagnostics to fix the real compatibility problem rather than adding speculative fallback behavior.
+Run the opt-in strict EJS probe on a non-rate-limited Android connection. Until that environment is available, continue auditing Android download failure/retry behavior and only change production code when a concrete misclassification, lost-resume case, or unnecessary retry is demonstrated.
