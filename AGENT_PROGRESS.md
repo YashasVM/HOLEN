@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current baseline inspected before this update: `main` `4b46036d`; `agent-dev` is 98 commits ahead and 0 behind.
+- Current baseline inspected before this update: `main` `4b46036d`; `agent-dev` was 99 commits ahead and 0 behind before this run's diagnostic commit.
 
 ## Completed since the last weekly review
 
@@ -25,11 +25,14 @@ The EJS investigation established that youtubedl-android `0.18.1` injects QuickJ
 
 The first Android EJS probe exposed two important harness facts before any production flag was enabled:
 
-1. Android CI `34071365877` failed only in the instrumentation job; lint/unit/build, release APK assembly, and 16 KB native-library verification all passed.
-2. youtubedl-android automatically appends `--no-cache-dir` unless the request explicitly supplies `--cache-dir`. That made the original first-fetch-vs-cached-reuse probe invalid and would also make naive production `ejs:github` usage refetch remote components on each yt-dlp invocation.
-3. youtubedl-android throws `YoutubeDLException` for non-zero yt-dlp exits, so transient YouTube/GitHub failures can abort an instrumentation test unless the measurement harness records the exception deliberately.
+1. youtubedl-android automatically appends `--no-cache-dir` unless the request explicitly supplies `--cache-dir`; naive production `ejs:github` use would therefore refetch remote components on each invocation.
+2. youtubedl-android throws `YoutubeDLException` for non-zero yt-dlp exits, so transient YouTube/GitHub failures need to be recorded deliberately in a compatibility probe rather than failing unrelated Android validation.
 
-Commit `48958dab` fixes the probe rather than production behavior: it gives the EJS test a dedicated explicit yt-dlp cache directory, clears that directory before the first request, reuses it for the second request, and records external extraction exceptions as probe diagnostics instead of failing the entire instrumentation run. Interrupted execution is still propagated correctly.
+Commit `48958dab` corrected the probe by using a dedicated explicit cache and recording extraction exceptions. Corrected Android CI `34074610213` passed completely, including instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification.
+
+The corrected artifact did not yet validate cache reuse: both EJS attempts exited through the wrapper exception path (`exit=-1`), with first attempt 8722 ms and second attempt 7416 ms. Both reported remote-component signals and neither reported a cache-hit signal. The repeated yt-dlp process probe in the same run measured 1837 ms first launch vs 951 ms repeated launch, so most of the 7–9 second EJS probe time is not ordinary process startup alone.
+
+Because the wrapper exception reduced the stored diagnostics to a message and the CI artifact only preserved the summary line, the precise upstream failure reason was not recoverable from that run. Commit `9a4ea84a` now emits the bounded first/cached EJS diagnostics into logcat so the next Android artifact can identify whether the failure is YouTube extraction, GitHub remote-component retrieval, EJS compatibility, or another environment problem. This remains test-only; production EJS behavior is unchanged.
 
 No production analysis/download request currently enables `ejs:github` and no Android version metadata was changed.
 
@@ -37,9 +40,8 @@ No production analysis/download request currently enables `ejs:github` and no An
 
 - Latest production Android change (`dc97caf1`) passed instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification in Android CI `34050305494`.
 - Repeated-process-launch measurement CI `34059630027` passed.
-- Generic CI `34071385886` for the previous EJS progress tip passed.
-- Initial EJS probe Android CI `34071365877` failed in instrumentation while the verify job passed; this failure led to the cache/exception-handling correction above.
-- Corrected EJS probe Android CI `34074610213` and generic CI `34074610173` are currently running.
+- Corrected EJS probe Android CI `34074610213` passed completely; generic CI `34074610173` and progress-tip CI `34074647090` also passed.
+- Corrected EJS probe evidence: first 8722 ms / exit -1 / remote signal true / cache signal false; repeated 7416 ms / exit -1 / remote signal true / cache signal false.
 - No open PRs or issues were present at the start of this run.
 - PR #19 has no submitted reviews; there is no actionable CodeRabbit or `Yashas's code review bot:` feedback.
 
@@ -51,8 +53,8 @@ No production analysis/download request currently enables `ejs:github` and no An
 - Reusing analysis output for download is currently rejected because signed media URLs, cookies/auth state, format selection, and extractor behavior can change between analysis and download.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent.
 - Enabling `ejs:github` without an explicit cache strategy would add repeated remote-component network cost because youtubedl-android disables yt-dlp caching by default.
-- The EJS probe depends on external YouTube/GitHub availability for meaningful compatibility evidence; external failures are now recorded rather than hidden.
+- The corrected EJS run still did not establish a successful first fetch or cache reuse. Do not add a production remote-component flag until the upstream failure cause and offline/cached behavior are understood.
 
 ## Highest-value next step
 
-Finish corrected Android CI `34074610213` and inspect its EJS first-fetch versus cached-reuse report. If explicit caching works reliably, add a controlled remote-unavailable test that proves cached EJS remains usable without GitHub before considering any production `ejs:github` integration. If cached reuse is unreliable or expensive, keep production unchanged and investigate version-coupled local EJS packaging instead.
+Inspect the next Android EJS diagnostic artifact produced by `9a4ea84a`. If it shows a transient external-network or test-video failure, make the probe target/environment more deterministic and repeat it. If it shows an actual youtubedl-android/yt-dlp EJS incompatibility, keep production unchanged and evaluate a version-coupled local EJS packaging path instead of introducing a brittle runtime GitHub dependency. Only after a successful first fetch is demonstrated should a controlled remote-unavailable cached-reuse test be added.
