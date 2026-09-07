@@ -97,6 +97,23 @@ grep -q 'process_launch_first_ms=[0-9][0-9]*' app/build/reports/startup/repeated
 grep -q 'process_launch_repeat_ms=[0-9][0-9]*' app/build/reports/startup/repeated-yt-dlp-launch-timing.txt
 cat app/build/reports/startup/repeated-yt-dlp-launch-timing.txt >> "$GITHUB_STEP_SUMMARY"
 
+current_stage="ejs-remote-component-test"
+adb logcat -c
+./gradlew connectedEmulatorDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.yashasvm.holen.EjsRemoteComponentInstrumentedTest \
+  -Pandroid.testInstrumentationRunnerArguments.holenEjsRemoteProbe=true \
+  2>&1 | tee app/build/reports/startup/ejs-remote-component-gradle.txt
+current_stage="ejs-remote-component-report"
+adb logcat -d -s HOLENEjsProbe:I '*:S' \
+  | tee app/build/reports/startup/ejs-remote-component-logcat.txt
+grep -o 'first_ms=[0-9][0-9]* first_exit=-\?[0-9][0-9]* first_remote_signal=\(true\|false\) first_cache_signal=\(true\|false\) cached_ms=[0-9][0-9]* cached_exit=-\?[0-9][0-9]* cached_remote_signal=\(true\|false\) cached_cache_signal=\(true\|false\)' app/build/reports/startup/ejs-remote-component-logcat.txt \
+  | tail -n 1 \
+  | tee app/build/reports/startup/ejs-remote-component-summary.txt
+test -s app/build/reports/startup/ejs-remote-component-summary.txt
+grep -q 'first_ms=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
+grep -q 'cached_ms=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
+cat app/build/reports/startup/ejs-remote-component-summary.txt >> "$GITHUB_STEP_SUMMARY"
+
 current_stage="full-instrumentation-suite"
 ./gradlew connectedEmulatorDebugAndroidTest \
   2>&1 | tee app/build/reports/startup/full-instrumentation-gradle.txt
