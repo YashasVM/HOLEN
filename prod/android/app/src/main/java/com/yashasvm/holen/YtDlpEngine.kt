@@ -113,6 +113,7 @@ class YtDlpEngine private constructor(private val context: Context) {
     private val operationGate = EngineOperationGate()
     private val downloadToolsPrewarmInFlight = AtomicBoolean(false)
     private val automaticUpdateInFlight = AtomicBoolean(false)
+    private val ejsCacheDirectory = File(context.cacheDir, EJS_CACHE_DIRECTORY)
 
     @Volatile
     private var initialized = false
@@ -163,6 +164,9 @@ class YtDlpEngine private constructor(private val context: Context) {
                     val request = YoutubeDLRequest(url).apply {
                         addOption("--ignore-config")
                         addCommands(cookieStore.cookieArguments())
+                        if (mode == AnalysisMode.FULL) {
+                            addCommands(youtubeEjsArguments(url, ejsCacheDirectory))
+                        }
                         addOption("--dump-single-json")
                         addOption("--flat-playlist")
                         addOption("--playlist-end", playlistPreviewLimit(mode))
@@ -278,6 +282,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                     if (authenticationPolicy.usesConfiguredCookies) {
                         addCommands(cookieStore.cookieArguments())
                     }
+                    addCommands(youtubeEjsArguments(job.sourceUrl, ejsCacheDirectory))
                     addCommands(downloadArguments(job.format))
                     addCommands(
                         listOf(
@@ -528,6 +533,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
         internal const val ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS = 24L * 60 * 60 * 1000
         private const val ANALYSIS_PROCESS_PREFIX = "analysis-"
+        private const val EJS_CACHE_DIRECTORY = "yt-dlp-ejs-cache"
         private const val RESTART_REQUIRED_MESSAGE =
             "Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."
         private val FRAGMENT_TEMP_FILE_REGEX = Regex("\\.part-Frag\\d+(?:\\.part)?$")
@@ -536,6 +542,16 @@ class YtDlpEngine private constructor(private val context: Context) {
             AnalysisMode.QUICK -> QUICK_PLAYLIST_PREVIEW_LIMIT
             AnalysisMode.FULL -> PLAYLIST_PREVIEW_LIMIT
         }
+
+        internal fun youtubeEjsArguments(url: String, cacheDirectory: File): List<String> =
+            if (isYoutubeUrl(url)) {
+                listOf(
+                    "--cache-dir", cacheDirectory.absolutePath,
+                    "--remote-components", "ejs:github",
+                )
+            } else {
+                emptyList()
+            }
 
         fun downloadArguments(format: DownloadFormat): List<String> = when (format) {
             DownloadFormat.ORIGINAL -> error("Original format is handled by the direct downloader.")
