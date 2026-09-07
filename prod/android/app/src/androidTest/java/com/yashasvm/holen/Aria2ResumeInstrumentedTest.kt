@@ -54,10 +54,10 @@ class Aria2ResumeInstrumentedTest {
                         ?.let { it in 1 until MEDIA_BYTES.size.toLong() } == true
                 }
                 assertNotNull(
-                    "Second aria2 invocation must request a non-zero byte range instead of restarting from zero",
+                    "Fresh yt-dlp/aria2 invocation must request a non-zero range instead of restarting",
                     resumedRange,
                 )
-                assertTrue("The server should have seen both yt-dlp probes and transfer attempts", server.totalRequests >= 4)
+                assertTrue("The server should see both extractor probes and transfer attempts", server.totalRequests >= 4)
             }
         } finally {
             YoutubeDL.destroyProcessById("$PROCESS_ID-first")
@@ -88,7 +88,6 @@ class Aria2ResumeInstrumentedTest {
     private class ResumeMediaServer : AutoCloseable {
         private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         private val requestCount = AtomicInteger(0)
-        private val transferCount = AtomicInteger(0)
         val rangeHeaders = CopyOnWriteArrayList<String>()
         @Volatile private var closed = false
         private val worker = thread(name = "holen-aria2-resume-http", isDaemon = true) {
@@ -112,24 +111,27 @@ class Aria2ResumeInstrumentedTest {
                 return
             }
 
-            requestCount.incrementAndGet()
+            val ordinal = requestCount.incrementAndGet()
             val range = request.headers["range"]
             if (range != null) rangeHeaders += range
 
-            // yt-dlp's generic extractor probes the direct media URL before handing it to aria2.
-            // Those requests do not carry Range; aria2 transfer requests do.
+            // Request 1 is yt-dlp's generic-extractor probe. Request 2 is the first aria2 transfer;
+            // truncate it deliberately so its partial file/control state survives the failed
+            // yt-dlp invocation. The next invocation probes again, then aria2 should send Range.
+            if (ordinal == 1) {
+                respond(socket, 200, MEDIA_BYTES)
+                return
+            }
+            if (ordinal == 2) {
+                respondTruncated(socket)
+                return
+            }
             if (range == null) {
                 respond(socket, 200, MEDIA_BYTES)
                 return
             }
 
-            val transferNumber = transferCount.incrementAndGet()
             val start = range.removePrefix("bytes=").substringBefore('-').toIntOrNull() ?: 0
-            if (transferNumber == 1 && start == 0) {
-                respondTruncated(socket)
-                return
-            }
-
             val body = MEDIA_BYTES.copyOfRange(start.coerceAtMost(MEDIA_BYTES.size), MEDIA_BYTES.size)
             respondPartial(socket, start, body)
         }
