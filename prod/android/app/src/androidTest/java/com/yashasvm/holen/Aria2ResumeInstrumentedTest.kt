@@ -119,7 +119,7 @@ class Aria2ResumeInstrumentedTest {
                 .addOption("--downloader", "libaria2c.so")
                 .addOption(
                     "--downloader-args",
-                    "aria2c:--continue=true --always-resume=true --max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --piece-length=1M --file-allocation=none --auto-file-renaming=false --header=X-Holen-Aria2-Attempt:$attempt",
+                    "default:--continue=true --always-resume=true --max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --piece-length=1M --file-allocation=none --auto-file-renaming=false --header=X-Holen-Aria2-Attempt:$attempt",
                 )
                 .addOption("--no-playlist")
                 .addOption("--output", File(outputDir, "resume.%(ext)s").absolutePath),
@@ -187,8 +187,9 @@ class Aria2ResumeInstrumentedTest {
             val range = request.headers["range"]
             if (range != null) rangeHeaders += range
 
-            // The marker is injected only through aria2's downloader args, so yt-dlp extractor
-            // probes remain unmarked. This avoids depending on extractor request count/order.
+            // Use a downloader-specific marker to distinguish yt-dlp extractor probes from aria2.
+            // The test passes downloader args through yt-dlp's `default` bucket so this remains
+            // valid when Android invokes the aria2-compatible binary as `libaria2c.so`.
             when (request.headers["x-holen-aria2-attempt"]) {
                 null -> {
                     respond(socket, 200, MEDIA_BYTES)
