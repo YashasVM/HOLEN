@@ -107,12 +107,16 @@ if [[ "${HOLEN_EJS_REMOTE_PROBE:-false}" == "true" ]]; then
   current_stage="ejs-remote-component-report"
   adb logcat -d -s HOLENEjsProbe:I '*:S' \
     | tee app/build/reports/startup/ejs-remote-component-logcat.txt
-  grep -o 'first_ms=[0-9][0-9]* first_exit=-\?[0-9][0-9]* first_remote_signal=\(true\|false\) first_cache_signal=\(true\|false\) first_upstream_blocked=\(true\|false\) cached_ms=[0-9][0-9]* cached_exit=-\?[0-9][0-9]* cached_remote_signal=\(true\|false\) cached_cache_signal=\(true\|false\) cached_upstream_blocked=\(true\|false\)' app/build/reports/startup/ejs-remote-component-logcat.txt \
+  grep -o 'first_ms=[0-9][0-9]* first_exit=-\?[0-9][0-9]* first_remote_signal=\(true\|false\) first_cache_signal=\(true\|false\) first_upstream_blocked=\(true\|false\) first_cache_files=[0-9][0-9]* first_cache_bytes=[0-9][0-9]* cached_ms=[0-9][0-9]* cached_exit=-\?[0-9][0-9]* cached_remote_signal=\(true\|false\) cached_cache_signal=\(true\|false\) cached_upstream_blocked=\(true\|false\) cached_cache_files=[0-9][0-9]* cached_cache_bytes=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-logcat.txt \
     | tail -n 1 \
     | tee app/build/reports/startup/ejs-remote-component-summary.txt
   test -s app/build/reports/startup/ejs-remote-component-summary.txt
   grep -q 'first_ms=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
+  grep -q 'first_cache_files=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
+  grep -q 'first_cache_bytes=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
   grep -q 'cached_ms=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
+  grep -q 'cached_cache_files=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
+  grep -q 'cached_cache_bytes=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
   grep -q 'first_upstream_blocked=\(true\|false\)' app/build/reports/startup/ejs-remote-component-summary.txt
   grep -q 'cached_upstream_blocked=\(true\|false\)' app/build/reports/startup/ejs-remote-component-summary.txt
   grep 'HOLEN EJS \(first\|cached\) diagnostics:' app/build/reports/startup/ejs-remote-component-logcat.txt \
