@@ -63,8 +63,8 @@ class DownloadServiceRecoveryInstrumentedTest {
         )
 
         context.stopService(Intent(context, DownloadService::class.java))
-        repeat(40) {
-            if (!DownloadService.isRunning) return@repeat
+        for (attempt in 0 until 40) {
+            if (!DownloadService.isRunning) break
             delay(50)
         }
 
@@ -82,15 +82,15 @@ class DownloadServiceRecoveryInstrumentedTest {
             context.startForegroundService(serviceIntent)
 
             var recovered: DownloadJob? = null
-            repeat(200) {
+            for (attempt in 0 until 200) {
                 val current = store.get(jobId)
                 if (
                     current?.status == JobStatus.RUNNING &&
                     current.updatedAt > initialUpdatedAt
                 ) {
                     recovered = current
+                    break
                 }
-                if (recovered != null) return@repeat
                 delay(50)
             }
 
