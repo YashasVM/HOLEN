@@ -109,10 +109,19 @@ class Aria2ResumeInstrumentedTest {
         @Volatile private var closed = false
         private val worker = thread(name = "holen-aria2-resume-http", isDaemon = true) {
             while (!closed) {
-                try {
-                    server.accept().use(::serve)
+                val socket = try {
+                    server.accept()
                 } catch (error: SocketException) {
                     if (!closed) throw error
+                    break
+                }
+
+                try {
+                    socket.use(::serve)
+                } catch (_: SocketException) {
+                    // yt-dlp/aria2 can close a loopback response as soon as it has enough data,
+                    // especially around the deliberately truncated first transfer. A peer reset
+                    // is transport behavior under test, not a fixture failure.
                 }
             }
         }
