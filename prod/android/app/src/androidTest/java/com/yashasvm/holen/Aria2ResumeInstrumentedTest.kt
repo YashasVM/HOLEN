@@ -11,7 +11,10 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotNull
@@ -22,7 +25,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class Aria2ResumeInstrumentedTest {
     @Test
-    fun freshYtDlpInvocationResumesInterruptedAria2TransferWithRangeRequest() {
+    fun freshYtDlpInvocationResumesCancelledAria2TransferWithRangeRequest() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         YoutubeDL.init(context)
         Aria2c.init(context)
@@ -33,20 +36,44 @@ class Aria2ResumeInstrumentedTest {
 
         try {
             ResumeMediaServer().use { server ->
-                val firstFailure = runCatching {
-                    executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-first", "first")
-                }.exceptionOrNull()
-                assertNotNull("The first transfer must fail after the server truncates its body", firstFailure)
+                val firstFailure = AtomicReference<Throwable?>()
+                val firstFinished = CountDownLatch(1)
+                thread(name = "holen-aria2-resume-first", isDaemon = true) {
+                    try {
+                        executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-first", "first")
+                    } catch (error: Throwable) {
+                        firstFailure.set(error)
+                    } finally {
+                        firstFinished.countDown()
+                    }
+                }
+
+                assertTrue(
+                    "The first aria2 request should reach the fixture",
+                    server.firstAttemptStarted.await(10, TimeUnit.SECONDS),
+                )
+                assertTrue(
+                    "Interrupted aria2 transfer must persist partial data and its control file before cancellation",
+                    waitForRetainedResumeState(outputDir, 10_000),
+                )
+
+                YoutubeDL.destroyProcessById("$PROCESS_ID-first")
+                server.releaseFirstAttempt()
+                assertTrue(
+                    "Cancelled yt-dlp/aria2 process should terminate promptly",
+                    firstFinished.await(10, TimeUnit.SECONDS),
+                )
+                assertNotNull("Cancelling the first transfer should surface a process failure", firstFailure.get())
 
                 val retainedData = outputDir.listFiles().orEmpty().firstOrNull {
                     it.isFile && !it.name.endsWith(".aria2") && it.length() >= PIECE_LENGTH_BYTES
                 }
                 assertNotNull(
-                    "Interrupted aria2 transfer must retain at least one complete piece for restart-resume",
+                    "Cancelled aria2 transfer must retain at least one complete piece for restart-resume",
                     retainedData,
                 )
                 assertTrue(
-                    "Interrupted aria2 transfer must retain its control file",
+                    "Cancelled aria2 transfer must retain its control file",
                     outputDir.listFiles().orEmpty().any { it.isFile && it.name.endsWith(".aria2") },
                 )
 
@@ -102,9 +129,25 @@ class Aria2ResumeInstrumentedTest {
         return response.out
     }
 
+    private fun waitForRetainedResumeState(outputDir: File, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val files = outputDir.listFiles().orEmpty()
+            val hasPiece = files.any {
+                it.isFile && !it.name.endsWith(".aria2") && it.length() >= PIECE_LENGTH_BYTES
+            }
+            val hasControl = files.any { it.isFile && it.name.endsWith(".aria2") }
+            if (hasPiece && hasControl) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
+
     private class ResumeMediaServer : AutoCloseable {
         private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         private val requestCount = AtomicInteger(0)
+        private val releaseFirstResponse = CountDownLatch(1)
+        val firstAttemptStarted = CountDownLatch(1)
         val rangeHeaders = CopyOnWriteArrayList<String>()
         @Volatile private var closed = false
         private val worker = thread(name = "holen-aria2-resume-http", isDaemon = true) {
@@ -119,9 +162,8 @@ class Aria2ResumeInstrumentedTest {
                 try {
                     socket.use(::serve)
                 } catch (_: SocketException) {
-                    // yt-dlp/aria2 can close a loopback response as soon as it has enough data,
-                    // especially around the deliberately truncated first transfer. A peer reset
-                    // is transport behavior under test, not a fixture failure.
+                    // Cancellation deliberately closes the first aria2 socket. A peer reset is
+                    // transport behavior under test, not a fixture failure.
                 }
             }
         }
@@ -129,6 +171,10 @@ class Aria2ResumeInstrumentedTest {
         val mediaUrl: String = "http://127.0.0.1:${server.localPort}/media.mp4"
         val totalRequests: Int
             get() = requestCount.get()
+
+        fun releaseFirstAttempt() {
+            releaseFirstResponse.countDown()
+        }
 
         private fun serve(socket: Socket) {
             val request = readRequest(socket)
@@ -149,10 +195,8 @@ class Aria2ResumeInstrumentedTest {
                     return
                 }
                 "first" -> {
-                    // Interrupt after multiple complete 1 MiB pieces. A sub-piece truncation on a
-                    // tiny fixture can legitimately resume from byte zero because aria2 records
-                    // completion at piece boundaries rather than arbitrary socket byte offsets.
-                    respondTruncated(socket)
+                    firstAttemptStarted.countDown()
+                    respondHeldPartial(socket)
                     return
                 }
             }
@@ -167,17 +211,17 @@ class Aria2ResumeInstrumentedTest {
             respondPartial(socket, start, body)
         }
 
-        private fun respondTruncated(socket: Socket) {
+        private fun respondHeldPartial(socket: Socket) {
             val partial = MEDIA_BYTES.copyOfRange(0, INTERRUPT_AFTER_BYTES)
-            socket.getOutputStream().buffered().use { output ->
-                output.write("HTTP/1.1 200 OK\r\n".toByteArray())
-                output.write("Content-Type: video/mp4\r\n".toByteArray())
-                output.write("Content-Length: ${MEDIA_BYTES.size}\r\n".toByteArray())
-                output.write("Accept-Ranges: bytes\r\n".toByteArray())
-                output.write("Connection: close\r\n\r\n".toByteArray())
-                output.write(partial)
-                output.flush()
-            }
+            val output = socket.getOutputStream().buffered()
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray())
+            output.write("Content-Type: video/mp4\r\n".toByteArray())
+            output.write("Content-Length: ${MEDIA_BYTES.size}\r\n".toByteArray())
+            output.write("Accept-Ranges: bytes\r\n".toByteArray())
+            output.write("Connection: close\r\n\r\n".toByteArray())
+            output.write(partial)
+            output.flush()
+            releaseFirstResponse.await(15, TimeUnit.SECONDS)
         }
 
         private fun respondPartial(socket: Socket, start: Int, body: ByteArray) {
@@ -194,6 +238,7 @@ class Aria2ResumeInstrumentedTest {
         }
 
         override fun close() {
+            releaseFirstResponse.countDown()
             closed = true
             server.close()
             worker.join(1_000)
