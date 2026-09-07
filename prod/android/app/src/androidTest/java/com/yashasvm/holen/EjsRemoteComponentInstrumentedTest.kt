@@ -74,7 +74,17 @@ class EjsRemoteComponentInstrumentedTest {
         val startedAt = SystemClock.elapsedRealtime()
         val response = YoutubeDL.execute(request, processId, null)
         val elapsed = SystemClock.elapsedRealtime() - startedAt
-        val diagnostics = (response.err + "\n" + response.out)
+        val diagnostics = response.err + "\n" + response.out
+        val diagnosticLines = diagnostics
+            .lineSequence()
+            .filter { line ->
+                line.contains("ejs", ignoreCase = true) ||
+                    line.contains("jsc", ignoreCase = true) ||
+                    line.contains("challenge", ignoreCase = true) ||
+                    line.contains("ERROR", ignoreCase = true)
+            }
+            .toList()
+            .takeLast(8)
         return ProbeResult(
             elapsedMs = elapsed,
             exitCode = response.exitCode,
@@ -83,15 +93,7 @@ class EjsRemoteComponentInstrumentedTest {
                 diagnostics.contains("Downloading challenge", ignoreCase = true),
             cacheSignal = diagnostics.contains("from cache", ignoreCase = true) ||
                 diagnostics.contains("cached", ignoreCase = true),
-            diagnostics = diagnostics
-                .lineSequence()
-                .filter { line ->
-                    line.contains("ejs", ignoreCase = true) ||
-                        line.contains("jsc", ignoreCase = true) ||
-                        line.contains("challenge", ignoreCase = true) ||
-                        line.contains("ERROR", ignoreCase = true)
-                }
-                .takeLast(8)
+            diagnostics = diagnosticLines
                 .joinToString(" | ")
                 .replace('\n', ' ')
                 .take(1200),
