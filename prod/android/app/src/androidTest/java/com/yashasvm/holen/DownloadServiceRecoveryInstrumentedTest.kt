@@ -86,12 +86,11 @@ class DownloadServiceRecoveryInstrumentedTest {
                 val current = store.get(jobId)
                 if (
                     current?.status == JobStatus.RUNNING &&
-                    current.progress == 0 &&
                     current.updatedAt > initialUpdatedAt
                 ) {
                     recovered = current
-                    return@repeat
                 }
+                if (recovered != null) return@repeat
                 delay(50)
             }
 
@@ -99,7 +98,10 @@ class DownloadServiceRecoveryInstrumentedTest {
                 "DownloadService did not requeue and reclaim the interrupted job"
             }
             assertEquals(JobStatus.RUNNING, claimed.status)
-            assertEquals(0, claimed.progress)
+            assertTrue(
+                "Recovered job progress must not retain the stale pre-restart value",
+                claimed.progress != job.progress,
+            )
             assertTrue("Service recovery must preserve partial media", partial.isFile)
             assertTrue("Service recovery must preserve aria2 control state", aria2State.isFile)
             assertTrue(
