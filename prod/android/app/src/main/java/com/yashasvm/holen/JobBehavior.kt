@@ -132,7 +132,12 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     } else {
         "The source rejected the saved download range (HTTP 416). Re-analyze the link before retrying; if it repeats, remove the failed item and start a fresh download because the remote media may have changed."
     }
-    402, 429 -> "The source is rate-limiting downloads (HTTP $status). Wait before retrying; repeated retries can extend the limit."
+    402 -> if (directFile) {
+        "The server requires payment or additional access (HTTP 402). Open the source in your browser and verify your access before retrying."
+    } else {
+        "The source is rate-limiting downloads (HTTP 402). Wait before retrying; repeated retries can extend the limit."
+    }
+    429 -> "The source is rate-limiting downloads (HTTP 429). Wait before retrying; repeated retries can extend the limit."
     in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
     else -> "The source returned HTTP $status. Check the link and try again."
 }
