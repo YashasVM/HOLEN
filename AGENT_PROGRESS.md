@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` is 118 commits ahead and 0 behind after the latest resume-fixture fix.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 119 commits ahead and 0 behind before the process-cancel resume probe update.
 
 ## Completed since the last weekly review
 
@@ -19,22 +19,21 @@
 
 ## Current work: deterministic yt-dlp / aria2 restart-resume validation
 
-Production Android downloads already pass yt-dlp `--continue` and use `libaria2c.so` for ordinary external downloads. The remaining reliability gap is evidence that a failed process can leave resumable aria2 state and that a fresh yt-dlp invocation actually continues from prior bytes rather than silently restarting from zero.
+Production Android downloads already pass yt-dlp `--continue` and use `libaria2c.so` for ordinary external downloads. The remaining reliability gap is evidence that a terminated process can leave resumable aria2 state and that a fresh yt-dlp invocation actually continues from prior bytes rather than silently restarting from zero.
 
-`Aria2ResumeInstrumentedTest` uses a loopback HTTP media server, deliberately truncates the first aria2 transfer, starts a fresh yt-dlp process against the same output path, and requires retained payload plus an `.aria2` control file, a non-zero completed-piece HTTP `Range` request, and byte-for-byte identical final media.
+The previous fixture attempted to force the first invocation to fail by truncating its HTTP response. Android CI `34114034226` showed that assumption was invalid: aria2 recovered the truncated response within the same invocation, so the first yt-dlp call completed successfully. The independent verify job still passed lint/tests/build and 16 KB native-library verification. This is useful evidence about aria2's internal recovery, but it is not evidence of process-restart resume.
 
-Android CI `34108775611` did not reach a valid aria2 verdict. Its independent verify job passed lint/tests/build and 16 KB native-library verification, but instrumentation crashed because a normal client-side connection reset escaped the loopback server worker while it was writing a response. Commit `8ddf86fb` separates listener shutdown failures from per-connection peer resets, tolerating only the latter. The actual resume assertions are unchanged, so the test still fails if aria2 does not preserve state, request a non-zero completed-piece range, or reconstruct exact output.
-
-Production download options remain unchanged.
+Commit `c562fc65` changes the probe to the real boundary under test. The fixture now holds the first marked aria2 response open after writing multiple pieces; the test waits until partial media plus the `.aria2` control file are physically present, explicitly terminates that first yt-dlp process, then starts a fresh second process against the same output path. The second invocation must request a non-zero completed-piece HTTP `Range` and reconstruct byte-identical final media. Production download options remain unchanged.
 
 ## Validation / reviewer state
 
 - Latest production Android change (`dc97caf1`) passed instrumentation, lint/unit/build, release APK assembly, and 16 KB native-library verification in Android CI `34050305494`.
 - Repeated-process-launch measurement CI `34059630027` passed.
 - EJS diagnostic and runner-restoration work passed Android CI through `34088583867`; hosted-runner EJS gating passed `34093307496`.
-- Restart/resume CI `34103056915`: verify passed; instrumentation exposed a test-fixture assumption that was removed.
-- Completed-piece restart/resume CI `34108775611`: verify passed; instrumentation was invalidated by the fixture's unhandled peer reset, fixed in `8ddf86fb`.
-- Fresh generic CI for `8ddf86fb` passed; Android CI `34114034226` is running.
+- Restart/resume CI `34103056915`: verify passed; instrumentation exposed a test-fixture request-order assumption that was removed.
+- Completed-piece restart/resume CI `34108775611`: verify passed; instrumentation was invalidated by an unhandled peer reset, fixed afterward.
+- Android CI `34114034226`: verify passed; instrumentation showed the truncated first response was recovered inside the same aria2 process, invalidating the assumption that truncation would force a process-level failure.
+- Fresh CI for the process-cancel probe is pending from `c562fc65`.
 - No open PRs or issues were present in the latest inspection.
 - Recent PR #19 has no submitted reviews; no actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
 
@@ -43,8 +42,8 @@ Production download options remain unchanged.
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Emulator timing ranks bottlenecks but is not a claim of phone-level absolute latency or promised speedup.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent. Keep production remote EJS disabled until acquisition/cache reuse can be validated on a suitable network.
-- Restart-based yt-dlp/aria2 byte-range continuation is not yet claimed as validated until the corrected completed-piece probe passes with retained `.aria2` state, a non-zero Range, and byte-identical output.
+- Restart-based yt-dlp/aria2 byte-range continuation is not yet claimed as validated until the process-cancel probe passes with retained `.aria2` state, a non-zero completed-piece Range, and byte-identical output.
 
 ## Highest-value next step
 
-Inspect Android CI `34114034226`. If the corrected low-level resume probe passes, move one level higher and verify HOLEN's cancellation/service-restart/staging lifecycle preserves the same resumable state. If it exposes a real aria2 state-retention failure, investigate youtubedl-android/libaria2 cleanup semantics rather than weakening the assertion.
+Inspect the Android CI triggered by `c562fc65`. If the process-cancel probe passes, move one level higher and verify HOLEN's cancellation/service-restart/staging lifecycle preserves the same resumable state. If the first process termination removes or corrupts aria2 state, investigate youtubedl-android/libaria2 cancellation semantics instead of weakening the assertion.
