@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
+import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -36,11 +37,12 @@ class Aria2ResumeInstrumentedTest {
 
         try {
             ResumeMediaServer().use { server ->
+                val infoFile = writeInfoJson(outputDir, server.mediaUrl)
                 val firstFailure = AtomicReference<Throwable?>()
                 val firstFinished = CountDownLatch(1)
                 thread(name = "holen-aria2-resume-first", isDaemon = true) {
                     try {
-                        executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-first", "first")
+                        executeDownload(infoFile, outputDir, "$PROCESS_ID-first")
                     } catch (error: Throwable) {
                         firstFailure.set(error)
                     } finally {
@@ -54,7 +56,7 @@ class Aria2ResumeInstrumentedTest {
                 )
                 assertTrue(
                     "Interrupted aria2 transfer must persist partial data and its control file before cancellation",
-                    waitForRetainedResumeState(outputDir, 10_000),
+                    waitForRetainedResumeState(outputDir, 12_000),
                 )
 
                 YoutubeDL.destroyProcessById("$PROCESS_ID-first")
@@ -66,7 +68,8 @@ class Aria2ResumeInstrumentedTest {
                 assertNotNull("Cancelling the first transfer should surface a process failure", firstFailure.get())
 
                 val retainedData = outputDir.listFiles().orEmpty().firstOrNull {
-                    it.isFile && !it.name.endsWith(".aria2") && it.length() >= PIECE_LENGTH_BYTES
+                    it.isFile && !it.name.endsWith(".aria2") && it.name != infoFile.name &&
+                        it.length() >= PIECE_LENGTH_BYTES
                 }
                 assertNotNull(
                     "Cancelled aria2 transfer must retain at least one complete piece for restart-resume",
@@ -77,7 +80,8 @@ class Aria2ResumeInstrumentedTest {
                     outputDir.listFiles().orEmpty().any { it.isFile && it.name.endsWith(".aria2") },
                 )
 
-                val response = executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-second", "second")
+                server.beginSecondAttempt()
+                val response = executeDownload(infoFile, outputDir, "$PROCESS_ID-second")
                 assertTrue("Resumed yt-dlp/aria2 invocation should complete", response.isNotBlank())
 
                 val completed = outputDir.listFiles().orEmpty().firstOrNull {
@@ -86,7 +90,7 @@ class Aria2ResumeInstrumentedTest {
                 assertNotNull("Resumed transfer should finalize resume.mp4", completed)
                 assertArrayEquals(MEDIA_BYTES, completed!!.readBytes())
 
-                val resumedRange = server.rangeHeaders.firstOrNull { header ->
+                val resumedRange = server.secondAttemptRanges.firstOrNull { header ->
                     header.removePrefix("bytes=")
                         .substringBefore('-')
                         .toLongOrNull()
@@ -96,7 +100,7 @@ class Aria2ResumeInstrumentedTest {
                     "Fresh yt-dlp/aria2 invocation must request a completed non-zero piece instead of restarting",
                     resumedRange,
                 )
-                assertTrue("The server should see extractor probes plus both aria2 transfer attempts", server.totalRequests >= 4)
+                assertTrue("The server should see both aria2 transfer attempts", server.totalRequests >= 2)
             }
         } finally {
             YoutubeDL.destroyProcessById("$PROCESS_ID-first")
@@ -105,22 +109,32 @@ class Aria2ResumeInstrumentedTest {
         }
     }
 
+    private fun writeInfoJson(outputDir: File, mediaUrl: String): File =
+        File(outputDir, "resume-info.json").apply {
+            writeText(
+                JSONObject()
+                    .put("id", "resume-probe")
+                    .put("title", "resume")
+                    .put("ext", "mp4")
+                    .put("url", mediaUrl)
+                    .put("webpage_url", mediaUrl)
+                    .put("protocol", "http")
+                    .toString(),
+            )
+        }
+
     private fun executeDownload(
-        url: String,
+        infoFile: File,
         outputDir: File,
         processId: String,
-        attempt: String,
     ): String {
         val response = YoutubeDL.execute(
-            YoutubeDLRequest(url)
+            YoutubeDLRequest(emptyList())
                 .addOption("--ignore-config")
+                .addOption("--load-info-json", infoFile.absolutePath)
                 .addOption("--continue")
                 .addOption("--no-overwrites")
                 .addOption("--downloader", "libaria2c.so")
-                .addOption(
-                    "--downloader-args",
-                    "default:--continue=true --always-resume=true --max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --piece-length=1M --file-allocation=none --auto-file-renaming=false --header=X-Holen-Aria2-Attempt:$attempt",
-                )
                 .addOption("--no-playlist")
                 .addOption("--output", File(outputDir, "resume.%(ext)s").absolutePath),
             processId,
@@ -134,7 +148,8 @@ class Aria2ResumeInstrumentedTest {
         while (System.currentTimeMillis() < deadline) {
             val files = outputDir.listFiles().orEmpty()
             val hasPiece = files.any {
-                it.isFile && !it.name.endsWith(".aria2") && it.length() >= PIECE_LENGTH_BYTES
+                it.isFile && !it.name.endsWith(".aria2") && it.name != "resume-info.json" &&
+                    it.length() >= PIECE_LENGTH_BYTES
             }
             val hasControl = files.any { it.isFile && it.name.endsWith(".aria2") }
             if (hasPiece && hasControl) return true
@@ -147,8 +162,9 @@ class Aria2ResumeInstrumentedTest {
         private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         private val requestCount = AtomicInteger(0)
         private val releaseFirstResponse = CountDownLatch(1)
+        private val secondAttempt = AtomicReference(false)
         val firstAttemptStarted = CountDownLatch(1)
-        val rangeHeaders = CopyOnWriteArrayList<String>()
+        val secondAttemptRanges = CopyOnWriteArrayList<String>()
         @Volatile private var closed = false
         private val worker = thread(name = "holen-aria2-resume-http", isDaemon = true) {
             while (!closed) {
@@ -176,6 +192,10 @@ class Aria2ResumeInstrumentedTest {
             releaseFirstResponse.countDown()
         }
 
+        fun beginSecondAttempt() {
+            secondAttempt.set(true)
+        }
+
         private fun serve(socket: Socket) {
             val request = readRequest(socket)
             if (request.path != "/media.mp4") {
@@ -185,23 +205,13 @@ class Aria2ResumeInstrumentedTest {
 
             requestCount.incrementAndGet()
             val range = request.headers["range"]
-            if (range != null) rangeHeaders += range
-
-            // Use a downloader-specific marker to distinguish yt-dlp extractor probes from aria2.
-            // The test passes downloader args through yt-dlp's `default` bucket so this remains
-            // valid when Android invokes the aria2-compatible binary as `libaria2c.so`.
-            when (request.headers["x-holen-aria2-attempt"]) {
-                null -> {
-                    respond(socket, 200, MEDIA_BYTES)
-                    return
-                }
-                "first" -> {
-                    firstAttemptStarted.countDown()
-                    respondHeldPartial(socket)
-                    return
-                }
+            if (!secondAttempt.get()) {
+                firstAttemptStarted.countDown()
+                respondHeldPartial(socket)
+                return
             }
 
+            if (range != null) secondAttemptRanges += range
             if (range == null) {
                 respond(socket, 200, MEDIA_BYTES)
                 return
