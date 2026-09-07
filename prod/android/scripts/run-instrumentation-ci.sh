@@ -112,7 +112,19 @@ grep -o 'first_ms=[0-9][0-9]* first_exit=-\?[0-9][0-9]* first_remote_signal=\(tr
 test -s app/build/reports/startup/ejs-remote-component-summary.txt
 grep -q 'first_ms=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
 grep -q 'cached_ms=[0-9][0-9]*' app/build/reports/startup/ejs-remote-component-summary.txt
-cat app/build/reports/startup/ejs-remote-component-summary.txt >> "$GITHUB_STEP_SUMMARY"
+grep 'HOLEN EJS \(first\|cached\) diagnostics:' app/build/reports/startup/ejs-remote-component-logcat.txt \
+  | tail -n 2 \
+  > app/build/reports/startup/ejs-remote-component-diagnostics.txt || true
+{
+  cat app/build/reports/startup/ejs-remote-component-summary.txt
+  if [[ -s app/build/reports/startup/ejs-remote-component-diagnostics.txt ]]; then
+    echo
+    echo 'EJS probe diagnostics:'
+    echo '```text'
+    cat app/build/reports/startup/ejs-remote-component-diagnostics.txt
+    echo '```'
+  fi
+} >> "$GITHUB_STEP_SUMMARY"
 
 current_stage="full-instrumentation-suite"
 ./gradlew connectedEmulatorDebugAndroidTest \
