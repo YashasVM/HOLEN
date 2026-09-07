@@ -7,22 +7,26 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Opt-in compatibility probe for yt-dlp's GitHub-hosted EJS distribution on Android.
+ * Opt-in compatibility probe for the same GitHub-hosted EJS distribution used by production
+ * YouTube analysis/downloads.
  *
- * This intentionally does not enable EJS in production. It uses a dedicated yt-dlp cache, performs
- * two metadata-only YouTube extractions with ejs:github enabled, and records first-fetch versus
- * cached behavior so CI evidence can justify (or reject) a production change.
+ * Hosted CI can be rate-limited by YouTube, so this remains explicit. On a usable network the
+ * probe is intentionally strict: the first extraction must succeed and populate persistent cache
+ * state, then a second extraction must succeed while retaining that state. This validates the
+ * Android remote-component/cache path without pretending that a skipped or HTTP-429 run is proof.
  */
 @RunWith(AndroidJUnit4::class)
 class EjsRemoteComponentInstrumentedTest {
     @Test
-    fun remoteEjsFirstFetchAndCachedReuseAreMeasured() {
+    fun remoteEjsFirstFetchAndCachedReuseAreValidated() {
         assumeTrue(
             "EJS compatibility probe runs only when explicitly requested by CI.",
             InstrumentationRegistry.getArguments().getString(ENABLE_ARGUMENT) == "true",
@@ -33,6 +37,7 @@ class EjsRemoteComponentInstrumentedTest {
         val probeCacheDir = File(context.cacheDir, PROBE_CACHE_DIR)
         probeCacheDir.deleteRecursively()
         val first = runProbe("ejs-first-fetch", probeCacheDir)
+        val firstCache = cacheSnapshot(probeCacheDir)
         val cached = if (first.upstreamBlocked) {
             ProbeResult(
                 elapsedMs = 0L,
@@ -45,6 +50,7 @@ class EjsRemoteComponentInstrumentedTest {
         } else {
             runProbe("ejs-cached-reuse", probeCacheDir)
         }
+        val cachedCache = cacheSnapshot(probeCacheDir)
 
         val report = buildString {
             appendLine("HOLEN Android EJS remote-component probe")
@@ -53,21 +59,36 @@ class EjsRemoteComponentInstrumentedTest {
             appendLine("first_remote_signal=${first.remoteSignal}")
             appendLine("first_cache_signal=${first.cacheSignal}")
             appendLine("first_upstream_blocked=${first.upstreamBlocked}")
+            appendLine("first_cache_files=${firstCache.size}")
+            appendLine("first_cache_bytes=${firstCache.values.sum()}")
             appendLine("cached_ms=${cached.elapsedMs}")
             appendLine("cached_exit=${cached.exitCode}")
             appendLine("cached_remote_signal=${cached.remoteSignal}")
             appendLine("cached_cache_signal=${cached.cacheSignal}")
             appendLine("cached_upstream_blocked=${cached.upstreamBlocked}")
+            appendLine("cached_cache_files=${cachedCache.size}")
+            appendLine("cached_cache_bytes=${cachedCache.values.sum()}")
             appendLine("first_diagnostics=${first.diagnostics}")
             appendLine("cached_diagnostics=${cached.diagnostics}")
         }
-        Log.i(REPORT_TAG, report.lineSequence().take(11).joinToString(" "))
+        Log.i(REPORT_TAG, report.lineSequence().take(15).joinToString(" "))
         Log.i(REPORT_TAG, "HOLEN EJS first diagnostics: ${first.diagnostics}")
         Log.i(REPORT_TAG, "HOLEN EJS cached diagnostics: ${cached.diagnostics}")
         File(context.cacheDir, REPORT_FILE).writeText(report)
 
         assertTrue("first EJS probe must record elapsed time", first.elapsedMs >= 0L)
         assertTrue("cached EJS probe must record elapsed time", cached.elapsedMs >= 0L)
+        if (!first.upstreamBlocked) {
+            assertEquals("first EJS remote-component extraction must succeed", 0, first.exitCode)
+            assertFalse("first EJS fetch must populate the configured cache", firstCache.isEmpty())
+            assertTrue("first EJS cache must contain non-empty data", firstCache.values.sum() > 0L)
+            assertEquals("second EJS extraction must succeed with retained cache state", 0, cached.exitCode)
+            assertFalse("second EJS extraction must retain cache state", cachedCache.isEmpty())
+            assertTrue(
+                "second EJS extraction must retain at least one fetched cache artifact unchanged",
+                firstCache.any { (path, size) -> size > 0L && cachedCache[path] == size },
+            )
+        }
     }
 
     private fun runProbe(processId: String, cacheDir: File): ProbeResult {
@@ -96,6 +117,15 @@ class EjsRemoteComponentInstrumentedTest {
                 diagnostics = "${e.javaClass.simpleName}: ${e.message.orEmpty()}",
             )
         }
+    }
+
+    private fun cacheSnapshot(cacheDir: File): Map<String, Long> {
+        if (!cacheDir.exists()) return emptyMap()
+        return cacheDir.walkTopDown()
+            .filter(File::isFile)
+            .associate { file ->
+                file.relativeTo(cacheDir).path.replace(File.separatorChar, '/') to file.length()
+            }
     }
 
     private fun probeResult(elapsedMs: Long, exitCode: Int, diagnostics: String): ProbeResult {
