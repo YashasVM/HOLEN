@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 119 commits ahead and 0 behind before the process-cancel resume probe update.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 121 commits ahead and 0 behind before the downloader-args probe fix in this run.
 
 ## Completed since the last weekly review
 
@@ -21,9 +21,11 @@
 
 Production Android downloads already pass yt-dlp `--continue` and use `libaria2c.so` for ordinary external downloads. The remaining reliability gap is evidence that a terminated process can leave resumable aria2 state and that a fresh yt-dlp invocation actually continues from prior bytes rather than silently restarting from zero.
 
-The previous fixture attempted to force the first invocation to fail by truncating its HTTP response. Android CI `34114034226` showed that assumption was invalid: aria2 recovered the truncated response within the same invocation, so the first yt-dlp call completed successfully. The independent verify job still passed lint/tests/build and 16 KB native-library verification. This is useful evidence about aria2's internal recovery, but it is not evidence of process-restart resume.
+Android CI `34119364094` failed only in instrumentation; its independent verify job passed lint/tests/build and 16 KB native-library verification. The uploaded instrumentation artifact showed the exact failure: `The first aria2 request should reach the fixture`. The fixture never observed the aria2-only `X-Holen-Aria2-Attempt` marker, so the process-cancellation phase was never reached.
 
-Commit `c562fc65` changes the probe to the real boundary under test. The fixture now holds the first marked aria2 response open after writing multiple pieces; the test waits until partial media plus the `.aria2` control file are physically present, explicitly terminates that first yt-dlp process, then starts a fresh second process against the same output path. The second invocation must request a non-zero completed-piece HTTP `Range` and reconstruct byte-identical final media. Production download options remain unchanged.
+The marker was being supplied with `--downloader-args aria2c:...` while Android invokes the binary as `libaria2c.so`. Current yt-dlp supports a `default:` downloader-args bucket specifically as a downloader-independent fallback. Commit `ebb6ce47` changes only the probe to use `default:` so the test no longer depends on yt-dlp matching the Android binary name to the `aria2c` configuration key. The resume requirements are unchanged: retained partial media plus `.aria2` state before cancellation, fresh-process non-zero completed-piece `Range`, and byte-identical final output.
+
+Production download options remain unchanged until the deterministic probe proves what arguments Android's libaria2 path actually receives.
 
 ## Validation / reviewer state
 
@@ -33,7 +35,8 @@ Commit `c562fc65` changes the probe to the real boundary under test. The fixture
 - Restart/resume CI `34103056915`: verify passed; instrumentation exposed a test-fixture request-order assumption that was removed.
 - Completed-piece restart/resume CI `34108775611`: verify passed; instrumentation was invalidated by an unhandled peer reset, fixed afterward.
 - Android CI `34114034226`: verify passed; instrumentation showed the truncated first response was recovered inside the same aria2 process, invalidating the assumption that truncation would force a process-level failure.
-- Fresh CI for the process-cancel probe is pending from `c562fc65`.
+- Android CI `34119364094`: verify passed; instrumentation artifact proved the aria2-only marker never reached the fixture, exposing downloader-args key matching as the next issue to isolate.
+- Fresh Android CI `34125427424` and generic CI `34125427372` are running for `ebb6ce47`.
 - No open PRs or issues were present in the latest inspection.
 - Recent PR #19 has no submitted reviews; no actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
 
@@ -43,7 +46,8 @@ Commit `c562fc65` changes the probe to the real boundary under test. The fixture
 - Emulator timing ranks bottlenecks but is not a claim of phone-level absolute latency or promised speedup.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent. Keep production remote EJS disabled until acquisition/cache reuse can be validated on a suitable network.
 - Restart-based yt-dlp/aria2 byte-range continuation is not yet claimed as validated until the process-cancel probe passes with retained `.aria2` state, a non-zero completed-piece Range, and byte-identical output.
+- If `default:` causes the marker and tuning arguments to reach libaria2 while `aria2c:` does not, production downloader tuning may also need the same keying correction. Do not change production until the probe demonstrates that difference.
 
 ## Highest-value next step
 
-Inspect the Android CI triggered by `c562fc65`. If the process-cancel probe passes, move one level higher and verify HOLEN's cancellation/service-restart/staging lifecycle preserves the same resumable state. If the first process termination removes or corrupts aria2 state, investigate youtubedl-android/libaria2 cancellation semantics instead of weakening the assertion.
+Inspect Android CI `34125427424`. If the marker now reaches the fixture, continue the same test through cancellation and fresh-process resume. If it still does not, capture the actual libaria2 invocation arguments from the wrapper rather than weakening the assertion. Only after the probe establishes downloader-args routing should production aria2 tuning be reconsidered.
