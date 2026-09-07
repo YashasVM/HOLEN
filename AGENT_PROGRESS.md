@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 110 commits ahead and 0 behind before this run.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 113 commits ahead and 0 behind before this run.
 
 ## Completed since the last weekly review
 
@@ -21,11 +21,11 @@
 
 Production Android downloads already pass yt-dlp `--continue` and use `libaria2c.so` for ordinary external downloads. The remaining reliability gap is evidence that a failed process can leave resumable aria2 state and that a fresh yt-dlp invocation actually continues from prior bytes rather than silently restarting from zero.
 
-Added `Aria2ResumeInstrumentedTest` on `agent-dev`. It uses a loopback HTTP media server, deliberately truncates the first aria2 transfer, starts a fresh yt-dlp process against the same output path, and requires the resumed transfer to send a non-zero HTTP `Range` request and reconstruct byte-for-byte identical media. The probe constrains aria2 to one connection and disables preallocation so the interruption/resume behavior is deterministic and observable.
+`Aria2ResumeInstrumentedTest` uses a loopback HTTP media server, deliberately truncates the first aria2 transfer, starts a fresh yt-dlp process against the same output path, and requires the resumed transfer to send a non-zero HTTP `Range` request and reconstruct byte-for-byte identical media. The probe constrains aria2 to one connection and disables preallocation so interruption/resume behavior is observable.
 
-The first draft was immediately self-reviewed before CI completed: an initial aria2 GET normally has no `Range` header, just like yt-dlp's extractor probe. Commit `d4b9c381` corrected the server to distinguish the first extractor probe from the first aria2 transfer by request order, then require a non-zero range during the fresh invocation.
+Android CI `34098032782` failed only in instrumentation; the independent verify job still passed lint/tests/build, release APK assembly, and 16 KB native-library verification. The failing test was still identifying yt-dlp extractor probes vs aria2 transfers by request ordinal, which is not a stable boundary across yt-dlp behavior.
 
-Android CI `34098032782` is validating the corrected test. Generic CI for the corrected tip is also running/queued. No production download options were changed in this run.
+Commit `f73f99e5` removes that request-order assumption. The test now injects an `X-Holen-Aria2-Attempt` header only through aria2 downloader arguments, so the loopback server can deterministically distinguish unmarked yt-dlp extractor probes from the first and second actual aria2 transfers. The first aria2 transfer is truncated regardless of whether it starts with a Range header; the fresh second transfer must still prove a non-zero Range and byte-identical completion. No production download options changed.
 
 ## Validation / reviewer state
 
@@ -33,7 +33,7 @@ Android CI `34098032782` is validating the corrected test. Generic CI for the co
 - Repeated-process-launch measurement CI `34059630027` passed.
 - EJS diagnostic and runner-restoration work passed Android CI through `34088583867`.
 - EJS hosted-runner gating passed Android CI `34093307496`.
-- Corrected restart/resume instrumentation is currently under Android CI `34098032782`.
+- Restart/resume CI `34098032782`: verify job passed; instrumentation failed, leading to the explicit aria2-attempt marker fix in `f73f99e5`.
 - No open PRs or issues were present at the start of this run.
 - Recent PR #19 still has no submitted reviews; no actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
 
@@ -42,8 +42,8 @@ Android CI `34098032782` is validating the corrected test. Generic CI for the co
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Emulator timing ranks bottlenecks but is not a claim of phone-level absolute latency or promised speedup.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent. Keep production remote EJS disabled until acquisition/cache reuse can be validated on a suitable network.
-- Restart-based yt-dlp/aria2 byte-range continuation is not yet claimed as validated until the corrected instrumentation run passes and its request behavior is confirmed.
+- Restart-based yt-dlp/aria2 byte-range continuation is not yet claimed as validated until the explicit-marker instrumentation passes and confirms a non-zero Range plus byte-identical output.
 
 ## Highest-value next step
 
-Inspect Android CI `34098032782`. If the loopback test proves a non-zero `Range` resume with byte-identical output, close the restart/resume evidence gap and then test cancellation/service-restart preservation around HOLEN's own staging/job lifecycle. If it fails, fix the real aria2/yt-dlp resume behavior rather than weakening the assertion.
+Validate `f73f99e5` in Android CI. If the marker-based probe passes, close the low-level yt-dlp/aria2 restart-resume evidence gap and move one level higher to HOLEN's own cancellation/service-restart/staging lifecycle. If it still fails, inspect whether aria2 is discarding its partial/control state rather than weakening the resume assertion.
