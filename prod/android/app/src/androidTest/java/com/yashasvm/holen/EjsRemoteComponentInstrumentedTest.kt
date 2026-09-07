@@ -49,6 +49,8 @@ class EjsRemoteComponentInstrumentedTest {
             appendLine("cached_diagnostics=${cached.diagnostics}")
         }
         Log.i(REPORT_TAG, report.lineSequence().take(9).joinToString(" "))
+        Log.i(REPORT_TAG, "HOLEN EJS first diagnostics: ${first.diagnostics}")
+        Log.i(REPORT_TAG, "HOLEN EJS cached diagnostics: ${cached.diagnostics}")
         File(context.cacheDir, REPORT_FILE).writeText(report)
 
         assertTrue("first EJS probe must record elapsed time", first.elapsedMs >= 0L)
