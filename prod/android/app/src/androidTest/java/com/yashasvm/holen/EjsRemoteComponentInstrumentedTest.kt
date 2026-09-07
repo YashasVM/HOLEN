@@ -33,7 +33,18 @@ class EjsRemoteComponentInstrumentedTest {
         val probeCacheDir = File(context.cacheDir, PROBE_CACHE_DIR)
         probeCacheDir.deleteRecursively()
         val first = runProbe("ejs-first-fetch", probeCacheDir)
-        val cached = runProbe("ejs-cached-reuse", probeCacheDir)
+        val cached = if (first.upstreamBlocked) {
+            ProbeResult(
+                elapsedMs = 0L,
+                exitCode = BLOCKED_EXIT_CODE,
+                remoteSignal = false,
+                cacheSignal = false,
+                upstreamBlocked = true,
+                diagnostics = "skipped cached-reuse attempt because the first probe was blocked by upstream HTTP 429",
+            )
+        } else {
+            runProbe("ejs-cached-reuse", probeCacheDir)
+        }
 
         val report = buildString {
             appendLine("HOLEN Android EJS remote-component probe")
@@ -41,14 +52,16 @@ class EjsRemoteComponentInstrumentedTest {
             appendLine("first_exit=${first.exitCode}")
             appendLine("first_remote_signal=${first.remoteSignal}")
             appendLine("first_cache_signal=${first.cacheSignal}")
+            appendLine("first_upstream_blocked=${first.upstreamBlocked}")
             appendLine("cached_ms=${cached.elapsedMs}")
             appendLine("cached_exit=${cached.exitCode}")
             appendLine("cached_remote_signal=${cached.remoteSignal}")
             appendLine("cached_cache_signal=${cached.cacheSignal}")
+            appendLine("cached_upstream_blocked=${cached.upstreamBlocked}")
             appendLine("first_diagnostics=${first.diagnostics}")
             appendLine("cached_diagnostics=${cached.diagnostics}")
         }
-        Log.i(REPORT_TAG, report.lineSequence().take(9).joinToString(" "))
+        Log.i(REPORT_TAG, report.lineSequence().take(11).joinToString(" "))
         Log.i(REPORT_TAG, "HOLEN EJS first diagnostics: ${first.diagnostics}")
         Log.i(REPORT_TAG, "HOLEN EJS cached diagnostics: ${cached.diagnostics}")
         File(context.cacheDir, REPORT_FILE).writeText(report)
@@ -93,6 +106,8 @@ class EjsRemoteComponentInstrumentedTest {
                     line.contains("jsc", ignoreCase = true) ||
                     line.contains("challenge", ignoreCase = true) ||
                     line.contains("cache", ignoreCase = true) ||
+                    line.contains("429", ignoreCase = true) ||
+                    line.contains("Too Many Requests", ignoreCase = true) ||
                     line.contains("ERROR", ignoreCase = true) ||
                     line.contains("Exception", ignoreCase = true)
             }
@@ -107,6 +122,8 @@ class EjsRemoteComponentInstrumentedTest {
             cacheSignal = diagnostics.contains("from cache", ignoreCase = true) ||
                 diagnostics.contains("cached", ignoreCase = true) ||
                 diagnostics.contains("cache hit", ignoreCase = true),
+            upstreamBlocked = diagnostics.contains("HTTP Error 429", ignoreCase = true) ||
+                diagnostics.contains("Too Many Requests", ignoreCase = true),
             diagnostics = diagnosticLines
                 .joinToString(" | ")
                 .replace('\n', ' ')
@@ -119,6 +136,7 @@ class EjsRemoteComponentInstrumentedTest {
         val exitCode: Int,
         val remoteSignal: Boolean,
         val cacheSignal: Boolean,
+        val upstreamBlocked: Boolean,
         val diagnostics: String,
     )
 
@@ -127,6 +145,7 @@ class EjsRemoteComponentInstrumentedTest {
         const val PROBE_CACHE_DIR = "ejs-yt-dlp-cache"
         const val REPORT_FILE = "ejs-remote-component-probe.txt"
         const val REPORT_TAG = "HOLENEjsProbe"
+        const val BLOCKED_EXIT_CODE = -2
         const val TEST_VIDEO_URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
     }
 }
