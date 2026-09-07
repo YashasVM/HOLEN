@@ -34,11 +34,11 @@ class Aria2ResumeInstrumentedTest {
         try {
             ResumeMediaServer().use { server ->
                 val firstFailure = runCatching {
-                    executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-first")
+                    executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-first", "first")
                 }.exceptionOrNull()
                 assertNotNull("The first transfer must fail after the server truncates its body", firstFailure)
 
-                val response = executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-second")
+                val response = executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-second", "second")
                 assertTrue("Resumed yt-dlp/aria2 invocation should complete", response.isNotBlank())
 
                 val completed = outputDir.listFiles().orEmpty().firstOrNull {
@@ -57,7 +57,7 @@ class Aria2ResumeInstrumentedTest {
                     "Fresh yt-dlp/aria2 invocation must request a non-zero range instead of restarting",
                     resumedRange,
                 )
-                assertTrue("The server should see both extractor probes and transfer attempts", server.totalRequests >= 4)
+                assertTrue("The server should see extractor probes plus both aria2 transfer attempts", server.totalRequests >= 4)
             }
         } finally {
             YoutubeDL.destroyProcessById("$PROCESS_ID-first")
@@ -66,7 +66,12 @@ class Aria2ResumeInstrumentedTest {
         }
     }
 
-    private fun executeDownload(url: String, outputDir: File, processId: String): String {
+    private fun executeDownload(
+        url: String,
+        outputDir: File,
+        processId: String,
+        attempt: String,
+    ): String {
         val response = YoutubeDL.execute(
             YoutubeDLRequest(url)
                 .addOption("--ignore-config")
@@ -75,7 +80,7 @@ class Aria2ResumeInstrumentedTest {
                 .addOption("--downloader", "libaria2c.so")
                 .addOption(
                     "--downloader-args",
-                    "aria2c:--max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --file-allocation=none",
+                    "aria2c:--max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --file-allocation=none --header=X-Holen-Aria2-Attempt:$attempt",
                 )
                 .addOption("--no-playlist")
                 .addOption("--output", File(outputDir, "resume.%(ext)s").absolutePath),
@@ -111,21 +116,24 @@ class Aria2ResumeInstrumentedTest {
                 return
             }
 
-            val ordinal = requestCount.incrementAndGet()
+            requestCount.incrementAndGet()
             val range = request.headers["range"]
             if (range != null) rangeHeaders += range
 
-            // Request 1 is yt-dlp's generic-extractor probe. Request 2 is the first aria2 transfer;
-            // truncate it deliberately so its partial file/control state survives the failed
-            // yt-dlp invocation. The next invocation probes again, then aria2 should send Range.
-            if (ordinal == 1) {
-                respond(socket, 200, MEDIA_BYTES)
-                return
+            // The marker is injected only through aria2's downloader args, so yt-dlp extractor
+            // probes remain unmarked. This avoids depending on the number/order of extractor
+            // requests, which can change between yt-dlp versions.
+            when (request.headers["x-holen-aria2-attempt"]) {
+                null -> {
+                    respond(socket, 200, MEDIA_BYTES)
+                    return
+                }
+                "first" -> {
+                    respondTruncated(socket)
+                    return
+                }
             }
-            if (ordinal == 2) {
-                respondTruncated(socket)
-                return
-            }
+
             if (range == null) {
                 respond(socket, 200, MEDIA_BYTES)
                 return
