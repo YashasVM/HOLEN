@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` remains ahead with no drift from `main` detected in this run.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` is ahead with no drift from `main` detected in this run.
 
 ## Completed since the last weekly review
 
@@ -16,10 +16,11 @@
 - Completed deterministic low-level yt-dlp/aria2 restart-resume validation. Android CI `34135963372` passed both verify and instrumentation: retained partial media plus `.aria2` state, killed first process, fresh process issued a non-zero completed-piece `Range`, and final media was byte-identical.
 - Validated HOLEN's store/output recovery boundary in Android CI `34141010546`. Interrupted media jobs retain partial media plus `.aria2` state through orphan cleanup and `requeueInterrupted()`.
 - Closed service-level restart recovery in Android CI `34153823593`: both instrumentation and verify passed, including lint/tests/build, release APK assembly, 16 KB native-library verification, and the real `DownloadService` reclaim/staging-preservation probe.
+- Enabled the official yt-dlp `ejs:github` remote component for full YouTube analysis and YouTube downloads, with an explicit reusable Android cache. Quick shared-link analysis and non-YouTube extractors remain unchanged. Android CI `34158081428` and `34158104192`, plus generic CI `34158104213`, passed for the production policy and host-coverage tests.
 
 ## Performance evidence
 
-Android CI `34153823593` provides a fresh emulator baseline rather than a claimed phone benchmark:
+Android CI `34153823593` provides an emulator baseline rather than a claimed phone benchmark:
 
 - App home: `3504 ms`.
 - Cold yt-dlp runtime initialization: `1471 ms`; FFmpeg extraction/init: `1504 ms`; aria2c: `136 ms`.
@@ -30,27 +31,29 @@ Android CI `34153823593` provides a fresh emulator baseline rather than a claime
 
 These numbers rank emulator-side bottlenecks only. They do not claim absolute phone latency or a measured production speedup.
 
-## Current work: current YouTube EJS compatibility
+## Current work: live YouTube EJS validation
 
-Upstream yt-dlp's July 2026 EJS guidance says YouTube challenge solving now needs both a supported JavaScript runtime and the matching EJS solver scripts. HOLEN's Android runtime already exposes bundled QuickJS, but youtubedl-android `0.18.1` disables yt-dlp caching unless the caller supplies `--cache-dir`; enabling `ejs:github` without an explicit cache would therefore create needless repeated acquisition traffic.
+Upstream yt-dlp's current EJS guidance requires a supported JavaScript runtime plus solver scripts for YouTube challenge solving. HOLEN already exposes bundled QuickJS, and production now enables the official `ejs:github` distribution with an explicit cache for full YouTube operations.
 
-Commit `396909c6` enables yt-dlp's official `ejs:github` remote component only for full YouTube analysis and YouTube downloads, with an explicit reusable app-cache directory. Quick shared-link analysis stays on the current lightweight path, and non-YouTube extractors receive no remote-component option. Commit `b8a1e7fb` adds a unit policy test covering YouTube/youtu.be/youtube-nocookie hosts and confirming unrelated hosts remain untouched.
+The deterministic policy/build path is green. Commit `839e5907` tightens the existing opt-in Android live probe so a non-rate-limited run is no longer allowed to pass merely because timing data was produced. A usable-network run must now prove that the first EJS extraction exits successfully, populates non-empty persistent cache state, the second extraction also succeeds, and at least one fetched cache artifact remains unchanged across the second run. The report also records cache file/byte counts. HTTP 429 remains explicitly inconclusive because hosted runners have previously been blocked by YouTube.
 
 ## Validation / reviewer state
 
-- Android CI `34153823593`: instrumentation and verify passed for the completed service-recovery work.
-- Fresh Android CI `34158104192` and generic CI `34158104213` are queued/running for the EJS production policy and unit test.
-- The existing live EJS probe remains opt-in because hosted GitHub runners have returned YouTube HTTP 429; no live compatibility claim is made from that environment.
+- Android CI `34158104192`: passed for the EJS production policy and unit coverage.
+- Generic CI `34158104213`: passed for the same EJS policy/test commit.
+- Fresh CI is pending for `839e5907`, which only strengthens the opt-in instrumentation probe and corrects its stale documentation.
+- The live EJS probe remains opt-in because hosted GitHub runners have returned YouTube HTTP 429; no live compatibility claim is made from a blocked environment.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
 
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
-- Live YouTube EJS behavior still needs validation on a network not blocked/rate-limited by YouTube before treating this as fully proven compatibility, even if deterministic build/unit/instrumentation CI is green.
+- Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
+- Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
-- Explicit user cancellation deliberately deletes staging and therefore is not pause/resume; crash/service interruption recovery is separate and now proven to preserve resumable state.
+- Explicit user cancellation deliberately deletes staging and therefore is not pause/resume; crash/service interruption recovery is separate and proven to preserve resumable state.
 - Current yt-dlp's `Aria2cFD` already uses 16 connections/splits and appends fixed flags including `--always-resume=false`; do not add duplicate connection tuning or assume earlier duplicate flags win.
 
 ## Highest-value next step
 
-Inspect Android CI `34158104192` and generic CI `34158104213`. If green, validate first-fetch plus cached EJS reuse on a suitable non-rate-limited Android/network environment; if CI fails, fix the exact build/test regression before expanding the change.
+Validate CI for `839e5907`. Once green, run the opt-in EJS probe on a non-rate-limited Android/network environment; if that succeeds, close the EJS task. If it fails, use its exact first-fetch/cache diagnostics to fix the real compatibility problem rather than adding speculative fallback behavior.
