@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` is 133 commits ahead and 0 behind after the latest service-recovery test fixes.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` remains ahead with no drift from `main` detected in this run.
 
 ## Completed since the last weekly review
 
@@ -21,9 +21,9 @@
 
 ## Current work: service-level restart recovery
 
-Android CI `34145326121` showed the new service-level test failing only in instrumentation while verify, lint/tests/build, release APK assembly, and 16 KB native-library verification remained green. The failure exposed a test race: the probe required polling the brief `progress == 0` state after `DownloadService` requeues and reclaims an interrupted job, but `StagingProgressSampler` can immediately replace that display value from retained staging before the test observes it.
+Android CI `34149610106` again passed Android verify, lint/tests/build, release APK assembly, and 16 KB native-library verification but failed the service-recovery instrumentation test. The test was still coupling the service contract to cold yt-dlp engine/network startup and to transient progress timing, even though those lower-level resume mechanics are already covered independently.
 
-Commits `fc780db4` and `bb47db9f` remove that incidental timing dependency while keeping the meaningful contract: the service must reclaim the interrupted job, its state must no longer retain the stale pre-restart progress, partial media and `.aria2` state must survive, and resumed work must enter the downloader. Polling now stops immediately once recovery is observed instead of spinning for the entire timeout. Production Android behavior is unchanged.
+Commit `70991ce7` narrows the service-level probe to the responsibility it actually owns: restart must requeue/reclaim the interrupted media job and preserve its partial media plus `.aria2` state after reclaim. The loopback socket remains only to keep the media job from completing immediately; correctness no longer depends on observing a cold engine request or a particular transient progress value. Production Android behavior is unchanged.
 
 ## Validation / reviewer state
 
@@ -31,19 +31,19 @@ Commits `fc780db4` and `bb47db9f` remove that incidental timing dependency while
 - EJS diagnostic/runner work passed through Android CI `34093307496` with the live network probe disabled by default.
 - Low-level restart/resume Android CI `34135963372` passed both verify and instrumentation.
 - HOLEN lifecycle staging-preservation Android CI `34141010546` passed both verify and instrumentation.
-- Service-level test run `34145326121`: Android verify passed; instrumentation failed on the transient zero-progress observation described above.
-- Generic CI for `bb47db9f` passed; fresh Android CI `34149610106` is in progress.
-- No open PRs or issues are present. PR #19 is closed/merged by the user and has no actionable reviewer feedback. No `Yashas's code review bot:` feedback is pending.
+- Service-level run `34149610106`: verify passed; instrumentation failed, motivating the narrower service-boundary probe above.
+- Fresh Android CI `34153823593` and generic CI `34153823589` are running for `70991ce7`.
+- No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
 
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Emulator timing ranks bottlenecks but is not a claim of phone-level absolute latency or promised speedup.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent. Keep production remote EJS disabled until acquisition/cache reuse can be validated on a suitable network.
-- Service-level restart recovery is not considered fully validated until fresh Android instrumentation passes; lower-level staging and aria2 mechanisms are already proven.
+- Service-level restart recovery is not considered fully validated until Android instrumentation for `70991ce7` passes; lower-level staging and aria2 mechanisms are already proven.
 - Explicit user cancellation deliberately deletes staging and therefore does not offer pause/resume semantics; interrupted service/process recovery is a separate path that preserves resumable state.
 - Current yt-dlp's `Aria2cFD` deliberately appends some fixed aria2 flags after configured downloader arguments, including `--always-resume=false`; future production tuning must account for those enforced options rather than assuming earlier duplicate arguments win.
 
 ## Highest-value next step
 
-Inspect Android CI `34149610106`. If green, close the restart/resume investigation as proven through the service boundary and move to the next material Android reliability/performance gap. If it fails, use the observed instrumentation failure to fix the fixture or service orchestration without weakening staging-preservation assertions.
+Inspect Android CI `34153823593`. If green, close the restart/resume investigation as proven through the service boundary and move to the next material Android reliability/performance gap. If it fails, use the exact remaining service-level assertion rather than adding more yt-dlp/network timing dependencies.
