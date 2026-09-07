@@ -38,6 +38,18 @@ class Aria2ResumeInstrumentedTest {
                 }.exceptionOrNull()
                 assertNotNull("The first transfer must fail after the server truncates its body", firstFailure)
 
+                val retainedData = outputDir.listFiles().orEmpty().firstOrNull {
+                    it.isFile && !it.name.endsWith(".aria2") && it.length() >= PIECE_LENGTH_BYTES
+                }
+                assertNotNull(
+                    "Interrupted aria2 transfer must retain at least one complete piece for restart-resume",
+                    retainedData,
+                )
+                assertTrue(
+                    "Interrupted aria2 transfer must retain its control file",
+                    outputDir.listFiles().orEmpty().any { it.isFile && it.name.endsWith(".aria2") },
+                )
+
                 val response = executeDownload(server.mediaUrl, outputDir, "$PROCESS_ID-second", "second")
                 assertTrue("Resumed yt-dlp/aria2 invocation should complete", response.isNotBlank())
 
@@ -51,10 +63,10 @@ class Aria2ResumeInstrumentedTest {
                     header.removePrefix("bytes=")
                         .substringBefore('-')
                         .toLongOrNull()
-                        ?.let { it in 1 until MEDIA_BYTES.size.toLong() } == true
+                        ?.let { it in PIECE_LENGTH_BYTES until MEDIA_BYTES.size.toLong() } == true
                 }
                 assertNotNull(
-                    "Fresh yt-dlp/aria2 invocation must request a non-zero range instead of restarting",
+                    "Fresh yt-dlp/aria2 invocation must request a completed non-zero piece instead of restarting",
                     resumedRange,
                 )
                 assertTrue("The server should see extractor probes plus both aria2 transfer attempts", server.totalRequests >= 4)
@@ -80,7 +92,7 @@ class Aria2ResumeInstrumentedTest {
                 .addOption("--downloader", "libaria2c.so")
                 .addOption(
                     "--downloader-args",
-                    "aria2c:--max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --file-allocation=none --header=X-Holen-Aria2-Attempt:$attempt",
+                    "aria2c:--continue=true --always-resume=true --max-tries=1 --connect-timeout=5 --timeout=5 --split=1 --max-connection-per-server=1 --piece-length=1M --file-allocation=none --auto-file-renaming=false --header=X-Holen-Aria2-Attempt:$attempt",
                 )
                 .addOption("--no-playlist")
                 .addOption("--output", File(outputDir, "resume.%(ext)s").absolutePath),
@@ -121,14 +133,16 @@ class Aria2ResumeInstrumentedTest {
             if (range != null) rangeHeaders += range
 
             // The marker is injected only through aria2's downloader args, so yt-dlp extractor
-            // probes remain unmarked. This avoids depending on the number/order of extractor
-            // requests, which can change between yt-dlp versions.
+            // probes remain unmarked. This avoids depending on extractor request count/order.
             when (request.headers["x-holen-aria2-attempt"]) {
                 null -> {
                     respond(socket, 200, MEDIA_BYTES)
                     return
                 }
                 "first" -> {
+                    // Interrupt after multiple complete 1 MiB pieces. A sub-piece truncation on a
+                    // tiny fixture can legitimately resume from byte zero because aria2 records
+                    // completion at piece boundaries rather than arbitrary socket byte offsets.
                     respondTruncated(socket)
                     return
                 }
@@ -184,8 +198,9 @@ class Aria2ResumeInstrumentedTest {
 
     private companion object {
         const val PROCESS_ID = "aria2-resume-probe"
-        const val INTERRUPT_AFTER_BYTES = 96 * 1024
-        val MEDIA_BYTES = ByteArray(512 * 1024) { index -> ((index * 31) and 0xff).toByte() }
+        const val PIECE_LENGTH_BYTES = 1024L * 1024L
+        const val INTERRUPT_AFTER_BYTES = 2 * 1024 * 1024 + 256 * 1024
+        val MEDIA_BYTES = ByteArray(6 * 1024 * 1024) { index -> ((index * 31) and 0xff).toByte() }
 
         fun readRequest(socket: Socket): HttpRequest {
             val reader = socket.getInputStream().bufferedReader()
