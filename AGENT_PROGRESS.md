@@ -3,7 +3,7 @@
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched by the maintainer.
-- Current inspected baseline: `main` `4b46036d`; `agent-dev` was 121 commits ahead and 0 behind before the downloader-args probe fix in this run.
+- Current inspected baseline: `main` `4b46036d`; `agent-dev` is 124 commits ahead and 0 behind after the latest resume-probe change.
 
 ## Completed since the last weekly review
 
@@ -21,11 +21,11 @@
 
 Production Android downloads already pass yt-dlp `--continue` and use `libaria2c.so` for ordinary external downloads. The remaining reliability gap is evidence that a terminated process can leave resumable aria2 state and that a fresh yt-dlp invocation actually continues from prior bytes rather than silently restarting from zero.
 
-Android CI `34119364094` failed only in instrumentation; its independent verify job passed lint/tests/build and 16 KB native-library verification. The uploaded instrumentation artifact showed the exact failure: `The first aria2 request should reach the fixture`. The fixture never observed the aria2-only `X-Holen-Aria2-Attempt` marker, so the process-cancellation phase was never reached.
+Android CI `34125427424` again failed only in instrumentation; its verify job passed lint/tests/build and 16 KB native-library verification. Switching the probe from the `aria2c:` to `default:` downloader-args bucket did not make the aria2-only marker reach the fixture, so the earlier suspicion that production tuning might be ignored because Android names the executable `libaria2c.so` is not supported by this experiment.
 
-The marker was being supplied with `--downloader-args aria2c:...` while Android invokes the binary as `libaria2c.so`. Current yt-dlp supports a `default:` downloader-args bucket specifically as a downloader-independent fallback. Commit `ebb6ce47` changes only the probe to use `default:` so the test no longer depends on yt-dlp matching the Android binary name to the `aria2c` configuration key. The resume requirements are unchanged: retained partial media plus `.aria2` state before cancellation, fresh-process non-zero completed-piece `Range`, and byte-identical final output.
+Upstream yt-dlp's current `ExternalFD` selects downloader arguments by downloader class basename (`aria2c`) and then executable name; `Aria2cFD` appends those configured arguments to the aria2 command. The test therefore no longer tries to infer downloader identity through injected arguments. Commit `1c2bf360` instead feeds yt-dlp a local `--load-info-json` record containing the loopback media URL. This bypasses extractor HTTP traffic completely, so every request the fixture sees is genuine external-downloader traffic. The test still requires retained partial media plus `.aria2` state before cancellation, a fresh-process non-zero completed-piece `Range`, and byte-identical final output.
 
-Production download options remain unchanged until the deterministic probe proves what arguments Android's libaria2 path actually receives.
+Production download options remain unchanged.
 
 ## Validation / reviewer state
 
@@ -35,10 +35,10 @@ Production download options remain unchanged until the deterministic probe prove
 - Restart/resume CI `34103056915`: verify passed; instrumentation exposed a test-fixture request-order assumption that was removed.
 - Completed-piece restart/resume CI `34108775611`: verify passed; instrumentation was invalidated by an unhandled peer reset, fixed afterward.
 - Android CI `34114034226`: verify passed; instrumentation showed the truncated first response was recovered inside the same aria2 process, invalidating the assumption that truncation would force a process-level failure.
-- Android CI `34119364094`: verify passed; instrumentation artifact proved the aria2-only marker never reached the fixture, exposing downloader-args key matching as the next issue to isolate.
-- Fresh Android CI `34125427424` and generic CI `34125427372` are running for `ebb6ce47`.
+- Android CI `34119364094`: verify passed; instrumentation proved the aria2-only marker never reached the fixture.
+- Android CI `34125427424`: verify passed; the `default:` downloader-args marker experiment also failed to identify aria2 traffic, so that routing hypothesis was discarded rather than applied to production.
 - No open PRs or issues were present in the latest inspection.
-- Recent PR #19 has no submitted reviews; no actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
+- No actionable CodeRabbit or `Yashas's code review bot:` feedback was found.
 
 ## Known risks / review points
 
@@ -46,8 +46,8 @@ Production download options remain unchanged until the deterministic probe prove
 - Emulator timing ranks bottlenecks but is not a claim of phone-level absolute latency or promised speedup.
 - QuickJS alone does not provide current YouTube challenge coverage when matching EJS scripts are absent. Keep production remote EJS disabled until acquisition/cache reuse can be validated on a suitable network.
 - Restart-based yt-dlp/aria2 byte-range continuation is not yet claimed as validated until the process-cancel probe passes with retained `.aria2` state, a non-zero completed-piece Range, and byte-identical output.
-- If `default:` causes the marker and tuning arguments to reach libaria2 while `aria2c:` does not, production downloader tuning may also need the same keying correction. Do not change production until the probe demonstrates that difference.
+- Current yt-dlp's `Aria2cFD` deliberately appends some fixed aria2 flags after configured downloader arguments, including `--always-resume=false`; future production tuning must account for those enforced options rather than assuming earlier duplicate arguments win.
 
 ## Highest-value next step
 
-Inspect Android CI `34125427424`. If the marker now reaches the fixture, continue the same test through cancellation and fresh-process resume. If it still does not, capture the actual libaria2 invocation arguments from the wrapper rather than weakening the assertion. Only after the probe establishes downloader-args routing should production aria2 tuning be reconsidered.
+Validate the `--load-info-json` resume probe. If it reaches the fixture and survives cancellation with retained `.aria2` state, finish the fresh-process Range/integrity proof. If it still cannot establish resumable state, inspect youtubedl-android/libaria2 process cleanup rather than adding more request-identification heuristics.
