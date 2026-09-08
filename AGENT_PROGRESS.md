@@ -27,15 +27,13 @@ These numbers rank emulator-side bottlenecks only; they do not claim production 
 
 ## Current work: 16 KB native payload compatibility
 
-The stricter verifier originally exposed a real arm64 defect in the official `youtubedl-android` 0.18.1 FFmpeg payload: several nested WebP libraries used `0x1000` `PT_LOAD` alignment. `agent-dev` therefore temporarily pins the wrapper modules to the exact upstream PR #350 head `83f41ae27710b4a1d47f4a0095209f4325e4564f`, with JitPack resolution scoped only to `com.github.Lizzergas.youtubedl-android`.
+The stricter verifier exposed a real arm64 defect in the official `youtubedl-android` 0.18.1 FFmpeg payload: several nested WebP libraries used `0x1000` `PT_LOAD` alignment. `agent-dev` therefore temporarily pins the wrapper modules to the exact upstream PR #350 head `83f41ae27710b4a1d47f4a0095209f4325e4564f`, with JitPack resolution scoped only to `com.github.Lizzergas.youtubedl-android`.
 
-The pinned dependency builds and passes instrumentation. A retained ARM64 artifact was independently inspected: 273 actual runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`.
+The pinned arm64 dependency is clean. A retained ARM64 artifact was independently inspected: 273 runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`.
 
-The latest retained universal run (`34265825909`) again passed lint/test/build and instrumentation and failed only strict 16 KB verification. That run successfully retained both ARM64 and universal APKs, so artifact retention is working as intended.
+Android CI `34272229914` passed lint/test/build and instrumentation but still failed strict universal 16 KB verification. Its retained universal APK was inspected directly. The remaining failures are five x86_64 FFmpeg WebP-family libraries (`libwebp.so`, `libwebpdecoder.so`, `libwebpdemux.so`, `libwebpmux.so`, and `libsharpyuv.so`) with `0x1000` `PT_LOAD` alignment. The same artifact's arm64 payload is clean. Upstream PR #350 is explicitly arm64-focused and does not replace the x86_64 WebP payloads.
 
-The verifier had one remaining semantic bug: after filtering static archives by file magic, it still treated every standalone ELF-magic file extracted from wrapper archives as a runtime-mapped binary. ELF relocatable build objects (`ET_REL`) legitimately have no `PT_LOAD` segments and must not be judged by runtime page alignment. Commit `ba9333a5` now applies recursive alignment checks only to loadable `ET_DYN`/`ET_EXEC` payloads, while direct APK native `.so` slots remain strict and reject non-runtime or corrupt ELF content.
-
-Android CI `34272229914` is validating this runtime-ELF distinction against both ARM64 and universal release APKs. Do not treat 16 KB support as closed until that strict run is green.
+The release configuration was therefore simplified rather than weakening the verifier: the `universal` release flavor now contains the two physical-device ARM ABIs (`arm64-v8a` and `armeabi-v7a`), while x86/x86_64 remain available through the dedicated emulator flavor. In the retained pre-change universal APK, x86 plus x86_64 payloads accounted for about 112.3 MB of the 225.2 MB APK, so this also removes substantial emulator-only release weight. CI must validate the resulting release APK before the task is closed.
 
 ## Live YouTube EJS validation
 
@@ -43,19 +41,19 @@ The deterministic EJS policy, build, instrumentation, cache handling, parser, an
 
 ## Validation / reviewer state
 
-- Android CI `34265825909`: lint/test/build and instrumentation passed; strict 16 KB verification failed; both ARM64 and universal test APKs were retained successfully.
-- Independent retained ARM64 inspection remains clean: 273 runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment.
-- Android CI `34272229914` and generic CI `34272229940` are validating the runtime-ELF verifier correction.
-- Upstream youtubedl-android PR #350 remains open and arm64-focused; its pinned head is unchanged.
+- Android CI `34272229914`: lint/test/build and instrumentation passed; strict 16 KB verification failed only on the retained universal APK's x86_64 WebP-family payloads.
+- Retained ARM64 inspection remains clean: 273 runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment.
+- Generic CI `34272295003` for the preceding verifier/progress state passed.
+- Upstream youtubedl-android PR #350 remains open, arm64-focused, and pinned to unchanged head `83f41ae27710b4a1d47f4a0095209f4325e4564f`.
 - No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
 
 ## Known risks / review points
 
-- The current 16 KB wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit. Replace it with an official Maven Central release once upstream publishes equivalent support.
-- 16 KB compatibility is not closed until strict universal verification passes. Android's official guidance includes both ARM64 and x86-64 16 KB test environments, so universal/x86-64 validation should not simply be disabled to make CI green.
+- The current 16 KB arm64 wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit. Replace it with an official Maven Central release once upstream publishes equivalent support.
+- The `universal` release APK now intentionally targets ARM physical-device ABIs only. x86/x86_64 remain in the emulator flavor; review this distribution policy before any future main-branch release if desktop Android/x86 hardware support becomes a requirement.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; crash/service interruption recovery is separate and already proven to preserve resumable state.
 
 ## Highest-value next step
 
-Inspect Android CI `34272229914`. If strict 16 KB verification is green, close this verifier task and return to the live YouTube EJS first-fetch/cache/reuse probe. If it remains red, use the retained universal APK to identify the exact remaining loadable ELF rather than weakening x86-64 coverage or changing dependencies speculatively.
+Validate the ARM-only universal release in Android CI. If strict 16 KB verification is green and the APK size reduction matches the retained-artifact estimate, close the 16 KB task and return to the live YouTube EJS first-fetch/cache/reuse probe.
