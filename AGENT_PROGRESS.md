@@ -38,34 +38,35 @@ Android CI `34161519848` provides an emulator baseline rather than a claimed pho
 
 These numbers rank emulator-side bottlenecks only. They do not claim absolute phone latency or a measured production speedup.
 
-## Current work: live YouTube EJS validation
+## Current work
+
+### 16 KB native payload verification
+
+Upstream `youtubedl-android` PR #350 documents a concrete arm64 16 KB issue inside wrapper `*.zip.so` payloads: packaged archives can contain ELF libraries whose alignment is not safe on 16 KB page-size devices. HOLEN's verifier previously treated those archives as non-ELF wrapper payloads and skipped their contents, so a green check could miss the exact class of failure upstream is fixing.
+
+`agent-dev` now recursively inspects ELF files inside 64-bit wrapper payload archives instead of skipping them. Android CI `34234889210` is the first build exercising the stricter verification against HOLEN's actual release APKs. Do not claim full 16 KB compatibility until this stricter check passes or any exposed payload failure is fixed.
+
+### Live YouTube EJS validation
 
 Upstream yt-dlp's current EJS guidance requires a supported JavaScript runtime plus solver scripts for YouTube challenge solving. HOLEN already exposes bundled QuickJS, and production now enables the official `ejs:github` distribution with an explicit cache for full YouTube operations.
 
 The deterministic policy, build, instrumentation, strict-probe parsing, and EJS-specific failure-classification paths are green. Live EJS extraction remains deliberately unclaimed because hosted GitHub runner traffic has been rate-limited by YouTube. No further production fallback is justified without a non-rate-limited Android/network run that can distinguish solver compatibility from network blocking.
 
-Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is still the current upstream-published library version and includes QuickJS. No wrapper dependency churn is justified.
+Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is still the current upstream-published library version and includes QuickJS. No wrapper dependency churn is justified merely for version freshness; upstream PR #350 remains open and is being treated as evidence to validate rather than as an unreviewed dependency replacement.
 
 ## Validation / reviewer state
 
-- Android CI `34164996314`: passed for the strict EJS parser fix.
-- Generic CI `34164996308`: passed for the same parser fix.
-- Generic CI `34171668938`: passed for the direct-file HTTP 402 classification regression coverage.
-- Android CI `34171668951`: passed for the same focused change.
-- Generic CI `34171718964`: passed for the progress-state update following that change.
-- Generic CI `34181614787`: passed for the missing-engine-output regression test.
-- Android CI `34181614839`: passed for the same focused change.
-- Generic CI `34188759330`: passed for the EJS failure-guidance regression coverage.
-- Android CI `34188759351`: passed for the same focused change.
-- Generic CI `34196693426`: passed for the TLS/certificate failure-classification regression coverage.
-- Android CI `34196693401`: passed for the same focused change.
+- Generic CI `34229174410`: passed for the progress-state update after typed TLS validation.
 - Generic CI `34223327131`: passed for typed `SSLHandshakeException` classification coverage.
 - Android CI `34223327149`: passed for the same focused change.
+- Android CI `34234889210`: queued/running for recursive 16 KB wrapper-payload verification.
+- Generic CI for the same verifier commit is running.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
 
+- HOLEN's previous 16 KB check skipped nested ELF files in wrapper `*.zip.so` archives. Compatibility is now intentionally considered unproven until the stricter recursive check completes; upstream PR #350 specifically identifies this payload class as problematic on arm64 16 KB devices.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
 - Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
 - Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
@@ -75,4 +76,4 @@ Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is stil
 
 ## Highest-value next step
 
-Return to the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available. Until then, avoid speculative solver fallbacks, dependency churn, or cosmetic busywork and continue only evidence-backed Android reliability/performance investigations.
+Inspect Android CI `34234889210`. If recursive payload verification exposes misaligned bundled arm64 libraries, fix that concrete compatibility problem before returning to live EJS validation. If it passes, add a focused nested-payload regression fixture and then resume the strict EJS first-fetch/cache/reuse probe when a non-rate-limited Android connection is available.
