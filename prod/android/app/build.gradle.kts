@@ -30,7 +30,10 @@ android {
         }
         create("universal") {
             dimension = "abi"
-            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            // Release distribution targets physical Android devices. Keep x86/x86_64
+            // in the dedicated emulator flavor so the release APK does not ship
+            // emulator-only payloads that upstream does not yet provide as 16 KB-safe.
+            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
         create("emulator") {
             dimension = "abi"
