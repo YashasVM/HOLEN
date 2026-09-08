@@ -205,6 +205,23 @@ class FriendlyFailureTest {
     }
 
     @Test
+    fun certificateFailuresDoNotMasqueradeAsTransientNetworkErrors() {
+        val androidTls = friendlyFailure(
+            IOException("javax.net.ssl.SSLHandshakeException: Trust anchor for certification path not found"),
+        )
+        val ytDlpTls = friendlyFailure(
+            IllegalStateException("ERROR: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"),
+        )
+
+        assertTrue(androidTls.contains("certificate could not be verified"))
+        assertTrue(androidTls.contains("device date/time"))
+        assertTrue(androidTls.contains("Do not disable certificate verification"))
+        assertFalse(androidTls.contains("Retry to continue the partial download"))
+        assertTrue(ytDlpTls.contains("trusted network"))
+        assertFalse(ytDlpTls.contains("network transfer failed", ignoreCase = true))
+    }
+
+    @Test
     fun ytDlpTransientTransportFailuresAreActionableEvenWhenWrapperExceptionIsNotIo() {
         val reset = friendlyFailure(
             IllegalStateException("ERROR: [youtube] abc123: Unable to download webpage: [Errno 104] Connection reset by peer"),
