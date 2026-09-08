@@ -22,7 +22,7 @@
 - Corrected direct-file HTTP 402 failure classification: arbitrary HTTPS file servers now report payment/additional-access requirements instead of a rate limit, while yt-dlp extractor HTTP 402 remains treated as an overuse block. Generic CI `34171668938` and Android CI `34171668951` both passed the focused regression coverage.
 - Corrected a missing-output failure path where `IOException("The media engine completed without an output file.")` was incorrectly falling through to the generic network-error message. The Android UI now tells the user the engine produced no usable output and suggests re-analysis plus engine update/reset if it repeats. Generic CI `34181614787` and Android CI `34181614839` both passed the regression coverage.
 - Added dedicated YouTube EJS failure guidance for signature-solving, n-challenge, and solver-distribution failures so they no longer degrade into a generic error. Generic CI `34188759330` and Android CI `34188759351` both passed the focused regression coverage.
-- Classified TLS/certificate verification failures separately from transient network failures. Android now points users to device clock and VPN/private-DNS/captive-portal interception checks and explicitly avoids recommending disabled certificate verification; regression coverage includes both Android `SSLHandshakeException`-style text and yt-dlp `CERTIFICATE_VERIFY_FAILED` output.
+- Classified TLS/certificate verification failures separately from transient network failures. Android now points users to device clock and VPN/private-DNS/captive-portal interception checks and explicitly avoids recommending disabled certificate verification; regression coverage includes both Android `SSLHandshakeException`-style text and yt-dlp `CERTIFICATE_VERIFY_FAILED` output. Generic CI `34196693426` and Android CI `34196693401` both passed.
 
 ## Performance evidence
 
@@ -56,13 +56,13 @@ Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is stil
 - Android CI `34181614839`: passed for the same focused change.
 - Generic CI `34188759330`: passed for the EJS failure-guidance regression coverage.
 - Android CI `34188759351`: passed for the same focused change.
-- Generic CI `34196693426` and Android CI `34196693401` are running for the TLS/certificate failure-classification change; no failure was present at the latest inspection.
+- Generic CI `34196693426`: passed for the TLS/certificate failure-classification regression coverage.
+- Android CI `34196693401`: passed for the same focused change.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
 
-- The TLS/certificate failure guidance change is not considered fully closed until generic and Android CI finish green.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
 - Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
 - Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
@@ -72,4 +72,4 @@ Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is stil
 
 ## Highest-value next step
 
-Finish generic CI `34196693426` and Android CI `34196693401` for the TLS/certificate failure guidance. If both are green, close that focused task and return to the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available. Until then, continue only evidence-backed Android reliability/performance work; do not add speculative solver fallbacks or dependency churn.
+Run the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available. Until then, continue only evidence-backed Android reliability/performance work; do not add speculative solver fallbacks, dependency churn, or cosmetic busywork.
