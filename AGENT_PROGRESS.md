@@ -46,9 +46,11 @@ The stricter recursive verifier exposed a real arm64 compatibility defect in HOL
 
 This matches upstream `youtubedl-android` PR #350. That PR moves arm64 packaged archives to assets and replaces the FFmpeg WebP payload libraries with 16 KB-aligned builds. Rather than weakening the verifier or claiming compatibility, `agent-dev` pins the wrapper modules to the exact reviewed PR head commit `83f41ae27710b4a1d47f4a0095209f4325e4564f` and scopes JitPack resolution exclusively to `com.github.Lizzergas.youtubedl-android`. No floating branch or unrelated wrapper upgrade is used.
 
-Android CI `34241886269` resolved and built that exact pin: instrumentation and lint/tests/build passed, but the recursive 16 KB verification still failed. Generic CI `34241886447` passed. The upstream patch also moves arm64 wrapper archives from `jniLibs` into `assets/youtubedl-android/<abi>/`, which exposed a second validation gap in HOLEN's verifier: after adopting PR #350, those relocated payloads would no longer be inspected at all. Commit `64fa0757` closes that blind spot by recursively checking both native-library wrapper archives and the new wrapper assets, validating every embedded 64-bit ELF rather than treating asset relocation as proof of compatibility.
+Android CI `34241886269` resolved and built that exact pin: instrumentation and lint/tests/build passed, but the recursive 16 KB verification still failed. Generic CI `34241886447` passed. The upstream patch also moves arm64 wrapper archives from `jniLibs` into `assets/youtubedl-android/<abi>/`, which exposed a second validation gap in HOLEN's verifier. Commit `64fa0757` closed that blind spot by recursively checking both native-library wrapper archives and the new wrapper assets. Android CI `34248227705` still failed specifically at the strict 16 KB verification while instrumentation and the full lint/test/build stage passed, confirming that at least one direct or asset-embedded ELF remains unacceptable under the current pin.
 
-Do not treat 16 KB support as closed until the fresh Android CI for the asset-aware verifier passes. If it still fails, use that strict result to identify and fix the remaining offending ELF; do not weaken the check.
+Commit `f783555a` changes only `agent-dev`/non-main CI diagnostics so the built ARM64 test APK is uploaded even when strict verification fails. This does not publish or sign a broken main artifact; it preserves the failed-build APK so the exact offending ELF can be inspected instead of guessing at another dependency change. Android CI `34254369173` is validating that diagnostic path.
+
+Do not treat 16 KB support as closed until the exact remaining offender is identified and a strict run passes without weakening the verifier.
 
 ### Live YouTube EJS validation
 
@@ -62,14 +64,16 @@ The deterministic policy, build, instrumentation, strict-probe parsing, and EJS-
 - Independent artifact inspection reproduced `0x1000` alignment in the nested arm64 FFmpeg WebP libraries, confirming this is a real packaged-payload defect rather than a verifier false positive.
 - Android CI `34241886269`: exact PR #350 pin resolved successfully; instrumentation and lint/tests/build passed, but 16 KB verification still failed.
 - Generic CI `34241886447`: passed for the same dependency pin.
-- Commit `64fa0757` now extends strict recursive verification to the arm64/x86_64 wrapper archives that PR #350 relocates into APK assets; fresh CI is pending.
+- Android CI `34248227705`: asset-aware recursive verification still failed specifically at 16 KB validation; instrumentation and lint/tests/build passed.
+- Generic CI `34248378870`: passed for the asset-aware verifier state.
+- Commit `f783555a` retains the non-main ARM64 test APK after verifier failure so the remaining ELF can be inspected; Android CI `34254369173` and generic CI `34254369065` are pending.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
-- No actionable CodeRabbit or `Yashas's code review bot:` feedback is currently known; re-check open/recent review state before any future production change.
+- No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
 
 ## Known risks / review points
 
 - The temporary 16 KB fix depends on the exact unmerged upstream PR #350 commit through JitPack. It is pinned to an immutable commit and repository resolution is scoped, but the user should replace it with the official Maven Central release once upstream merges/publishes equivalent support.
-- 16 KB compatibility remains unproven. The PR #350 pin builds and runs instrumentation, but its first strict HOLEN verification still failed; the asset-aware verifier must now determine whether another direct or embedded 64-bit ELF remains misaligned.
+- 16 KB compatibility remains unproven. The PR #350 pin builds and runs instrumentation, but strict asset-aware verification still fails; the failed-build APK must be inspected before any further payload/dependency change.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
 - Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
 - Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
@@ -79,4 +83,4 @@ The deterministic policy, build, instrumentation, strict-probe parsing, and EJS-
 
 ## Highest-value next step
 
-Inspect the fresh Android CI for commit `64fa0757`. If strict verification still fails, identify the exact direct or asset-embedded ELF and remediate that payload/dependency without weakening the verifier. If it passes, independently inspect the ARM64 APK's moved wrapper assets and close the 16 KB compatibility task before returning to the live YouTube EJS probe.
+Wait for Android CI `34254369173` to finish, download its retained ARM64 test APK even if strict verification fails, identify the exact direct or asset-embedded ELF with sub-`0x4000` `PT_LOAD` alignment, and remediate that concrete payload/dependency without weakening the verifier. Only after a strict green run should work return to live YouTube EJS validation.
