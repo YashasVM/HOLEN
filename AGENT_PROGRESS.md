@@ -37,15 +37,17 @@ Android CI `34278213373` passed instrumentation, lint/test/build, and strict rec
 
 Production full YouTube analysis/downloads use a persistent yt-dlp cache and explicitly allow only the official `ejs:github` remote component. Build, deterministic policy, parser, failure classification, and normal instrumentation paths are green.
 
-The opt-in live probe was tightened in commit `c1eda1ba`: a non-rate-limited first run must now prove yt-dlp actually downloaded the challenge solver from the official `yt-dlp/ejs` GitHub release, and the second run must explicitly report `source: cache`. Merely succeeding with some non-empty cache is no longer treated as proof of EJS acquisition/reuse.
+The opt-in live probe was tightened in commit `c1eda1ba`: a non-rate-limited first run must prove yt-dlp actually downloaded the challenge solver from the official `yt-dlp/ejs` GitHub release, and the second run must explicitly report `source: cache`. Merely succeeding with some non-empty cache is no longer treated as proof of EJS acquisition/reuse.
+
+A follow-up inspection found the instrumentation shell parser still expected the probe's older `remote_signal` / `cache_signal` field names. Commit `6392798e` aligns the parser and its sanity checks with the strict test's `web_fetch_signal` / `cache_reuse_signal` output, removing a false failure that would otherwise prevent a successful live probe from being recorded.
 
 Live first-fetch/cache-reuse remains deliberately unclaimed because hosted runner traffic has previously been rate-limited by YouTube. No extra fallback, runtime replacement, or dependency churn is justified until the strict probe runs successfully on a usable Android/network connection.
 
 ## Validation / reviewer state
 
 - Android CI `34278213373`: instrumentation, lint/test/build, and strict 16 KB verification passed.
+- Android CI `34283398225`: normal instrumentation, lint/test/build, and strict 16 KB verification passed after the stricter EJS assertion change; the live EJS probe remained opt-in and was not itself proven by that green run.
 - Universal test artifact: `223,235,098` bytes before ARM-only packaging; `110,918,585` bytes after it.
-- Fresh Android CI `34283398225` and generic CI `34283398275` are validating the stricter EJS probe change.
 - Latest official yt-dlp release inspected: `2026.08.19`.
 - No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
 
@@ -58,4 +60,4 @@ Live first-fetch/cache-reuse remains deliberately unclaimed because hosted runne
 
 ## Highest-value next step
 
-Finish CI validation of the stricter EJS probe, then run its opt-in first-fetch/cache-reuse path on a non-rate-limited Android/network connection and require both the official GitHub fetch signal and explicit cached-solver reuse before claiming live EJS compatibility.
+Validate the corrected EJS report parser in normal Android CI, then run the opt-in first-fetch/cache-reuse probe on a non-rate-limited Android/network connection and require both the official GitHub fetch signal and explicit cached-solver reuse before claiming live EJS compatibility.
