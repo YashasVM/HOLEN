@@ -20,6 +20,7 @@
 - Strengthened the opt-in Android EJS compatibility probe so a usable-network run must prove successful first extraction, non-empty cache creation, successful second extraction, and retained cache state. Android CI `34161519848` passed verify/instrumentation for this test change; the live EJS probe itself remained intentionally skipped in normal hosted CI.
 - Fixed the strict EJS probe report parser so it consumes the new cache file/byte counters. Android CI `34164996314` and generic CI `34164996308` passed for the parser change.
 - Corrected direct-file HTTP 402 failure classification: arbitrary HTTPS file servers now report payment/additional-access requirements instead of a rate limit, while yt-dlp extractor HTTP 402 remains treated as an overuse block. Generic CI `34171668938` and Android CI `34171668951` both passed the focused regression coverage.
+- Corrected a missing-output failure path where `IOException("The media engine completed without an output file.")` was incorrectly falling through to the generic network-error message. The Android UI now tells the user the engine produced no usable output and suggests re-analysis plus engine update/reset if it repeats. Focused CI is pending.
 
 ## Performance evidence
 
@@ -40,7 +41,7 @@ Upstream yt-dlp's current EJS guidance requires a supported JavaScript runtime p
 
 The deterministic policy, build, instrumentation, and strict-probe parsing paths are green. Live EJS extraction remains deliberately unclaimed because hosted GitHub runner traffic has been rate-limited by YouTube. No further production fallback is justified without a non-rate-limited Android/network run that can distinguish solver compatibility from network blocking.
 
-While that external validation remains blocked, focused Android failure/retry audits continue. The direct HTTP 402 classification fix is now fully green. The current direct-download retry path is bounded, preserves resumable state across retryable failures, rejects SSL/protocol/storage failures from automatic retry, and only retries HTTP 429 when a safe bounded `Retry-After` value exists. No additional demonstrated defect was found in this pass, so production code was left unchanged.
+While that external validation remains blocked, focused Android failure/retry audits continue. The direct HTTP 402 classification fix is fully green. This run found a separate concrete failure-classification bug: yt-dlp can finish without HOLEN finding a usable output file, and that `IOException` was being mislabeled as a network failure. The narrow classification fix and regression test are now on `agent-dev`; CI is pending before this is considered closed.
 
 ## Validation / reviewer state
 
@@ -49,6 +50,8 @@ While that external validation remains blocked, focused Android failure/retry au
 - Generic CI `34171668938`: passed for the direct-file HTTP 402 classification regression coverage.
 - Android CI `34171668951`: passed for the same focused change.
 - Generic CI `34171718964`: passed for the progress-state update following that change.
+- Generic CI `34181614787`: running for the missing-engine-output regression test.
+- Android CI `34181614839`: running for the same focused change.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
@@ -60,7 +63,8 @@ While that external validation remains blocked, focused Android failure/retry au
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Explicit user cancellation deliberately deletes staging and therefore is not pause/resume; crash/service interruption recovery is separate and proven to preserve resumable state.
 - Current yt-dlp's `Aria2cFD` already uses 16 connections/splits and appends fixed flags including `--always-resume=false`; do not add duplicate connection tuning or assume earlier duplicate flags win.
+- The new missing-output classification remains pending until its generic and Android CI runs finish green.
 
 ## Highest-value next step
 
-Run the strict live EJS probe on a non-rate-limited Android connection when one is available. Until then, continue focused Android download/retry/error-path audits and only change production code when a concrete correctness, resume, performance, or failure-classification defect is demonstrated.
+Finish CI for the missing-engine-output classification fix. If green, return to strict live EJS validation on a non-rate-limited Android connection when one is available; otherwise fix the CI failure before starting unrelated work.
