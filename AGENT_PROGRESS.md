@@ -21,6 +21,7 @@
 - Fixed the strict EJS probe report parser so it consumes the new cache file/byte counters. Android CI `34164996314` and generic CI `34164996308` passed for the parser change.
 - Corrected direct-file HTTP 402 failure classification: arbitrary HTTPS file servers now report payment/additional-access requirements instead of a rate limit, while yt-dlp extractor HTTP 402 remains treated as an overuse block. Generic CI `34171668938` and Android CI `34171668951` both passed the focused regression coverage.
 - Corrected a missing-output failure path where `IOException("The media engine completed without an output file.")` was incorrectly falling through to the generic network-error message. The Android UI now tells the user the engine produced no usable output and suggests re-analysis plus engine update/reset if it repeats. Generic CI `34181614787` and Android CI `34181614839` both passed the regression coverage.
+- Added dedicated YouTube EJS failure guidance for signature-solving, n-challenge, and solver-distribution failures so they no longer degrade into a generic error. Generic CI `34188759330` and Android CI `34188759351` both passed the focused regression coverage.
 
 ## Performance evidence
 
@@ -39,9 +40,9 @@ These numbers rank emulator-side bottlenecks only. They do not claim absolute ph
 
 Upstream yt-dlp's current EJS guidance requires a supported JavaScript runtime plus solver scripts for YouTube challenge solving. HOLEN already exposes bundled QuickJS, and production now enables the official `ejs:github` distribution with an explicit cache for full YouTube operations.
 
-The deterministic policy, build, instrumentation, and strict-probe parsing paths are green. Live EJS extraction remains deliberately unclaimed because hosted GitHub runner traffic has been rate-limited by YouTube. No further production fallback is justified without a non-rate-limited Android/network run that can distinguish solver compatibility from network blocking.
+The deterministic policy, build, instrumentation, strict-probe parsing, and EJS-specific failure-classification paths are green. Live EJS extraction remains deliberately unclaimed because hosted GitHub runner traffic has been rate-limited by YouTube. No further production fallback is justified without a non-rate-limited Android/network run that can distinguish solver compatibility from network blocking.
 
-A current public Seal failure report using yt-dlp `2026.08.19` shows real `Signature solving failed` / `n challenge solving failed` cases. HOLEN now classifies those EJS-specific failures separately and tells the user to update the engine and verify GitHub reachability for refreshing the official yt-dlp EJS solver instead of falling through to a generic failure. Focused unit coverage was added; full CI is pending.
+Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is still the current upstream-published library version and includes QuickJS. No wrapper dependency churn is justified.
 
 ## Validation / reviewer state
 
@@ -52,7 +53,8 @@ A current public Seal failure report using yt-dlp `2026.08.19` shows real `Signa
 - Generic CI `34171718964`: passed for the progress-state update following that change.
 - Generic CI `34181614787`: passed for the missing-engine-output regression test.
 - Android CI `34181614839`: passed for the same focused change.
-- New EJS failure-guidance CI is pending for commits `b8e95385` and `0cbf0778`.
+- Generic CI `34188759330`: passed for the EJS failure-guidance regression coverage.
+- Android CI `34188759351`: passed for the same focused change.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
@@ -60,7 +62,6 @@ A current public Seal failure report using yt-dlp `2026.08.19` shows real `Signa
 
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
 - Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
-- The new EJS failure classification is not considered closed until its current generic and Android CI runs are green.
 - Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
 - SAF publication still performs a destination-name scan because removing it without a crash-safe provider-renaming strategy can lose publication recovery correctness.
 - Explicit user cancellation deliberately deletes staging and therefore is not pause/resume; crash/service interruption recovery is separate and proven to preserve resumable state.
@@ -68,4 +69,4 @@ A current public Seal failure report using yt-dlp `2026.08.19` shows real `Signa
 
 ## Highest-value next step
 
-Inspect the EJS failure-guidance CI and fix any regression. If green, return to the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available; otherwise continue only evidence-backed Android reliability/performance work.
+Run the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available. Until then, continue only evidence-backed Android reliability/performance work; do not add speculative solver fallbacks or dependency churn.
