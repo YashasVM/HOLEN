@@ -19,9 +19,10 @@ import org.junit.runner.RunWith
  * YouTube analysis/downloads.
  *
  * Hosted CI can be rate-limited by YouTube, so this remains explicit. On a usable network the
- * probe is intentionally strict: the first extraction must succeed and populate persistent cache
- * state, then a second extraction must succeed while retaining that state. This validates the
- * Android remote-component/cache path without pretending that a skipped or HTTP-429 run is proof.
+ * probe is intentionally strict: the first extraction must fetch the challenge solver from the
+ * official yt-dlp/ejs GitHub release and populate persistent cache state, then a second extraction
+ * must use that cached solver while retaining the same state. This validates the Android
+ * remote-component/cache path without pretending that a skipped or HTTP-429 run is proof.
  */
 @RunWith(AndroidJUnit4::class)
 class EjsRemoteComponentInstrumentedTest {
@@ -42,8 +43,8 @@ class EjsRemoteComponentInstrumentedTest {
             ProbeResult(
                 elapsedMs = 0L,
                 exitCode = BLOCKED_EXIT_CODE,
-                remoteSignal = false,
-                cacheSignal = false,
+                webFetchSignal = false,
+                cacheReuseSignal = false,
                 upstreamBlocked = true,
                 diagnostics = "skipped cached-reuse attempt because the first probe was blocked by upstream HTTP 429",
             )
@@ -56,15 +57,15 @@ class EjsRemoteComponentInstrumentedTest {
             appendLine("HOLEN Android EJS remote-component probe")
             appendLine("first_ms=${first.elapsedMs}")
             appendLine("first_exit=${first.exitCode}")
-            appendLine("first_remote_signal=${first.remoteSignal}")
-            appendLine("first_cache_signal=${first.cacheSignal}")
+            appendLine("first_web_fetch_signal=${first.webFetchSignal}")
+            appendLine("first_cache_reuse_signal=${first.cacheReuseSignal}")
             appendLine("first_upstream_blocked=${first.upstreamBlocked}")
             appendLine("first_cache_files=${firstCache.size}")
             appendLine("first_cache_bytes=${firstCache.values.sum()}")
             appendLine("cached_ms=${cached.elapsedMs}")
             appendLine("cached_exit=${cached.exitCode}")
-            appendLine("cached_remote_signal=${cached.remoteSignal}")
-            appendLine("cached_cache_signal=${cached.cacheSignal}")
+            appendLine("cached_web_fetch_signal=${cached.webFetchSignal}")
+            appendLine("cached_cache_reuse_signal=${cached.cacheReuseSignal}")
             appendLine("cached_upstream_blocked=${cached.upstreamBlocked}")
             appendLine("cached_cache_files=${cachedCache.size}")
             appendLine("cached_cache_bytes=${cachedCache.values.sum()}")
@@ -80,9 +81,17 @@ class EjsRemoteComponentInstrumentedTest {
         assertTrue("cached EJS probe must record elapsed time", cached.elapsedMs >= 0L)
         if (!first.upstreamBlocked) {
             assertEquals("first EJS remote-component extraction must succeed", 0, first.exitCode)
+            assertTrue(
+                "first EJS probe must fetch the solver from the official yt-dlp/ejs GitHub release",
+                first.webFetchSignal,
+            )
             assertFalse("first EJS fetch must populate the configured cache", firstCache.isEmpty())
             assertTrue("first EJS cache must contain non-empty data", firstCache.values.sum() > 0L)
             assertEquals("second EJS extraction must succeed with retained cache state", 0, cached.exitCode)
+            assertTrue(
+                "second EJS extraction must report using the cached challenge solver",
+                cached.cacheReuseSignal,
+            )
             assertFalse("second EJS extraction must retain cache state", cachedCache.isEmpty())
             assertTrue(
                 "second EJS extraction must retain at least one fetched cache artifact unchanged",
@@ -146,12 +155,10 @@ class EjsRemoteComponentInstrumentedTest {
         return ProbeResult(
             elapsedMs = elapsedMs,
             exitCode = exitCode,
-            remoteSignal = diagnostics.contains("remote component", ignoreCase = true) ||
-                diagnostics.contains("ejs:github", ignoreCase = true) ||
-                diagnostics.contains("Downloading challenge", ignoreCase = true),
-            cacheSignal = diagnostics.contains("from cache", ignoreCase = true) ||
-                diagnostics.contains("cached", ignoreCase = true) ||
-                diagnostics.contains("cache hit", ignoreCase = true),
+            webFetchSignal = diagnostics.contains("Downloading challenge solver", ignoreCase = true) &&
+                diagnostics.contains("github.com/yt-dlp/ejs/releases/download/", ignoreCase = true),
+            cacheReuseSignal = diagnostics.contains("Using challenge solver", ignoreCase = true) &&
+                diagnostics.contains("source: cache", ignoreCase = true),
             upstreamBlocked = diagnostics.contains("HTTP Error 429", ignoreCase = true) ||
                 diagnostics.contains("Too Many Requests", ignoreCase = true),
             diagnostics = diagnosticLines
@@ -164,8 +171,8 @@ class EjsRemoteComponentInstrumentedTest {
     private data class ProbeResult(
         val elapsedMs: Long,
         val exitCode: Int,
-        val remoteSignal: Boolean,
-        val cacheSignal: Boolean,
+        val webFetchSignal: Boolean,
+        val cacheReuseSignal: Boolean,
         val upstreamBlocked: Boolean,
         val diagnostics: String,
     )
