@@ -93,6 +93,8 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("dlopen failed", true) ||
             message.contains("libpython", true) ->
             "The media engine could not start. Reset or update it in Settings."
+        isCertificateFailure(normalized) ->
+            "The secure connection certificate could not be verified. Check the device date/time and VPN, private DNS, or captive-portal interception, then retry on a trusted network. Do not disable certificate verification."
         isTransientNetworkFailure(normalized) ||
             message.contains("network", true) ||
             error is java.io.IOException -> "The network transfer failed. Retry to continue the partial download."
@@ -223,6 +225,17 @@ private fun isFragmentTransferFailure(message: String): Boolean = listOf(
     "fragment not found",
     "downloaded file is empty",
     "unable to download video data",
+).any(message::contains)
+
+private fun isCertificateFailure(message: String): Boolean = listOf(
+    "certificate_verify_failed",
+    "certificate verify failed",
+    "sslhandshakeexception",
+    "certpathvalidatorexception",
+    "trust anchor for certification path not found",
+    "unable to find valid certification path",
+    "certificate has expired",
+    "hostname verification failed",
 ).any(message::contains)
 
 private fun isTransientNetworkFailure(message: String): Boolean = listOf(
