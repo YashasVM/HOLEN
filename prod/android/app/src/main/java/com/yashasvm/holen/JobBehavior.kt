@@ -81,6 +81,8 @@ fun friendlyFailure(error: Throwable): String {
             "Media post-processing failed while merging or converting the download. Check free storage, then update or reset the media engine and retry."
         isFragmentTransferFailure(normalized) ->
             "One or more media fragments could not be downloaded completely. Re-analyze the link and retry; if it persists, update the media engine before changing quality."
+        normalized.contains("media engine completed without an output file") ->
+            "The media engine finished but did not produce a usable output file. Re-analyze the link and retry; if it repeats, update or reset the media engine."
         message.contains("timed out", true) ||
             message.contains("timeout", true) -> "The network timed out. Retry to continue the partial download."
         message.contains("media engine startup failed", true) ||
