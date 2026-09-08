@@ -44,9 +44,11 @@ These numbers rank emulator-side bottlenecks only. They do not claim absolute ph
 
 The stricter recursive verifier exposed a real arm64 compatibility defect in HOLEN's packaged FFmpeg payload. Android CI `34234889210` failed at `Verify 16 KB native library compatibility` while lint/tests/build and instrumentation passed. Independent inspection of the prior release APK reproduced the failure: WebP libraries inside `arm64-v8a/libffmpeg.zip.so` use `0x1000` `PT_LOAD` alignment, including `libwebp.so`, `libwebpdemux.so`, `libsharpyuv.so`, `libwebpmux.so`, and `libwebpdecoder.so`.
 
-This matches upstream `youtubedl-android` PR #350 exactly. That PR moves arm64 packaged archives to assets and replaces the FFmpeg WebP payload libraries with 16 KB-aligned builds. Rather than weakening the verifier or claiming compatibility, `agent-dev` now pins the wrapper modules to the exact reviewed PR head commit `83f41ae27710b4a1d47f4a0095209f4325e4564f` and scopes JitPack resolution exclusively to `com.github.Lizzergas.youtubedl-android`. No floating branch or unrelated wrapper upgrade is used.
+This matches upstream `youtubedl-android` PR #350. That PR moves arm64 packaged archives to assets and replaces the FFmpeg WebP payload libraries with 16 KB-aligned builds. Rather than weakening the verifier or claiming compatibility, `agent-dev` pins the wrapper modules to the exact reviewed PR head commit `83f41ae27710b4a1d47f4a0095209f4325e4564f` and scopes JitPack resolution exclusively to `com.github.Lizzergas.youtubedl-android`. No floating branch or unrelated wrapper upgrade is used.
 
-Android CI `34241886269` is validating build compatibility, instrumentation, and the recursive 16 KB check for this pinned fix. Do not treat 16 KB support as closed until that run is green.
+Android CI `34241886269` resolved and built that exact pin: instrumentation and lint/tests/build passed, but the recursive 16 KB verification still failed. Generic CI `34241886447` passed. The upstream patch also moves arm64 wrapper archives from `jniLibs` into `assets/youtubedl-android/<abi>/`, which exposed a second validation gap in HOLEN's verifier: after adopting PR #350, those relocated payloads would no longer be inspected at all. Commit `64fa0757` closes that blind spot by recursively checking both native-library wrapper archives and the new wrapper assets, validating every embedded 64-bit ELF rather than treating asset relocation as proof of compatibility.
+
+Do not treat 16 KB support as closed until the fresh Android CI for the asset-aware verifier passes. If it still fails, use that strict result to identify and fix the remaining offending ELF; do not weaken the check.
 
 ### Live YouTube EJS validation
 
@@ -58,15 +60,16 @@ The deterministic policy, build, instrumentation, strict-probe parsing, and EJS-
 
 - Android CI `34234889210`: failed specifically at recursive 16 KB native-library verification; instrumentation and lint/tests/build passed.
 - Independent artifact inspection reproduced `0x1000` alignment in the nested arm64 FFmpeg WebP libraries, confirming this is a real packaged-payload defect rather than a verifier false positive.
-- Android CI `34241886269`: running for the exact upstream PR #350 wrapper commit pin.
-- Generic CI `34241886447`: queued/running for the same dependency change.
+- Android CI `34241886269`: exact PR #350 pin resolved successfully; instrumentation and lint/tests/build passed, but 16 KB verification still failed.
+- Generic CI `34241886447`: passed for the same dependency pin.
+- Commit `64fa0757` now extends strict recursive verification to the arm64/x86_64 wrapper archives that PR #350 relocates into APK assets; fresh CI is pending.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
-- No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
+- No actionable CodeRabbit or `Yashas's code review bot:` feedback is currently known; re-check open/recent review state before any future production change.
 
 ## Known risks / review points
 
 - The temporary 16 KB fix depends on the exact unmerged upstream PR #350 commit through JitPack. It is pinned to an immutable commit and repository resolution is scoped, but the user should replace it with the official Maven Central release once upstream merges/publishes equivalent support.
-- 16 KB compatibility remains unproven until Android CI confirms the pinned wrapper builds and every direct/nested 64-bit ELF passes the stricter verifier.
+- 16 KB compatibility remains unproven. The PR #350 pin builds and runs instrumentation, but its first strict HOLEN verification still failed; the asset-aware verifier must now determine whether another direct or embedded 64-bit ELF remains misaligned.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
 - Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
 - Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
@@ -76,4 +79,4 @@ The deterministic policy, build, instrumentation, strict-probe parsing, and EJS-
 
 ## Highest-value next step
 
-Inspect Android CI `34241886269`. If the pinned PR build resolves and recursive verification passes, inspect the produced ARM64 APK directly to confirm the nested WebP libraries are `0x4000` aligned and then close the 16 KB compatibility task. If dependency resolution/build fails, fix the pinning mechanism without weakening the verifier or reverting to the known-misaligned Maven Central payload.
+Inspect the fresh Android CI for commit `64fa0757`. If strict verification still fails, identify the exact direct or asset-embedded ELF and remediate that payload/dependency without weakening the verifier. If it passes, independently inspect the ARM64 APK's moved wrapper assets and close the 16 KB compatibility task before returning to the live YouTube EJS probe.
