@@ -182,6 +182,18 @@ class FriendlyFailureTest {
     }
 
     @Test
+    fun missingEngineOutputDoesNotMasqueradeAsNetworkFailure() {
+        val result = friendlyFailure(
+            IOException("The media engine completed without an output file."),
+        )
+
+        assertTrue(result.contains("did not produce a usable output file"))
+        assertTrue(result.contains("Re-analyze"))
+        assertTrue(result.contains("update or reset the media engine"))
+        assertFalse(result.contains("network transfer failed", ignoreCase = true))
+    }
+
+    @Test
     fun postProcessingFailuresDoNotMasqueradeAsNetworkErrors() {
         val ffmpegExit = friendlyFailure(IOException("ERROR: Postprocessing: ffmpeg exited with code 1"))
         val conversion = friendlyFailure(IllegalStateException("ERROR: Postprocessing: Conversion failed!"))
