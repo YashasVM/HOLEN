@@ -29,13 +29,13 @@ These numbers rank emulator-side bottlenecks only; they do not claim production 
 
 The stricter verifier originally exposed a real arm64 defect in the official `youtubedl-android` 0.18.1 FFmpeg payload: several nested WebP libraries used `0x1000` `PT_LOAD` alignment. `agent-dev` therefore temporarily pins the wrapper modules to the exact upstream PR #350 head `83f41ae27710b4a1d47f4a0095209f4325e4564f`, with JitPack resolution scoped only to `com.github.Lizzergas.youtubedl-android`.
 
-The pinned dependency builds and passes instrumentation, but earlier strict CI still failed. The retained ARM64 artifact from Android CI `34254369173` was downloaded and independently inspected instead of guessing at another dependency change. Every actual runtime ELF found in the APK passed the 16 KB requirement: 273 loadable ELF files were inspected and none had a `PT_LOAD` alignment below `0x4000`.
+The pinned dependency builds and passes instrumentation. A retained ARM64 artifact was downloaded and independently inspected: 273 actual runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`.
 
-The remaining CI failure was a verifier false positive. `readelf -h` accepts Unix static archives and reports their ELF object members; the wrapper contains `libOpenCL.a` and QuickJS `libquickjs.a`, both of which are static archives rather than mmap-loaded runtime ELF files. The old verifier then required `PT_LOAD` segments from those archives and failed even though the actual loadable binaries were aligned.
+Commit `18b6b342` corrected one verifier false positive by identifying embedded runtime ELF files from their ELF magic bytes before applying `PT_LOAD` checks, so static archives such as `libOpenCL.a` and `libquickjs.a` are not treated as mmap-loaded binaries. Direct APK `lib/<abi>/*.so` validation remains strict, and the corrupt-native-library regression still rejects arbitrary invalid `.so` files.
 
-Commit `18b6b342` fixes this by identifying embedded runtime ELF files from the ELF magic bytes (`7f454c46`) before applying `PT_LOAD` checks. Direct APK `lib/<abi>/*.so` validation remains strict, and the existing corrupt-native-library regression still rejects arbitrary invalid `.so` files. Android CI `34260509618` and generic CI `34260509629` are validating this corrected verifier.
+Android CI `34260509618` still failed only at the strict 16 KB verification step even though lint/test/build and instrumentation passed. Because the retained ARM64 APK is clean, the remaining failure is now narrowed to either the universal APK contents or verifier behavior specific to that APK. Commit `dee7bcc2` retains the universal non-main test APK on verifier failure as well as the ARM64 artifact, without changing main/release artifact policy or weakening verification.
 
-Do not treat 16 KB support as closed until the corrected strict Android CI run passes.
+Do not treat 16 KB support as closed until the universal artifact is inspected and strict CI passes.
 
 ## Live YouTube EJS validation
 
@@ -43,19 +43,19 @@ The deterministic EJS policy, build, instrumentation, cache handling, parser, an
 
 ## Validation / reviewer state
 
-- Android CI `34254369173`: lint/test/build and instrumentation passed; strict 16 KB verification failed, and the retained ARM64 test APK was successfully uploaded for diagnosis.
-- Independent retained-APK inspection: 273 actual runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment. The only false-positive candidates were static archives `libOpenCL.a` and `libquickjs.a` that are not loadable ELF files.
-- Android CI `34260509618`: in progress for the static-archive verifier correction.
-- Generic CI `34260509629`: in progress for the same correction.
+- Android CI `34260509618`: lint/test/build and instrumentation passed; strict 16 KB verification failed.
+- Independent retained ARM64 APK inspection from that run: 273 runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment.
+- Generic CI `34260509629` and the following documentation CI completed successfully.
+- A fresh Android CI run triggered by `dee7bcc2` will retain both ARM64 and universal test APKs if strict verification fails again, allowing exact universal-APK diagnosis.
 - No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
 
 ## Known risks / review points
 
 - The current 16 KB wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit. Replace it with an official Maven Central release once upstream publishes equivalent support.
-- 16 KB compatibility is strongly supported by direct retained-APK inspection but is not closed until corrected CI passes without weakening runtime ELF checks.
+- 16 KB compatibility is not closed: the retained ARM64 artifact is clean, but the universal APK path still needs exact inspection because strict CI remains red.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; crash/service interruption recovery is separate and already proven to preserve resumable state.
 
 ## Highest-value next step
 
-Inspect Android CI `34260509618`. If it passes, close 16 KB compatibility for this pinned wrapper state and return to the strict live YouTube EJS first-fetch/cache/reuse probe. If it still fails, inspect the newly retained APK/report before making any further dependency change; do not weaken the verifier.
+Inspect the fresh Android CI run for `dee7bcc2`. If verification still fails, download the retained universal APK and identify the exact failing ELF or verifier condition before changing any dependency. Do not weaken the verifier. Once strict 16 KB validation is green, return to the live YouTube EJS first-fetch/cache/reuse probe.
