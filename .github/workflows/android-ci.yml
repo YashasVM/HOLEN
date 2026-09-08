@@ -10,6 +10,13 @@ on:
     paths:
       - "prod/android/**"
       - ".github/workflows/android-*.yml"
+  workflow_dispatch:
+    inputs:
+      ejs_remote_probe:
+        description: "Run the strict live YouTube EJS first-fetch/cache-reuse probe"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   verify:
@@ -147,6 +154,8 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Run Android instrumentation tests
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          HOLEN_EJS_REMOTE_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.ejs_remote_probe && github.ref == 'refs/heads/agent-dev' && 'true' || 'false' }}
         with:
           api-level: 35
           target: google_apis
