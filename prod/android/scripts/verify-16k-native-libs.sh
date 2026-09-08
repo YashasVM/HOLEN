@@ -24,6 +24,18 @@ is_elf_file() {
   [[ "$magic" == "7f454c46" ]]
 }
 
+elf_type() {
+  local file="$1"
+  readelf -hW "$file" 2>/dev/null | awk -F: '/^[[:space:]]*Type:/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }'
+}
+
+is_runtime_elf() {
+  local file="$1"
+  local type
+  type="$(elf_type "$file")"
+  [[ "$type" == DYN* || "$type" == EXEC* ]]
+}
+
 verify_elf_alignment() {
   local file="$1"
   local label="$2"
@@ -63,10 +75,11 @@ verify_wrapper_payload() {
 
   local found_payload_elf=false
   while IFS= read -r payload_file; do
-    # readelf accepts Unix static archives and reports their ELF object members.
-    # Those archives are not mmap-loaded by Android and have no PT_LOAD contract
-    # of their own, so only inspect files whose bytes are actually ELF files.
-    if ! is_elf_file "$payload_file"; then
+    # Runtime alignment applies to loadable ELF executables/shared objects. Static
+    # archives are filtered by magic above; standalone ET_REL object files are
+    # build inputs and legitimately have no PT_LOAD segments, so do not treat
+    # them as mmap-loaded Android runtime binaries.
+    if ! is_elf_file "$payload_file" || ! is_runtime_elf "$payload_file"; then
       continue
     fi
     found_payload_elf=true
@@ -75,12 +88,12 @@ verify_wrapper_payload() {
     payload_relative="${payload_file#"$payload_dir"/}"
     verify_elf_alignment \
       "$payload_file" \
-      "$label contains 64-bit ELF ${payload_relative}" \
+      "$label contains runtime ELF ${payload_relative}" \
       "$tmp_root/program-headers.txt" || return 1
   done < <(find "$payload_dir" -type f -print 2>/dev/null | sort)
 
   if [[ "$found_payload_elf" != true ]]; then
-    echo "$label contains no inspectable ELF payload." >&2
+    echo "$label contains no inspectable runtime ELF payload." >&2
     return 1
   fi
 }
@@ -97,8 +110,12 @@ for apk in "$@"; do
     abi="${relative%%/*}"
     [[ "$abi" == "arm64-v8a" || "$abi" == "x86_64" ]] || continue
 
-    if readelf -h "$so" >/dev/null 2>&1; then
+    if is_elf_file "$so"; then
       found_64_bit_elf=true
+      if ! is_runtime_elf "$so"; then
+        echo "$apk contains non-runtime ELF in native library slot ${relative}; refusing to skip it." >&2
+        exit 1
+      fi
       verify_elf_alignment "$so" "$apk contains 64-bit native library ${relative}" "$tmp/program-headers.txt" || exit 1
       continue
     fi
@@ -131,7 +148,7 @@ for apk in "$@"; do
   rm -rf "$tmp"
   trap - EXIT
   if [[ "$found_64_bit_elf" != true ]]; then
-    echo "$apk contained no inspectable arm64-v8a/x86_64 ELF libraries." >&2
+    echo "$apk contained no inspectable arm64-v8a/x86_64 runtime ELF libraries." >&2
     exit 1
   fi
   echo "16 KB ELF alignment verified: $apk"
