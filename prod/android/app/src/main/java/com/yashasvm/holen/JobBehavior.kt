@@ -93,7 +93,7 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("dlopen failed", true) ||
             message.contains("libpython", true) ->
             "The media engine could not start. Reset or update it in Settings."
-        isCertificateFailure(normalized) ->
+        error is javax.net.ssl.SSLHandshakeException || isCertificateFailure(normalized) ->
             "The secure connection certificate could not be verified. Check the device date/time and VPN, private DNS, or captive-portal interception, then retry on a trusted network. Do not disable certificate verification."
         isTransientNetworkFailure(normalized) ||
             message.contains("network", true) ||
