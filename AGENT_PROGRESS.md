@@ -19,7 +19,7 @@
 - Enabled the official yt-dlp `ejs:github` remote component for full YouTube analysis and YouTube downloads, with an explicit reusable Android cache. Quick shared-link analysis and non-YouTube extractors remain unchanged. Android CI `34158081428` and `34158104192`, plus generic CI `34158104213`, passed for the production policy and host-coverage tests.
 - Strengthened the opt-in Android EJS compatibility probe so a usable-network run must prove successful first extraction, non-empty cache creation, successful second extraction, and retained cache state. Android CI `34161519848` passed verify/instrumentation for this test change; the live EJS probe itself remained intentionally skipped in normal hosted CI.
 - Fixed the strict EJS probe report parser so it consumes the new cache file/byte counters. Android CI `34164996314` and generic CI `34164996308` passed for the parser change.
-- Corrected direct-file HTTP 402 failure classification: arbitrary HTTPS file servers now report payment/additional-access requirements instead of a rate limit, while yt-dlp extractor HTTP 402 remains treated as an overuse block. Focused unit coverage keeps the two contexts separate.
+- Corrected direct-file HTTP 402 failure classification: arbitrary HTTPS file servers now report payment/additional-access requirements instead of a rate limit, while yt-dlp extractor HTTP 402 remains treated as an overuse block. Generic CI `34171668938` and Android CI `34171668951` both passed the focused regression coverage.
 
 ## Performance evidence
 
@@ -40,14 +40,15 @@ Upstream yt-dlp's current EJS guidance requires a supported JavaScript runtime p
 
 The deterministic policy, build, instrumentation, and strict-probe parsing paths are green. Live EJS extraction remains deliberately unclaimed because hosted GitHub runner traffic has been rate-limited by YouTube. No further production fallback is justified without a non-rate-limited Android/network run that can distinguish solver compatibility from network blocking.
 
-While that external validation remains blocked, a focused Android failure-path audit found that HTTP 402 was being interpreted identically for yt-dlp extractors and arbitrary direct-file servers. The direct-file path now reports payment/additional access, while extractor 402 keeps yt-dlp's documented overuse/rate-limit interpretation. Retry policy was not changed.
+While that external validation remains blocked, focused Android failure/retry audits continue. The direct HTTP 402 classification fix is now fully green. The current direct-download retry path is bounded, preserves resumable state across retryable failures, rejects SSL/protocol/storage failures from automatic retry, and only retries HTTP 429 when a safe bounded `Retry-After` value exists. No additional demonstrated defect was found in this pass, so production code was left unchanged.
 
 ## Validation / reviewer state
 
 - Android CI `34164996314`: passed for the strict EJS parser fix.
 - Generic CI `34164996308`: passed for the same parser fix.
 - Generic CI `34171668938`: passed for the direct-file HTTP 402 classification regression coverage.
-- Android CI `34171668951`: currently running for the same focused change.
+- Android CI `34171668951`: passed for the same focused change.
+- Generic CI `34171718964`: passed for the progress-state update following that change.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
@@ -62,4 +63,4 @@ While that external validation remains blocked, a focused Android failure-path a
 
 ## Highest-value next step
 
-Finish Android CI for the direct HTTP 402 classification. Once green, return to the blocked live-EJS validation when a non-rate-limited Android connection is available; otherwise continue auditing Android download/retry behavior and only change production code when a concrete misclassification, lost-resume case, or unnecessary retry is demonstrated.
+Run the strict live EJS probe on a non-rate-limited Android connection when one is available. Until then, continue focused Android download/retry/error-path audits and only change production code when a concrete correctness, resume, performance, or failure-classification defect is demonstrated.
