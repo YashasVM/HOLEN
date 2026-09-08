@@ -29,13 +29,13 @@ These numbers rank emulator-side bottlenecks only; they do not claim production 
 
 The stricter verifier originally exposed a real arm64 defect in the official `youtubedl-android` 0.18.1 FFmpeg payload: several nested WebP libraries used `0x1000` `PT_LOAD` alignment. `agent-dev` therefore temporarily pins the wrapper modules to the exact upstream PR #350 head `83f41ae27710b4a1d47f4a0095209f4325e4564f`, with JitPack resolution scoped only to `com.github.Lizzergas.youtubedl-android`.
 
-The pinned dependency builds and passes instrumentation. A retained ARM64 artifact was downloaded and independently inspected: 273 actual runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`.
+The pinned dependency builds and passes instrumentation. A retained ARM64 artifact was independently inspected: 273 actual runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`.
 
-Commit `18b6b342` corrected one verifier false positive by identifying embedded runtime ELF files from their ELF magic bytes before applying `PT_LOAD` checks, so static archives such as `libOpenCL.a` and `libquickjs.a` are not treated as mmap-loaded binaries. Direct APK `lib/<abi>/*.so` validation remains strict, and the corrupt-native-library regression still rejects arbitrary invalid `.so` files.
+The latest retained universal run (`34265825909`) again passed lint/test/build and instrumentation and failed only strict 16 KB verification. That run successfully retained both ARM64 and universal APKs, so artifact retention is working as intended.
 
-Android CI `34260509618` still failed only at the strict 16 KB verification step even though lint/test/build and instrumentation passed. Because the retained ARM64 APK is clean, the remaining failure is now narrowed to either the universal APK contents or verifier behavior specific to that APK. Commit `dee7bcc2` retains the universal non-main test APK on verifier failure as well as the ARM64 artifact, without changing main/release artifact policy or weakening verification.
+The verifier had one remaining semantic bug: after filtering static archives by file magic, it still treated every standalone ELF-magic file extracted from wrapper archives as a runtime-mapped binary. ELF relocatable build objects (`ET_REL`) legitimately have no `PT_LOAD` segments and must not be judged by runtime page alignment. Commit `ba9333a5` now applies recursive alignment checks only to loadable `ET_DYN`/`ET_EXEC` payloads, while direct APK native `.so` slots remain strict and reject non-runtime or corrupt ELF content.
 
-Do not treat 16 KB support as closed until the universal artifact is inspected and strict CI passes.
+Android CI `34272229914` is validating this runtime-ELF distinction against both ARM64 and universal release APKs. Do not treat 16 KB support as closed until that strict run is green.
 
 ## Live YouTube EJS validation
 
@@ -43,19 +43,19 @@ The deterministic EJS policy, build, instrumentation, cache handling, parser, an
 
 ## Validation / reviewer state
 
-- Android CI `34260509618`: lint/test/build and instrumentation passed; strict 16 KB verification failed.
-- Independent retained ARM64 APK inspection from that run: 273 runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment.
-- Generic CI `34260509629` and the following documentation CI completed successfully.
-- A fresh Android CI run triggered by `dee7bcc2` will retain both ARM64 and universal test APKs if strict verification fails again, allowing exact universal-APK diagnosis.
+- Android CI `34265825909`: lint/test/build and instrumentation passed; strict 16 KB verification failed; both ARM64 and universal test APKs were retained successfully.
+- Independent retained ARM64 inspection remains clean: 273 runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment.
+- Android CI `34272229914` and generic CI `34272229940` are validating the runtime-ELF verifier correction.
+- Upstream youtubedl-android PR #350 remains open and arm64-focused; its pinned head is unchanged.
 - No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
 
 ## Known risks / review points
 
 - The current 16 KB wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit. Replace it with an official Maven Central release once upstream publishes equivalent support.
-- 16 KB compatibility is not closed: the retained ARM64 artifact is clean, but the universal APK path still needs exact inspection because strict CI remains red.
+- 16 KB compatibility is not closed until strict universal verification passes. Android's official guidance includes both ARM64 and x86-64 16 KB test environments, so universal/x86-64 validation should not simply be disabled to make CI green.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; crash/service interruption recovery is separate and already proven to preserve resumable state.
 
 ## Highest-value next step
 
-Inspect the fresh Android CI run for `dee7bcc2`. If verification still fails, download the retained universal APK and identify the exact failing ELF or verifier condition before changing any dependency. Do not weaken the verifier. Once strict 16 KB validation is green, return to the live YouTube EJS first-fetch/cache/reuse probe.
+Inspect Android CI `34272229914`. If strict 16 KB verification is green, close this verifier task and return to the live YouTube EJS first-fetch/cache/reuse probe. If it remains red, use the retained universal APK to identify the exact remaining loadable ELF rather than weakening x86-64 coverage or changing dependencies speculatively.
