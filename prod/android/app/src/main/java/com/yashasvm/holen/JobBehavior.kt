@@ -54,6 +54,8 @@ fun friendlyFailure(error: Throwable): String {
             normalized.contains("verify you are human") ||
             normalized.contains("unusual traffic") ->
             "The source asked for a bot check. Wait a little, then retry; valid cookies may help for content you can access."
+        isJavascriptChallengeFailure(normalized) ->
+            "YouTube's JavaScript challenge could not be solved. Update the media engine and retry; if it still fails, check that GitHub is reachable so HOLEN can refresh the official yt-dlp EJS solver."
         isRateLimitFailure(normalized) ->
             "The source is rate-limiting downloads. Wait before retrying; repeated retries can extend the limit."
         isAgeRestrictedFailure(normalized) ->
@@ -143,6 +145,14 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
     else -> "The source returned HTTP $status. Check the link and try again."
 }
+
+private fun isJavascriptChallengeFailure(message: String): Boolean = listOf(
+    "signature solving failed",
+    "n challenge solving failed",
+    "javascript challenge could not be solved",
+    "javascript challenge solving failed",
+    "challenge solver script distribution",
+).any(message::contains)
 
 private fun isRateLimitFailure(message: String): Boolean = listOf(
     "too many requests",
