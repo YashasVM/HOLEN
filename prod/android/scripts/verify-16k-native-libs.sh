@@ -17,6 +17,13 @@ is_wrapper_zip_payload() {
   [[ "$magic" == "504b0304" || "$magic" == "504b0506" || "$magic" == "504b0708" ]]
 }
 
+is_elf_file() {
+  local file="$1"
+  local magic
+  magic="$(od -An -tx1 -N4 "$file" 2>/dev/null | tr -d ' \n')"
+  [[ "$magic" == "7f454c46" ]]
+}
+
 verify_elf_alignment() {
   local file="$1"
   local label="$2"
@@ -56,7 +63,10 @@ verify_wrapper_payload() {
 
   local found_payload_elf=false
   while IFS= read -r payload_file; do
-    if ! readelf -h "$payload_file" >/dev/null 2>&1; then
+    # readelf accepts Unix static archives and reports their ELF object members.
+    # Those archives are not mmap-loaded by Android and have no PT_LOAD contract
+    # of their own, so only inspect files whose bytes are actually ELF files.
+    if ! is_elf_file "$payload_file"; then
       continue
     fi
     found_payload_elf=true
