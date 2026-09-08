@@ -23,7 +23,7 @@
 - Corrected a missing-output failure path where `IOException("The media engine completed without an output file.")` was incorrectly falling through to the generic network-error message. The Android UI now tells the user the engine produced no usable output and suggests re-analysis plus engine update/reset if it repeats. Generic CI `34181614787` and Android CI `34181614839` both passed the regression coverage.
 - Added dedicated YouTube EJS failure guidance for signature-solving, n-challenge, and solver-distribution failures so they no longer degrade into a generic error. Generic CI `34188759330` and Android CI `34188759351` both passed the focused regression coverage.
 - Classified TLS/certificate verification failures separately from transient network failures. Android now points users to device clock and VPN/private-DNS/captive-portal interception checks and explicitly avoids recommending disabled certificate verification; regression coverage includes both Android `SSLHandshakeException`-style text and yt-dlp `CERTIFICATE_VERIFY_FAILED` output. Generic CI `34196693426` and Android CI `34196693401` both passed.
-- Hardened the same TLS path to classify a real `SSLHandshakeException` by exception type even when its message is generic, avoiding an incorrect partial-transfer retry recommendation. Focused generic and Android CI are pending for this change.
+- Hardened the same TLS path to classify a real `SSLHandshakeException` by exception type even when its message is generic, avoiding an incorrect partial-transfer retry recommendation. Generic CI `34223327131` and Android CI `34223327149` both passed.
 
 ## Performance evidence
 
@@ -59,14 +59,13 @@ Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is stil
 - Android CI `34188759351`: passed for the same focused change.
 - Generic CI `34196693426`: passed for the TLS/certificate failure-classification regression coverage.
 - Android CI `34196693401`: passed for the same focused change.
-- Generic CI `34223327131`: pending for typed `SSLHandshakeException` classification coverage.
-- Android CI `34223327149`: pending for the same focused change.
+- Generic CI `34223327131`: passed for typed `SSLHandshakeException` classification coverage.
+- Android CI `34223327149`: passed for the same focused change.
 - Normal hosted instrumentation intentionally leaves the live EJS probe disabled unless `HOLEN_EJS_REMOTE_PROBE` is explicitly enabled.
 - No open PRs or issues are present. No actionable CodeRabbit or `Yashas's code review bot:` feedback is pending.
 
 ## Known risks / review points
 
-- The typed `SSLHandshakeException` classification change is not closed until generic CI `34223327131` and Android CI `34223327149` finish green.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; later runs should reuse yt-dlp's explicit cache unless Android evicts it.
 - Live YouTube EJS behavior still needs one successful opt-in run on a network not blocked/rate-limited by YouTube before treating challenge compatibility as fully proven.
 - Retaining cache artifacts across the second probe proves persistent cache state survives reuse; it does not by itself prove yt-dlp made zero network requests on the second extraction.
@@ -76,4 +75,4 @@ Dependency audit: HOLEN already uses `youtubedl-android` `0.18.1`, which is stil
 
 ## Highest-value next step
 
-Verify generic CI `34223327131` and Android CI `34223327149`. If both pass, close the typed TLS classification fix and return to the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available. Until then, avoid speculative solver fallbacks, dependency churn, or cosmetic busywork.
+Return to the strict EJS first-fetch/cache/reuse probe on a non-rate-limited Android connection when one is available. Until then, avoid speculative solver fallbacks, dependency churn, or cosmetic busywork and continue only evidence-backed Android reliability/performance investigations.
