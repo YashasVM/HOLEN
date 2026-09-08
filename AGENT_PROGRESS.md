@@ -11,11 +11,11 @@
 - Added deterministic restart/resume instrumentation proving retained aria2 state, non-zero resumed ranges, and byte-identical final media after process/service interruption.
 - Added the official yt-dlp `ejs:github` remote component policy for full YouTube operations with explicit Android cache handling, plus strict opt-in compatibility probes and EJS-specific failure guidance.
 - Added focused TLS/certificate classification, including typed `SSLHandshakeException` handling, without recommending disabled certificate verification.
-- Tightened Android 16 KB native verification so nested wrapper payloads and wrapper assets are recursively inspected rather than skipped.
+- Closed Android 16 KB release-payload validation: nested wrapper payloads/assets are recursively checked, the affected arm64 wrapper payload is pinned to the exact upstream PR #350 head, and release APKs now exclude emulator-only x86/x86_64 ABIs while the dedicated emulator flavor retains them.
 
-## Performance evidence
+## Performance / packaging evidence
 
-Latest emulator baseline remains diagnostic rather than a claimed phone benchmark:
+Latest emulator timings remain diagnostic rather than claimed phone benchmarks:
 
 - App home: `3683 ms`.
 - Cold yt-dlp runtime initialization: `1454 ms`; FFmpeg extraction/init: `1684 ms`; aria2c: `176 ms`.
@@ -23,37 +23,39 @@ Latest emulator baseline remains diagnostic rather than a claimed phone benchmar
 - yt-dlp process launch: `2614 ms`; back-to-back launch probe: `1955 ms` then `979 ms`.
 - 64 MiB private-storage write: `24 ms` plus `54 ms` fsync; 64 MiB loopback transfer: `284 ms`; 32 MiB resumed remainder: `135 ms`.
 
-These numbers rank emulator-side bottlenecks only; they do not claim production speedups.
+The ARM-only release packaging materially reduced the universal test artifact from `223,235,098` bytes to `110,918,585` bytes (about `50.3%` smaller) while preserving x86/x86_64 support in the emulator flavor.
 
-## Current work: 16 KB native payload compatibility
+## Completed: 16 KB native payload compatibility
 
 The stricter verifier exposed a real arm64 defect in the official `youtubedl-android` 0.18.1 FFmpeg payload: several nested WebP libraries used `0x1000` `PT_LOAD` alignment. `agent-dev` therefore temporarily pins the wrapper modules to the exact upstream PR #350 head `83f41ae27710b4a1d47f4a0095209f4325e4564f`, with JitPack resolution scoped only to `com.github.Lizzergas.youtubedl-android`.
 
-The pinned arm64 dependency is clean. A retained ARM64 artifact was independently inspected: 273 runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`.
+A retained ARM64 artifact was independently inspected: 273 runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`. Remaining failures were isolated to five x86_64 WebP-family libraries in the pre-change universal artifact. Because x86/x86_64 are emulator-only for HOLEN's Android distribution, the release `universal` flavor now contains only `arm64-v8a` and `armeabi-v7a`; the emulator flavor continues to carry x86/x86_64.
 
-Android CI `34272229914` passed lint/test/build and instrumentation but still failed strict universal 16 KB verification. Its retained universal APK was inspected directly. The remaining failures are five x86_64 FFmpeg WebP-family libraries (`libwebp.so`, `libwebpdecoder.so`, `libwebpdemux.so`, `libwebpmux.so`, and `libsharpyuv.so`) with `0x1000` `PT_LOAD` alignment. The same artifact's arm64 payload is clean. Upstream PR #350 is explicitly arm64-focused and does not replace the x86_64 WebP payloads.
+Android CI `34278213373` passed instrumentation, lint/test/build, and strict recursive 16 KB verification for the resulting release APKs. This task is closed unless upstream packaging changes or x86 physical-device release support becomes a requirement.
 
-The release configuration was therefore simplified rather than weakening the verifier: the `universal` release flavor now contains the two physical-device ARM ABIs (`arm64-v8a` and `armeabi-v7a`), while x86/x86_64 remain available through the dedicated emulator flavor. In the retained pre-change universal APK, x86 plus x86_64 payloads accounted for about 112.3 MB of the 225.2 MB APK, so this also removes substantial emulator-only release weight. CI must validate the resulting release APK before the task is closed.
+## Current work: live YouTube EJS validation
 
-## Live YouTube EJS validation
+Production full YouTube analysis/downloads use a persistent yt-dlp cache and explicitly allow only the official `ejs:github` remote component. Build, deterministic policy, parser, failure classification, and normal instrumentation paths are green.
 
-The deterministic EJS policy, build, instrumentation, cache handling, parser, and failure-classification paths are green. Live YouTube challenge solving remains deliberately unclaimed because hosted runner traffic has been rate-limited by YouTube. No extra fallback or dependency churn is justified until an opt-in probe succeeds on a non-rate-limited Android/network connection.
+The opt-in live probe was tightened in commit `c1eda1ba`: a non-rate-limited first run must now prove yt-dlp actually downloaded the challenge solver from the official `yt-dlp/ejs` GitHub release, and the second run must explicitly report `source: cache`. Merely succeeding with some non-empty cache is no longer treated as proof of EJS acquisition/reuse.
+
+Live first-fetch/cache-reuse remains deliberately unclaimed because hosted runner traffic has previously been rate-limited by YouTube. No extra fallback, runtime replacement, or dependency churn is justified until the strict probe runs successfully on a usable Android/network connection.
 
 ## Validation / reviewer state
 
-- Android CI `34272229914`: lint/test/build and instrumentation passed; strict 16 KB verification failed only on the retained universal APK's x86_64 WebP-family payloads.
-- Retained ARM64 inspection remains clean: 273 runtime ELFs checked; zero had sub-`0x4000` `PT_LOAD` alignment.
-- Generic CI `34272295003` for the preceding verifier/progress state passed.
-- Upstream youtubedl-android PR #350 remains open, arm64-focused, and pinned to unchanged head `83f41ae27710b4a1d47f4a0095209f4325e4564f`.
+- Android CI `34278213373`: instrumentation, lint/test/build, and strict 16 KB verification passed.
+- Universal test artifact: `223,235,098` bytes before ARM-only packaging; `110,918,585` bytes after it.
+- Fresh Android CI `34283398225` and generic CI `34283398275` are validating the stricter EJS probe change.
+- Latest official yt-dlp release inspected: `2026.08.19`.
 - No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
 
 ## Known risks / review points
 
 - The current 16 KB arm64 wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit. Replace it with an official Maven Central release once upstream publishes equivalent support.
-- The `universal` release APK now intentionally targets ARM physical-device ABIs only. x86/x86_64 remain in the emulator flavor; review this distribution policy before any future main-branch release if desktop Android/x86 hardware support becomes a requirement.
+- The `universal` release APK intentionally targets ARM physical-device ABIs only. x86/x86_64 remain in the emulator flavor; review this distribution policy before any future main-branch release if physical x86 Android support becomes a requirement.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; crash/service interruption recovery is separate and already proven to preserve resumable state.
 
 ## Highest-value next step
 
-Validate the ARM-only universal release in Android CI. If strict 16 KB verification is green and the APK size reduction matches the retained-artifact estimate, close the 16 KB task and return to the live YouTube EJS first-fetch/cache/reuse probe.
+Finish CI validation of the stricter EJS probe, then run its opt-in first-fetch/cache-reuse path on a non-rate-limited Android/network connection and require both the official GitHub fetch signal and explicit cached-solver reuse before claiming live EJS compatibility.
