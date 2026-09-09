@@ -21,8 +21,8 @@ import org.junit.runner.RunWith
  * Hosted CI can be rate-limited by YouTube, so this remains explicit. On a usable network the
  * probe is intentionally strict: the first extraction must fetch the challenge solver from the
  * official yt-dlp/ejs GitHub release and populate persistent cache state, then a second extraction
- * must use that cached solver while retaining the same state. This validates the Android
- * remote-component/cache path without pretending that a skipped or HTTP-429 run is proof.
+ * must use that cached solver while retaining the same state. A rate-limited run is reported with
+ * diagnostics but fails validation rather than being mistaken for compatibility proof.
  */
 @RunWith(AndroidJUnit4::class)
 class EjsRemoteComponentInstrumentedTest {
@@ -79,25 +79,31 @@ class EjsRemoteComponentInstrumentedTest {
 
         assertTrue("first EJS probe must record elapsed time", first.elapsedMs >= 0L)
         assertTrue("cached EJS probe must record elapsed time", cached.elapsedMs >= 0L)
-        if (!first.upstreamBlocked) {
-            assertEquals("first EJS remote-component extraction must succeed", 0, first.exitCode)
-            assertTrue(
-                "first EJS probe must fetch the solver from the official yt-dlp/ejs GitHub release",
-                first.webFetchSignal,
-            )
-            assertFalse("first EJS fetch must populate the configured cache", firstCache.isEmpty())
-            assertTrue("first EJS cache must contain non-empty data", firstCache.values.sum() > 0L)
-            assertEquals("second EJS extraction must succeed with retained cache state", 0, cached.exitCode)
-            assertTrue(
-                "second EJS extraction must report using the cached challenge solver",
-                cached.cacheReuseSignal,
-            )
-            assertFalse("second EJS extraction must retain cache state", cachedCache.isEmpty())
-            assertTrue(
-                "second EJS extraction must retain at least one fetched cache artifact unchanged",
-                firstCache.any { (path, size) -> size > 0L && cachedCache[path] == size },
-            )
-        }
+        assertFalse(
+            "first EJS probe was blocked by upstream rate limiting and cannot validate compatibility",
+            first.upstreamBlocked,
+        )
+        assertEquals("first EJS remote-component extraction must succeed", 0, first.exitCode)
+        assertTrue(
+            "first EJS probe must fetch the solver from the official yt-dlp/ejs GitHub release",
+            first.webFetchSignal,
+        )
+        assertFalse("first EJS fetch must populate the configured cache", firstCache.isEmpty())
+        assertTrue("first EJS cache must contain non-empty data", firstCache.values.sum() > 0L)
+        assertFalse(
+            "cached EJS probe was blocked by upstream rate limiting and cannot validate reuse",
+            cached.upstreamBlocked,
+        )
+        assertEquals("second EJS extraction must succeed with retained cache state", 0, cached.exitCode)
+        assertTrue(
+            "second EJS extraction must report using the cached challenge solver",
+            cached.cacheReuseSignal,
+        )
+        assertFalse("second EJS extraction must retain cache state", cachedCache.isEmpty())
+        assertTrue(
+            "second EJS extraction must retain at least one fetched cache artifact unchanged",
+            firstCache.any { (path, size) -> size > 0L && cachedCache[path] == size },
+        )
     }
 
     private fun runProbe(processId: String, cacheDir: File): ProbeResult {
