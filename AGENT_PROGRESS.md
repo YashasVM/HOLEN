@@ -43,6 +43,8 @@ Commit `6392798e` aligned the instrumentation shell parser with the strict test'
 
 Commit `5f336e3a` added the manual CI entry point for the live probe: Android CI exposes a `workflow_dispatch` boolean named `ejs_remote_probe`, and only a manual dispatch from `agent-dev` can set `HOLEN_EJS_REMOTE_PROBE=true`. Push/PR runs remain offline and deterministic. Android CI `34292730073` passed after this workflow change, so the manual-probe plumbing is validated without regressing normal Android CI.
 
+Commit `221175b8` closed a remaining false-green path: a first-run YouTube HTTP 429 previously marked the probe as upstream-blocked and skipped all compatibility assertions, allowing an opt-in validation run to pass without proving anything. The probe still records rate-limit diagnostics, but an explicitly requested live validation now fails unless the first official GitHub EJS fetch and second cached reuse both complete successfully.
+
 Live first-fetch/cache-reuse remains deliberately unclaimed because hosted runner traffic has previously been rate-limited by YouTube. No extra fallback, runtime replacement, or dependency churn is justified until the strict probe runs successfully on a usable Android/network connection.
 
 ## Validation / reviewer state
@@ -51,10 +53,11 @@ Live first-fetch/cache-reuse remains deliberately unclaimed because hosted runne
 - Android CI `34283398225`: normal instrumentation, lint/test/build, and strict 16 KB verification passed after the stricter EJS assertion change; the live EJS probe remained opt-in and was not itself proven by that green run.
 - Android CI `34288255803`: normal instrumentation, lint/test/build, and strict 16 KB verification passed after the EJS report-parser repair.
 - Android CI `34292730073`: normal instrumentation, lint/test/build, and strict 16 KB verification passed after exposing the manual EJS workflow input.
+- Generic CI `34305207900`: passed for the latest pre-change `agent-dev` progress update.
 - Universal test artifact: `223,235,098` bytes before ARM-only packaging; `110,918,585` bytes after it.
 - Latest official yt-dlp release inspected: `2026.08.19`.
 - Upstream youtubedl-android PR #350 remains open at the pinned head `83f41ae27710b4a1d47f4a0095209f4325e4564f`.
-- No open HOLEN PRs or issues and no actionable CodeRabbit or `Yashas's code review bot:` feedback were found in the latest live inspection.
+- No open HOLEN PRs or issues and no actionable `Yashas's code review bot:` feedback were found in the latest live inspection.
 
 ## Known risks / review points
 
@@ -65,4 +68,4 @@ Live first-fetch/cache-reuse remains deliberately unclaimed because hosted runne
 
 ## Highest-value next step
 
-Run Android CI manually on `agent-dev` with `ejs_remote_probe=true` and require both the official GitHub first-fetch signal and explicit cached-solver reuse before claiming live EJS compatibility. If the live probe fails, diagnose that concrete failure before making any further EJS implementation changes.
+Validate commit `221175b8` in normal Android CI, then run Android CI manually on `agent-dev` with `ejs_remote_probe=true` and require both the official GitHub first-fetch signal and explicit cached-solver reuse before claiming live EJS compatibility. If the live probe fails, diagnose that concrete failure before making any further EJS implementation changes.
