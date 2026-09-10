@@ -167,7 +167,7 @@ class DownloadServiceRecoveryInstrumentedTest {
                 val current = store.get(jobId)
                 if (
                     current?.status == JobStatus.RUNNING &&
-                    current.bytesDownloaded > 0L
+                    (current.bytesDownloaded ?: 0L) > 0L
                 ) {
                     active = current
                     break
