@@ -45,4 +45,29 @@ class CookieStoreExpiryTest {
             ".youtube.com\tTRUE\t/\tTRUE\t100\tOLD\texpired\n"
         assertTrue(CookieStore.validateCookieBytes(currentEpochCookies.toByteArray()))
     }
+
+    @Test
+    fun largeValidCookieSetIsParsedWithoutChangingSemantics() {
+        val rows = buildString {
+            append(header)
+            repeat(5_000) { index ->
+                append(".example.com\tTRUE\t/\tTRUE\t0\tCOOKIE")
+                append(index)
+                append("\tvalue\n")
+            }
+        }
+
+        val health = CookieStore.inspectCookieBytes(rows.toByteArray(), nowEpochSeconds = 200)
+        assertEquals(5_000, health?.totalCookies)
+        assertEquals(5_000, health?.usableCookies)
+        assertEquals(0, health?.expiredCookies)
+    }
+
+    @Test
+    fun oversizedCookieBytesAreRejectedBeforeParsing() {
+        val oversized = ByteArray(CookieStore.MAX_BYTES + 1) { 'a'.code.toByte() }
+
+        assertFalse(CookieStore.validateCookieBytes(oversized))
+        assertEquals(null, CookieStore.inspectCookieBytes(oversized))
+    }
 }

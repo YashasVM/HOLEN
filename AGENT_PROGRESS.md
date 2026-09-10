@@ -1,54 +1,64 @@
-# Agent progress
+# Android Agent Progress
 
-## Completed since weekly review
-- All autonomous Android work remains on `agent-dev`; `main` is untouched.
-- Hardened direct downloads with conservative resume validation, bounded transient retries, and short valid `Retry-After` handling for HTTP 429.
-- Tightened Last-Modified-only resume safety: HOLEN now requires a conservative 60-second response-Date gap before using an HTTP-date as an `If-Range` validator, while strong ETags remain preferred. This avoids treating arbitrary origin clocks as trustworthy enough for byte-appending; Android CI `33923227826` and generic CI `33923227866` passed.
-- Improved yt-dlp failure classification for auth/access, rate limits, unavailable/region-restricted media, requested-format failures, post-processing failures, transient transport failures, and incomplete-fragment/empty-output failures.
-- Kept ordinary HTTP transfers on aria2c while routing DASH/HLS through yt-dlp native fragment downloading; youtubedl-android 0.18.1 QuickJS wiring is guarded by CI.
-- Added durable explicit `Retry without cookies` recovery for eligible failed public-media jobs, with restart persistence, exclusions, cleanup, and end-to-end Compose coverage.
-- Removed FFmpeg from metadata-only initialization and limited download-tool prewarm to successful FULL analysis.
-- Added and validated startup, storage, transfer, post-processing, transport-error, fragment-error, fragment-integrity, and transient-fragment retry instrumentation coverage.
-- Fragment integrity uses `--abort-on-unavailable-fragments`; packaged-runtime tests prove transient HTTP 503 fragment failures recover inside the existing retry budget, while persistent 503 failures exhaust the bounded retries, fail cleanly, and do not publish incomplete media.
-- Closed the fragment retry/integrity investigation without increasing retry counts or adding redundant outer yt-dlp process restarts.
-- Prevented failed automatic/manual yt-dlp update checks from clearing HOLEN's otherwise working media runtime; Android CI `33793480906` passed for that production fix.
-- Failed yt-dlp update checks now retry after 24 hours instead of being suppressed for the normal seven-day successful-check interval; Android CI `33799324069` and generic CI passed.
-- Moved due yt-dlp network refreshes off the foreground startup path. `warmup()` now performs local Python/yt-dlp initialization only; automatic stable refresh is best-effort after genuine backgrounding and is skipped during configuration changes, active downloads, and Activity teardown.
-- Android CI `33831320310` passed after the teardown guard, including lint/tests/build, release APK assembly, 16 KB native-library verification, and the full instrumentation job. The earlier `33827812724` instrumentation failure was a lifecycle-hook regression caught before the task was closed.
-- Added a strict stale-extractor candidate classifier with exclusion-focused unit coverage. Android CI `33838498927` passed before the classifier was tightened further using current upstream false-positive evidence; Android CI `33842204929` then passed the tightened signal.
-- Added a deadlock-safe recovery sequencer that requires the failed normal operation to return before maintenance runs, preserves the original extractor failure if refresh fails, performs at most one retry, and bypasses recovery for cancellations/non-candidate errors. Android CI `33846643235` passed.
-- Wired stale-extractor recovery into Android metadata analysis. A high-confidence extractor parsing failure now exits the normal engine reader gate, performs one stable-engine refresh, and retries metadata exactly once. Android CI `33851137357` passed lint/tests/build, release packaging/16 KB checks, and instrumentation.
-- Android CI `33870385790` passed the packaged-runtime fragment-concurrency probe, confirming the configured `-N 8` path produces genuine overlapping fragment requests while still finalizing all 16 local HLS fragments correctly.
-- Serialized only the SAF publication reservation window (directory snapshot, collision-free name choice, document creation, provider-name inspection, and immediate journal update) while keeping the potentially multi-GB copy outside the gate. This prevents two concurrent finalizations from selecting the same destination name and records a provider-returned renamed display name instead of assuming the requested one.
-- Android CI `33897900102` and generic CI `33897900089` passed for the corrected SAF reservation test and production finalization path after the first test-only JUnit import mismatch was fixed without weakening assertions.
+## Branch baseline
 
-## In progress
-- Keep the current `--concurrent-fragments 8` production policy unchanged until representative Android/network evidence justifies tuning it. A broader sequential 1/4/8 packaged-runtime comparison failed instrumentation in Android CI `33875405520` while verify/lint/tests/build/release packaging/16 KB checks passed; the expanded harness has been removed in favor of the already validated single `-N 8` probe rather than keeping a flaky measurement test on the branch.
-- Do not add whole-process retry logic unless a representative failure is shown to escape yt-dlp's existing retry layers; process launch is expensive and extra retries would increase latency and duplicate work.
-- Keep the current retry counts unless representative failures justify changing them; extra retries/backoff can increase failure latency, bandwidth use, and rate-limit pressure.
-- Direct downloads that resolve through expiring/signed redirects remain intentionally conservative: persisted resume state is scoped to the exact final resource URL. A renewed signed URL therefore restarts instead of reusing bytes unless a future design can prove representation equivalence without weakening corruption safety.
+- Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched.
+- Latest inspected baseline: `main` `4b46036d`; `agent-dev` remains based on that commit with no newer `main` work to sync.
+- Latest inspection found no open HOLEN PRs/issues or actionable reviewer feedback.
 
-## Validation / performance evidence
-- Startup probe `33705752404`: lint/tests/build/release assembly/16-KB checks passed; instrumentation passed twice with launch-to-rendered-home at `2293 ms` and `3312 ms`. Hosted-emulator variance is too high for small optimization claims.
-- Engine baseline `33484712612`: `youtube_dl_ms=984`, `ffmpeg_ms=1312`, `aria2c_ms=149`, `process_launch_ms=1944`, `total_ms=4389`.
-- Transfer probe `33563442686`: 64 MiB localhost fresh transfer `364 ms`; 32 MiB Range resume `160 ms`; no evidence justified changing the 256 KiB copy buffer or worker count.
-- Fragment concurrency probe `33870385790`: packaged Android runtime, 16 delayed local HLS fragments, `-N 8`; lint/tests/build, release assembly, 16 KB verification, and instrumentation all passed. The probe proves actual request overlap, not real-network speedup or battery efficiency.
-- Android CI `33875405520`: verify/lint/tests/build/release assembly/16 KB checks passed, but instrumentation failed after expanding the local probe to sequential 1/4/8 runs. Because the failure did not expose a production regression and the exact comparison harness was not necessary for current behavior, the branch was restored to the previously validated single-worker-policy probe instead of weakening assertions or tuning production concurrency from unstable localhost evidence.
-- SAF publication reservation/finalization: corrected Android CI `33897900102` passed, including the reservation concurrency unit test and Android workflow; generic CI `33897900089` also passed. The preceding `33892528866` failure was test compilation only (`kotlin.test` in a JUnit 4 project), not a production regression.
-- Last-Modified resume hardening: Android CI `33923227826` and generic CI `33923227866` passed. Unit coverage verifies a one-second Last-Modified/Date gap is rejected for arbitrary origin clocks while a conservative 60-second gap remains usable; strong ETag behavior is unchanged.
-- Post-processing classification `33713261388`, transport classification `33720955973`, fragment-failure classification `33730714220`, fragment-integrity policy `33736269904`, missing-fragment packaged-runtime test `33741738053`, abort-priority regression `33752339316`, corrected transient-fragment retry probe `33769714854`, abort-safe transient retry probe `33781602289`, persistent-fragment retry exhaustion `33787210401`, engine-update preservation `33793480906`, failed-update retry cadence `33799324069`, background-refresh lifecycle correction `33831320310`, initial stale-extractor classifier `33838498927`, tightened stale-extractor signal `33842204929`, deadlock-safe recovery sequencing `33846643235`, stale-extractor production integration `33851137357`, SAF reservation validation `33897900102`, and Last-Modified resume hardening `33923227826` passed their relevant Android CI validation.
-- Earlier retry probes `33746993258`, `33758294917`, `33764121986`, `33775511969`, background-refresh probe `33827812724`, expanded fragment comparison `33875405520`, and initial SAF test run `33892528866` remain useful negative evidence rather than hidden failures.
+## Major completed work since the last weekly review
 
-## Known risks / weekly review
-- yt-dlp extractor compatibility changes frequently. HOLEN remains on youtubedl-android `0.18.1`; current extractors still depend on its supported runtime updater rather than dependency churn.
-- Direct-download resume deliberately prefers safety over reuse. Strong ETags are trusted; Last-Modified-only state needs the conservative clock margin above. Signed/expiring redirect targets that change URL across attempts can therefore restart even when they happen to identify the same bytes; do not relax URL scoping without a representation-equivalence check strong enough to prevent cross-object appends.
-- Stale-extractor classification is intentionally conservative. False-positive automatic updater maintenance would add latency and can hide the real action the user needs; generic no-format failures are therefore not automatic recovery candidates.
-- A high-confidence stale-extractor failure now attempts a stable-engine refresh before one metadata retry. If refresh itself fails, the original extractor error remains primary with the refresh error suppressed; auth, DRM, HTTP/rate-limit, storage, timeout/network, fragment, post-processing, and cancellation failures remain excluded by the classifier.
-- Concurrent stale failures can serialize into more than one stable update check because recovery is intentionally simple and per-analysis. The signal is narrow and engine maintenance is already serialized; avoid adding coordination unless this shows up in real telemetry or tests as meaningful overhead.
-- `--concurrent-fragments 8` can materially improve fragmented-media throughput but may also increase request bursts, socket pressure, battery/thermal load, and rate-limit exposure. Do not tune it from localhost timing or connection type alone; require representative Android/network evidence first.
-- SAF finalization now reserves names safely across concurrent HOLEN jobs and persists the provider-returned display name once the created document can be inspected. A tiny process-death window still exists between external `createDocument()` success and persisting the returned URI/name; guessing a renamed document by size or nearby name would risk matching an unrelated user file, so no heuristic recovery was added.
-- Successful automatic engine checks remain weekly; failed checks use the validated 24-hour retry cadence. Automatic updates are intentionally best-effort after backgrounding so they cannot block first metadata interaction.
-- Android may kill a backgrounded process before a best-effort update finishes. The existing active engine is kept on update failure, and the next eligible background transition retries according to the saved cadence.
-- yt-dlp process launch is structurally expensive under youtubedl-android; avoid unconditional restarts or dummy warm processes.
-- YouTube challenge/auth behavior continues to evolve; configured cookies remain the normal path and no-cookie retry stays explicit and user-driven.
-- Compare `agent-dev` against `main`, inspect the latest Android CI for the newest Android code commit, and merge only the changes you want.
+- Hardened Android staging/SAF publication, interrupted-download recovery, yt-dlp/aria2 retry/resume behavior, cookie/auth handling, and actionable failure classification.
+- Added deterministic restart/resume instrumentation proving retained aria2 state, non-zero resumed ranges, and byte-identical final media after process/service interruption.
+- Added the official yt-dlp `ejs:github` remote component policy for full YouTube operations with persistent Android cache handling, strict opt-in compatibility probes, and EJS-specific failure guidance.
+- Added focused TLS/certificate classification, including typed `SSLHandshakeException` handling, without recommending disabled certificate verification.
+- Closed Android 16 KB release-payload validation: nested wrapper payloads/assets are recursively checked, the affected arm64 wrapper payload is pinned to the exact upstream PR #350 head, and release APKs exclude emulator-only x86/x86_64 ABIs while the emulator flavor retains them.
+- Corrected direct-download server retry handling: valid long `503 Retry-After` instructions are no longer discarded and replaced with an aggressive short retry. Values beyond HOLEN's 30-second foreground retry budget now return control to the user with the existing actionable service-unavailable message.
+- Fixed service-teardown recovery so service destruction cannot persist an active resumable download as `FAILED`; teardown/FGS-timeout requeue runs in `NonCancellable` context while explicit user cancellation still wins and clears staging.
+
+## Performance / packaging evidence
+
+Latest emulator timings remain diagnostic rather than claimed phone benchmarks:
+
+- App home: recent CI measured `2357 ms`.
+- Recent cold runtime probe: yt-dlp `999 ms`; FFmpeg `1278 ms`; aria2c `137 ms`; yt-dlp process launch `1947 ms`; local extraction `2278 ms`.
+- Back-to-back yt-dlp launch probe: `1934 ms` then `974 ms`.
+- 64 MiB private-storage write: `26 ms` plus `48 ms` fsync; 64 MiB loopback transfer: `298 ms`; 32 MiB resumed remainder: `117 ms`.
+- ARM-only release packaging reduced the universal test artifact from `223,235,098` bytes to `110,918,585` bytes (about `50.3%` smaller) while x86/x86_64 support remains available in the emulator flavor.
+
+## Completed: 16 KB native payload compatibility
+
+The verifier exposed 4 KB-aligned WebP-family native payloads in youtubedl-android 0.18.1. `agent-dev` temporarily pins wrapper modules to upstream PR #350 head `83f41ae27710b4a1d47f4a0095209f4325e4564f`, with JitPack resolution scoped only to `com.github.Lizzergas.youtubedl-android`.
+
+A retained ARM64 artifact was independently inspected: 273 runtime ELF files were checked and none had a `PT_LOAD` alignment below `0x4000`. Remaining pre-change failures were x86_64-only, so physical-device release APKs now target ARM while the emulator flavor retains x86/x86_64. Android CI `34278213373` passed instrumentation, lint/test/build, and strict recursive 16 KB verification.
+
+## Current work
+
+Live EJS policy/build/parser validation is green, but live first-fetch/cache-reuse proof still requires a manually dispatched `ejs_remote_probe=true` run on a usable non-rate-limited Android/network environment. No speculative EJS implementation change is justified while that external validation is unavailable here.
+
+The direct-download `503 Retry-After` task is closed. Commit `7ab232ab` stops automatic retry when a syntactically valid server-requested delay exceeds HOLEN's 30-second foreground budget instead of substituting a much shorter delay. Commit `2da7afe6` covers short, long-seconds, long-HTTP-date, malformed 503 values, and retained 429 behavior. Android CI `34423406403` passed the full Android pipeline, and generic CI for the change also passed.
+
+Service teardown recovery is now closed. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. After fixing several invalid test-fixture assumptions, commit `e4353ff9` moved the probe onto HOLEN's own public HTTPS V5.0.2 APK and waits for non-zero transferred bytes before stopping the service. Commit `986e022a` fixed the final nullable progress-check compile error. Android CI `34463113035` passed both jobs: instrumentation passed the active-transfer teardown/requeue probe, while verify passed lint/test/build, APK generation, and strict 16 KB verification.
+
+## Validation / reviewer state
+
+- Android CI `34463113035` passed instrumentation and the full verify job after the teardown-test correction.
+- Generic CI `34463112947` passed for commit `986e022a`.
+- Android CI `34423406403` passed the Retry-After policy tests along with the full Android workflow.
+- 16 KB release validation and the normal EJS policy/parser/instrumentation path remain green.
+- Strict opt-in EJS validation now fails rather than skips when YouTube rate-limits the probe; a green live run must prove both official `yt-dlp/ejs` GitHub acquisition and explicit `source: cache` reuse.
+- Latest official yt-dlp release inspected remains `2026.08.19`.
+- Upstream youtubedl-android PR #350 remains the temporary arm64 16 KB source; replace it with an official release once equivalent support is published.
+- No open HOLEN PRs/issues or actionable reviewer feedback were found in the latest live inspection.
+
+## Known risks / review points
+
+- The 16 KB arm64 wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit.
+- The `universal` release APK intentionally targets ARM physical-device ABIs only; review this distribution policy if physical x86 Android support becomes a requirement.
+- First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
+- Explicit user cancellation deliberately deletes staging and is not pause/resume; service teardown prioritizes that explicit cancellation over automatic requeue.
+- Long server-directed retry delays deliberately return the foreground download attempt to the user instead of silently waiting beyond the 30-second retry budget or violating the server-requested delay.
+
+## Highest-value next step
+
+With teardown recovery validated, return to Android download/recovery profiling and only implement the next change when a measurable throughput, startup-latency, resume, storage, or reliability problem is demonstrated. Keep the live EJS first-fetch/cache-reuse probe pending until a suitable non-rate-limited environment is available.

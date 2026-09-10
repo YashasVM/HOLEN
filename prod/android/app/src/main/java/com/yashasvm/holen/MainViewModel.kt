@@ -119,7 +119,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             mutableFolderGranted.value = folderGranted
             if (mutableOnboardingCompleted.value) warmEngine()
         }
-        checkAppUpdate()
     }
 
     fun recoverQueue() {
@@ -440,6 +439,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         warmupJob = viewModelScope.launch {
             runCatching { engine.warmup() }
                 .onSuccess { mutableEngineVersion.value = engine.activeVersion }
+            warmupJob = null
+            if (analysisJob?.isActive != true && !mutableBusy.value) {
+                checkAppUpdate()
+            }
         }
     }
 

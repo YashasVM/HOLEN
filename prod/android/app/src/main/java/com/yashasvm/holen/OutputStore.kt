@@ -40,7 +40,7 @@ class OutputStore(private val context: Context) {
     }
 
     fun stagingDirectory(jobId: String): File =
-        File(stagingRootDirectory(), jobId).apply { mkdirs() }
+        prepareStagingDirectory(File(stagingRootDirectory(), jobId))
 
     private fun stagingRootDirectory(): File {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
@@ -59,9 +59,7 @@ class OutputStore(private val context: Context) {
     ): PublishedFile = withContext(Dispatchers.IO) {
         val tree = treeUri ?: throw StorageException("Download folder permission is missing.")
         if (!hasValidTreeGrant()) throw StorageException("Download folder permission was revoked.")
-        require(staged.file.isFile && staged.file.length() > 0) {
-            "The completed staging file is missing. Retry the download."
-        }
+        validateStagedFile(staged.file)
         val resolver = context.contentResolver
         val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
             tree,
@@ -82,12 +80,14 @@ class OutputStore(private val context: Context) {
                     documentUri = null,
                 )
                 savePending(pending)
-                val created = DocumentsContract.createDocument(
-                    resolver,
-                    treeDocument,
-                    staged.mimeType,
-                    safeName,
-                ) ?: throw StorageException("The selected folder could not create a file.")
+                val created = publicationStorage("The selected folder could not create a file.") {
+                    DocumentsContract.createDocument(
+                        resolver,
+                        treeDocument,
+                        staged.mimeType,
+                        safeName,
+                    ) ?: throw StorageException("The selected folder could not create a file.")
+                }
                 document = created
                 val actualName = when (val inspected = inspectDocument(created)) {
                     is DocumentInspection.Found -> inspected.details.fileName.takeIf(String::isNotBlank)
@@ -104,24 +104,26 @@ class OutputStore(private val context: Context) {
                 )
             }
             val created = document ?: throw StorageException("The selected folder could not create a file.")
-            val copied = resolver.openOutputStream(created, "w")?.use { output ->
-                FileInputStream(staged.file).use { input ->
-                    val buffer = ByteArray(COPY_BUFFER_SIZE)
-                    var count = 0L
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        if (isCancelled()) {
-                            throw kotlinx.coroutines.CancellationException("Finalization cancelled")
+            val copied = publicationStorage {
+                resolver.openOutputStream(created, "w")?.use { output ->
+                    FileInputStream(staged.file).use { input ->
+                        val buffer = ByteArray(COPY_BUFFER_SIZE)
+                        var count = 0L
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            if (isCancelled()) {
+                                throw kotlinx.coroutines.CancellationException("Finalization cancelled")
+                            }
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            count += read
                         }
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        count += read
+                        output.flush()
+                        count
                     }
-                    output.flush()
-                    count
-                }
-            } ?: throw StorageException("The selected folder could not be written.")
+                } ?: throw StorageException("The selected folder could not be written.")
+            }
             if (copied != staged.file.length()) {
                 throw StorageException("The copied file did not match the completed download.")
             }
@@ -178,7 +180,9 @@ class OutputStore(private val context: Context) {
     fun pendingPublicationIds(): Set<String> = pendingPublications().keys
 
     suspend fun deleteDocument(uri: Uri): Boolean = withContext(Dispatchers.IO) {
-        DocumentsContract.deleteDocument(context.contentResolver, uri)
+        publicationStorage("The saved file could not be deleted.") {
+            DocumentsContract.deleteDocument(context.contentResolver, uri)
+        }
     }
 
     fun openIntent(job: DownloadJob): Intent? {
@@ -318,7 +322,9 @@ class OutputStore(private val context: Context) {
                 pending.documentUri?.let { put("uri", it) }
             },
         )
-        preferences.edit(commit = true) { putString(PREF_PENDING_PUBLICATIONS, root.toString()) }
+        ensurePublicationJournalSaved(
+            preferences.edit().putString(PREF_PENDING_PUBLICATIONS, root.toString()).commit(),
+        )
     }
 
     private fun clearPending(jobId: String) = synchronized(journalLock) {
@@ -363,6 +369,25 @@ class OutputStore(private val context: Context) {
         private const val ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000L
         private val journalLock = Any()
         private val publicationReservationGate = PublicationReservationGate()
+
+        internal fun prepareStagingDirectory(directory: File): File {
+            if (!directory.isDirectory && !directory.mkdirs()) {
+                throw StorageException("Could not prepare private download storage.")
+            }
+            return directory
+        }
+
+        internal fun validateStagedFile(file: File) {
+            if (!file.isFile || file.length() <= 0) {
+                throw StorageException("The completed staging file is missing. Retry the download.")
+            }
+        }
+
+        internal fun ensurePublicationJournalSaved(saved: Boolean) {
+            if (!saved) {
+                throw StorageException("Could not save download finalization state.")
+            }
+        }
 
         fun mimeTypeFor(fileName: String, fallback: String? = null): String {
             val extension = fileName.substringAfterLast('.', "").lowercase()

@@ -12,6 +12,12 @@ class FriendlyFailureTest {
         assertTrue(friendlyFailure(IOException("Network response 403")).contains("access"))
         assertTrue(friendlyFailure(IOException("Network response 404")).contains("no longer available"))
         assertTrue(friendlyFailure(IOException("Network response 410")).contains("fresh download URL"))
+        assertTrue(friendlyFailure(IOException("Network response 416")).contains("saved resume range"))
+        assertTrue(friendlyFailure(IOException("Network response 416")).contains("restart the direct transfer"))
+        val paymentRequired = friendlyFailure(IOException("Network response 402"))
+        assertTrue(paymentRequired.contains("payment or additional access"))
+        assertTrue(paymentRequired.contains("verify your access"))
+        assertFalse(paymentRequired.contains("rate-limiting"))
         assertTrue(friendlyFailure(IOException("Network response 429")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IOException("Network response 503")).contains("temporarily unavailable"))
         assertTrue(friendlyFailure(IOException("Network response 418")).contains("HTTP 418"))
@@ -20,12 +26,34 @@ class FriendlyFailureTest {
     @Test
     fun extractorHttpFailuresAreClassifiedWithoutPretendingRateLimitsAreBotChecks() {
         val forbidden = friendlyFailure(IllegalStateException("ERROR: HTTP Error 403: Forbidden"))
+        val staleRange = friendlyFailure(
+            IllegalStateException("ERROR: unable to download video data: HTTP Error 416: Requested range not satisfiable"),
+        )
         assertTrue(forbidden.contains("retry once without cookies"))
         assertTrue(forbidden.contains("refresh the cookies/account access"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 404: Not Found")).contains("no longer available"))
+        assertTrue(staleRange.contains("saved download range"))
+        assertTrue(staleRange.contains("Re-analyze"))
+        assertTrue(staleRange.contains("fresh download"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 429: Too Many Requests")).contains("repeated retries"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 402: Payment Required")).contains("rate-limiting"))
         assertTrue(friendlyFailure(IllegalStateException("ERROR: HTTP Error 503: Service Unavailable")).contains("temporarily unavailable"))
+    }
+
+    @Test
+    fun textualRateLimitsAreActionableWithoutAnHttpStatus() {
+        val tooMany = friendlyFailure(
+            IllegalStateException("ERROR: Unable to download API page: Too Many Requests"),
+        )
+        val explicitLimit = friendlyFailure(
+            IllegalStateException("ERROR: Source rate limit exceeded; try again later"),
+        )
+
+        assertTrue(tooMany.contains("rate-limiting"))
+        assertTrue(tooMany.contains("Wait before retrying"))
+        assertTrue(explicitLimit.contains("rate-limiting"))
+        assertFalse(tooMany.contains("network transfer failed", ignoreCase = true))
     }
 
     @Test
@@ -154,6 +182,18 @@ class FriendlyFailureTest {
     }
 
     @Test
+    fun missingEngineOutputDoesNotMasqueradeAsNetworkFailure() {
+        val result = friendlyFailure(
+            IOException("The media engine completed without an output file."),
+        )
+
+        assertTrue(result.contains("did not produce a usable output file"))
+        assertTrue(result.contains("Re-analyze"))
+        assertTrue(result.contains("update or reset the media engine"))
+        assertFalse(result.contains("network transfer failed", ignoreCase = true))
+    }
+
+    @Test
     fun postProcessingFailuresDoNotMasqueradeAsNetworkErrors() {
         val ffmpegExit = friendlyFailure(IOException("ERROR: Postprocessing: ffmpeg exited with code 1"))
         val conversion = friendlyFailure(IllegalStateException("ERROR: Postprocessing: Conversion failed!"))
@@ -162,6 +202,23 @@ class FriendlyFailureTest {
         assertTrue(ffmpegExit.contains("update or reset the media engine"))
         assertFalse(ffmpegExit.contains("network transfer failed", ignoreCase = true))
         assertTrue(conversion.contains("merging or converting"))
+    }
+
+    @Test
+    fun certificateFailuresDoNotMasqueradeAsTransientNetworkErrors() {
+        val androidTls = friendlyFailure(
+            IOException("javax.net.ssl.SSLHandshakeException: Trust anchor for certification path not found"),
+        )
+        val ytDlpTls = friendlyFailure(
+            IllegalStateException("ERROR: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"),
+        )
+
+        assertTrue(androidTls.contains("certificate could not be verified"))
+        assertTrue(androidTls.contains("device date/time"))
+        assertTrue(androidTls.contains("Do not disable certificate verification"))
+        assertFalse(androidTls.contains("Retry to continue the partial download"))
+        assertTrue(ytDlpTls.contains("trusted network"))
+        assertFalse(ytDlpTls.contains("network transfer failed", ignoreCase = true))
     }
 
     @Test

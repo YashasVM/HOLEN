@@ -2,6 +2,8 @@
 
 Private, on-device downloads—on Android or in your terminal.
 
+> I've stopped this development for a bit, but I'll be back too :)
+
 ## Pick your tool
 
 ### Android

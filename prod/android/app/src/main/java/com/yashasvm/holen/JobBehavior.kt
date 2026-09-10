@@ -47,11 +47,17 @@ fun friendlyFailure(error: Throwable): String {
         normalized.contains("media engine reset is pending") ||
             normalized.contains("close and reopen holen") ->
             "The media engine was reset. Close and reopen HOLEN before analyzing or downloading media."
+        isStaleCookieFailure(normalized) ->
+            "The saved account cookies are no longer valid. Export fresh cookies from a signed-in browser session, replace them in Settings, then retry."
         normalized.contains("confirm you're not a bot") ||
             normalized.contains("confirm you’re not a bot") ||
             normalized.contains("verify you are human") ||
             normalized.contains("unusual traffic") ->
             "The source asked for a bot check. Wait a little, then retry; valid cookies may help for content you can access."
+        isJavascriptChallengeFailure(normalized) ->
+            "YouTube's JavaScript challenge could not be solved. Update the media engine and retry; if it still fails, check that GitHub is reachable so HOLEN can refresh the official yt-dlp EJS solver."
+        isRateLimitFailure(normalized) ->
+            "The source is rate-limiting downloads. Wait before retrying; repeated retries can extend the limit."
         isAgeRestrictedFailure(normalized) ->
             "This video needs age verification. Use fresh cookies from an account permitted to watch it, then retry."
         isLoginRequiredFailure(normalized) ->
@@ -77,6 +83,8 @@ fun friendlyFailure(error: Throwable): String {
             "Media post-processing failed while merging or converting the download. Check free storage, then update or reset the media engine and retry."
         isFragmentTransferFailure(normalized) ->
             "One or more media fragments could not be downloaded completely. Re-analyze the link and retry; if it persists, update the media engine before changing quality."
+        normalized.contains("media engine completed without an output file") ->
+            "The media engine finished but did not produce a usable output file. Re-analyze the link and retry; if it repeats, update or reset the media engine."
         message.contains("timed out", true) ||
             message.contains("timeout", true) -> "The network timed out. Retry to continue the partial download."
         message.contains("media engine startup failed", true) ||
@@ -85,6 +93,8 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("dlopen failed", true) ||
             message.contains("libpython", true) ->
             "The media engine could not start. Reset or update it in Settings."
+        error is javax.net.ssl.SSLHandshakeException || isCertificateFailure(normalized) ->
+            "The secure connection certificate could not be verified. Check the device date/time and VPN, private DNS, or captive-portal interception, then retry on a trusted network. Do not disable certificate verification."
         isTransientNetworkFailure(normalized) ||
             message.contains("network", true) ||
             error is java.io.IOException -> "The network transfer failed. Retry to continue the partial download."
@@ -123,10 +133,43 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     } else {
         "The media is no longer available (HTTP $status), or the source changed its URL. Refresh the link and retry."
     }
+    416 -> if (directFile) {
+        "The server rejected the saved resume range (HTTP 416). Retry the download; HOLEN will restart the direct transfer if the remote file changed."
+    } else {
+        "The source rejected the saved download range (HTTP 416). Re-analyze the link before retrying; if it repeats, remove the failed item and start a fresh download because the remote media may have changed."
+    }
+    402 -> if (directFile) {
+        "The server requires payment or additional access (HTTP 402). Open the source in your browser and verify your access before retrying."
+    } else {
+        "The source is rate-limiting downloads (HTTP 402). Wait before retrying; repeated retries can extend the limit."
+    }
     429 -> "The source is rate-limiting downloads (HTTP 429). Wait before retrying; repeated retries can extend the limit."
     in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
     else -> "The source returned HTTP $status. Check the link and try again."
 }
+
+private fun isJavascriptChallengeFailure(message: String): Boolean = listOf(
+    "signature solving failed",
+    "n challenge solving failed",
+    "javascript challenge could not be solved",
+    "javascript challenge solving failed",
+    "challenge solver script distribution",
+).any(message::contains)
+
+private fun isRateLimitFailure(message: String): Boolean = listOf(
+    "too many requests",
+    "rate limit exceeded",
+    "rate-limit exceeded",
+    "rate limited",
+    "rate-limited",
+).any(message::contains)
+
+private fun isStaleCookieFailure(message: String): Boolean = listOf(
+    "account cookies are no longer valid",
+    "cookies are no longer valid",
+    "cookies have likely been rotated",
+    "cookies were rotated",
+).any(message::contains)
 
 private fun isAgeRestrictedFailure(message: String): Boolean = listOf(
     "age-restricted",
@@ -182,6 +225,17 @@ private fun isFragmentTransferFailure(message: String): Boolean = listOf(
     "fragment not found",
     "downloaded file is empty",
     "unable to download video data",
+).any(message::contains)
+
+private fun isCertificateFailure(message: String): Boolean = listOf(
+    "certificate_verify_failed",
+    "certificate verify failed",
+    "sslhandshakeexception",
+    "certpathvalidatorexception",
+    "trust anchor for certification path not found",
+    "unable to find valid certification path",
+    "certificate has expired",
+    "hostname verification failed",
 ).any(message::contains)
 
 private fun isTransientNetworkFailure(message: String): Boolean = listOf(

@@ -42,6 +42,7 @@ internal object DirectDownloadRetryPolicy {
     private const val BASE_BACKOFF_MS = 1_000L
     private const val MAX_RETRY_AFTER_MS = 30_000L
     private val RETRYABLE_HTTP_CODES = setOf(408, 500, 502, 503, 504)
+    private val RETRY_AFTER_HTTP_CODES = setOf(429, 503)
 
     fun shouldRetry(
         error: Throwable,
@@ -59,8 +60,17 @@ internal object DirectDownloadRetryPolicy {
             return false
         }
 
-        if (error is DirectHttpException && error.statusCode == 429) {
-            return retryAfterMillis(error.retryAfter, nowMillis) != null
+        if (error is DirectHttpException && error.statusCode in RETRY_AFTER_HTTP_CODES) {
+            val requestedDelay = parseRetryAfterMillis(error.retryAfter, nowMillis)
+            if (error.statusCode == 429) {
+                return requestedDelay != null && requestedDelay <= MAX_RETRY_AFTER_MS
+            }
+            if (requestedDelay != null && requestedDelay > MAX_RETRY_AFTER_MS) {
+                // Do not replace a valid server-requested wait with HOLEN's much shorter
+                // exponential fallback. A long 503 Retry-After means automatic retry is not
+                // appropriate for this foreground download attempt.
+                return false
+            }
         }
 
         val status = message
@@ -76,20 +86,23 @@ internal object DirectDownloadRetryPolicy {
         retriesUsed: Int,
         nowMillis: Long = System.currentTimeMillis(),
     ): Long {
-        if (error is DirectHttpException && error.statusCode == 429) {
+        if (error is DirectHttpException && error.statusCode in RETRY_AFTER_HTTP_CODES) {
             retryAfterMillis(error.retryAfter, nowMillis)?.let { return it }
         }
         return BASE_BACKOFF_MS shl retriesUsed.coerceIn(0, MAX_RETRIES - 1)
     }
 
-    internal fun retryAfterMillis(value: String?, nowMillis: Long): Long? {
+    internal fun retryAfterMillis(value: String?, nowMillis: Long): Long? =
+        parseRetryAfterMillis(value, nowMillis)?.takeIf { it <= MAX_RETRY_AFTER_MS }
+
+    private fun parseRetryAfterMillis(value: String?, nowMillis: Long): Long? {
         val header = value?.trim()?.takeIf {
             it.length <= 128 && '\r' !in it && '\n' !in it
         } ?: return null
 
         val delaySeconds = header.toLongOrNull()
-        val delayMillis = if (delaySeconds != null) {
-            if (delaySeconds < 0 || delaySeconds > MAX_RETRY_AFTER_MS / 1_000L) return null
+        return if (delaySeconds != null) {
+            if (delaySeconds < 0 || delaySeconds > Long.MAX_VALUE / 1_000L) return null
             delaySeconds * 1_000L
         } else {
             val target = runCatching {
@@ -99,6 +112,5 @@ internal object DirectDownloadRetryPolicy {
             }.getOrNull() ?: return null
             (target - nowMillis).coerceAtLeast(0L)
         }
-        return delayMillis.takeIf { it <= MAX_RETRY_AFTER_MS }
     }
 }
