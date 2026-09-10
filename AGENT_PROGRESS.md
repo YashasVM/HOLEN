@@ -19,11 +19,10 @@
 
 Latest emulator timings remain diagnostic rather than claimed phone benchmarks:
 
-- App home: `3683 ms`.
-- Cold yt-dlp runtime initialization: `1454 ms`; FFmpeg extraction/init: `1684 ms`; aria2c: `176 ms`.
-- Re-entering FFmpeg + aria2c after prewarm: `0 ms`.
-- yt-dlp process launch: `2614 ms`; back-to-back launch probe: `1955 ms` then `979 ms`.
-- 64 MiB private-storage write: `24 ms` plus `54 ms` fsync; 64 MiB loopback transfer: `284 ms`; 32 MiB resumed remainder: `135 ms`.
+- App home: recent CI measured `2357 ms`.
+- Recent cold runtime probe: yt-dlp `999 ms`; FFmpeg `1278 ms`; aria2c `137 ms`; yt-dlp process launch `1947 ms`; local extraction `2278 ms`.
+- Back-to-back yt-dlp launch probe: `1934 ms` then `974 ms`.
+- 64 MiB private-storage write: `26 ms` plus `48 ms` fsync; 64 MiB loopback transfer: `298 ms`; 32 MiB resumed remainder: `117 ms`.
 - ARM-only release packaging reduced the universal test artifact from `223,235,098` bytes to `110,918,585` bytes (about `50.3%` smaller) while x86/x86_64 support remains available in the emulator flavor.
 
 ## Completed: 16 KB native payload compatibility
@@ -38,15 +37,15 @@ Live EJS policy/build/parser validation is green, but live first-fetch/cache-reu
 
 The direct-download `503 Retry-After` task is closed. Commit `7ab232ab` stops automatic retry when a syntactically valid server-requested delay exceeds HOLEN's 30-second foreground budget instead of substituting a much shorter delay. Commit `2da7afe6` covers short, long-seconds, long-HTTP-date, malformed 503 values, and retained 429 behavior. Android CI `34423406403` passed the full Android pipeline, and generic CI for the change also passed.
 
-Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added the teardown instrumentation. Android CI `34435443669` and the synchronized retry `34439411933` both failed before teardown because the fixture used `SourceKind.DIRECT_FILE` with `http://127.0.0.1`; production direct downloads intentionally reject non-HTTPS/private endpoints, so the job failed before opening the test socket. Commit `adc50374` switches this service-lifecycle probe to the existing local yt-dlp media path, which can hold a real in-flight transfer without weakening production URL validation.
+Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. Earlier retries exposed fixture problems rather than teardown failures: the direct loopback fixture violated production URL policy, and Android CI `34443274975` showed the media-backed probe still failed before teardown at queue claim. `claimNextQueued()` is FIFO by `created_at`; commit `42375e64` now makes the teardown probe deterministically oldest so unrelated queued rows cannot occupy both service workers, and reports the final status/error if claim still fails.
 
 ## Validation / reviewer state
 
 - Android CI `34423406403` passed the Retry-After policy tests along with the full Android workflow.
-- Android CI `34435443669`: build/lint/unit/16 KB verification passed; instrumentation failed before exercising teardown.
-- Android CI `34439411933`: build/lint/unit/16 KB verification passed; instrumentation again failed at `DownloadService did not claim the teardown probe`. Downloaded test reports confirmed the direct fixture never reached an active transfer because its loopback HTTP URL violates the direct downloader's production HTTPS/public-address policy.
-- Commit `adc50374` is awaiting Android CI validation of the corrected media-backed teardown fixture.
-- 16 KB release validation and the normal EJS policy/parser/instrumentation path are green in Android CI.
+- Android CI `34443274975`: build/lint/unit/16 KB verification passed; instrumentation had exactly one failure, `DownloadService did not claim the teardown probe`, before teardown was exercised.
+- The same run produced healthy diagnostic timings for app startup, runtime initialization, local extraction, transfer, and resume, so the failure was isolated to the teardown test path rather than a broad Android build/runtime regression.
+- Commit `42375e64` is under Android CI validation with deterministic queue priority and better failure diagnostics.
+- 16 KB release validation and the normal EJS policy/parser/instrumentation path remain green.
 - Strict opt-in EJS validation now fails rather than skips when YouTube rate-limits the probe; a green live run must prove both official `yt-dlp/ejs` GitHub acquisition and explicit `source: cache` reuse.
 - Latest official yt-dlp release inspected remains `2026.08.19`.
 - Upstream youtubedl-android PR #350 remains the temporary arm64 16 KB source; replace it with an official release once equivalent support is published.
@@ -57,10 +56,10 @@ Service teardown recovery remains under validation. Commit `0d277881` prevents `
 - The 16 KB arm64 wrapper fix still depends on an unmerged upstream PR through a pinned JitPack commit.
 - The `universal` release APK intentionally targets ARM physical-device ABIs only; review this distribution policy if physical x86 Android support becomes a requirement.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
-- Explicit user cancellation deliberately deletes staging and is not pause/resume; service teardown now prioritizes that explicit cancellation over automatic requeue.
-- Service-teardown recovery is not considered closed until the corrected active-transfer instrumentation and full Android CI pass.
+- Explicit user cancellation deliberately deletes staging and is not pause/resume; service teardown prioritizes that explicit cancellation over automatic requeue.
+- Service-teardown recovery is not considered closed until the corrected active-transfer instrumentation proves `QUEUED` persistence with staging intact.
 - Long server-directed retry delays deliberately return the foreground download attempt to the user instead of silently waiting beyond the 30-second retry budget or violating the server-requested delay.
 
 ## Highest-value next step
 
-Validate `adc50374` in Android CI. If the media-backed fixture reaches an actual in-flight transfer and teardown still fails to persist `QUEUED` with staging intact, treat that as a production lifecycle defect and fix it before starting unrelated work.
+Inspect Android CI for `42375e64`. If the deterministically prioritized probe reaches the held media connection, validate teardown persistence; if it still fails before connection, use the new status/error diagnostics to fix the concrete test or queue-path cause without changing production lifecycle behavior speculatively.
