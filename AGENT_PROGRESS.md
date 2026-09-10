@@ -38,12 +38,13 @@ Live EJS policy/build/parser validation is green, but live first-fetch/cache-reu
 
 The direct-download `503 Retry-After` task is closed. Commit `7ab232ab` stops automatic retry when a syntactically valid server-requested delay exceeds HOLEN's 30-second foreground budget instead of substituting a much shorter delay. Commit `2da7afe6` covers short, long-seconds, long-HTTP-date, malformed 503 values, and retained 429 behavior. Android CI `34423406403` passed the full Android pipeline, and generic CI for the change also passed.
 
-Service teardown recovery is now under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` extends the existing service-recovery instrumentation with an active direct-transfer teardown probe that requires `QUEUED` state and retained partial staging after `stopService()`.
+Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added the active direct-transfer teardown probe. Its first full Android CI run (`34435443669`) passed lint/test/build and strict 16 KB verification but failed the instrumentation job. The fixture originally stopped the service as soon as the database reported `RUNNING`, which could race ahead of the direct socket actually becoming active. Commit `101d523b` now waits for the fixture server to accept the direct connection before triggering teardown, so the test measures the intended active-transfer lifecycle instead of a pre-transfer race.
 
 ## Validation / reviewer state
 
 - Android CI `34423406403` passed the Retry-After policy tests along with the full Android workflow.
-- Android CI for service-teardown recovery (`34435443669`) is pending; the preceding implementation run is `34435373068`.
+- Android CI `34435443669` attempt 1: build/lint/unit/16 KB verification passed; instrumentation failed. The instrumentation job was re-run independently to distinguish flakiness from a lifecycle regression.
+- Android CI `34439411933` and generic CI `34439411930` are validating the synchronized teardown fixture on `101d523b`.
 - 16 KB release validation and the normal EJS policy/parser/instrumentation path are green in Android CI.
 - Strict opt-in EJS validation now fails rather than skips when YouTube rate-limits the probe; a green live run must prove both official `yt-dlp/ejs` GitHub acquisition and explicit `source: cache` reuse.
 - Latest official yt-dlp release inspected remains `2026.08.19`.
@@ -56,9 +57,9 @@ Service teardown recovery is now under validation. Commit `0d277881` prevents `o
 - The `universal` release APK intentionally targets ARM physical-device ABIs only; review this distribution policy if physical x86 Android support becomes a requirement.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; service teardown now prioritizes that explicit cancellation over automatic requeue.
-- Service-teardown recovery is not considered closed until the new active-transfer instrumentation and full Android build/16 KB workflow pass.
+- Service-teardown recovery is not considered closed until the synchronized active-transfer instrumentation and full Android CI pass.
 - Long server-directed retry delays deliberately return the foreground download attempt to the user instead of silently waiting beyond the 30-second retry budget or violating the server-requested delay.
 
 ## Highest-value next step
 
-Finish Android CI validation of the active service-teardown recovery probe. If green, close this recovery defect and resume auditing the transfer path for the next evidence-backed throughput/reliability issue; keep the live EJS probe pending until a manual `ejs_remote_probe=true` run can actually be executed.
+Finish Android CI validation of `101d523b`. If the synchronized teardown probe passes, close this recovery task; if it still fails, use that repeatable failure as evidence to fix the production lifecycle path rather than weakening the assertion.
