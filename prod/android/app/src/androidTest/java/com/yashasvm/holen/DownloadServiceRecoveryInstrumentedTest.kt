@@ -115,4 +115,94 @@ class DownloadServiceRecoveryInstrumentedTest {
             store.remove(jobId)
         }
     }
+
+    @Test
+    fun serviceTeardownRequeuesActiveJobWithoutDiscardingStaging() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = HolenStore.get(context)
+        val outputStore = OutputStore(context)
+        val jobId = "service-teardown-${UUID.randomUUID()}"
+        val server = ServerSocket(0)
+        val releaseServer = CountDownLatch(1)
+        val serverThread = thread(name = "holen-teardown-fixture", isDaemon = true) {
+            try {
+                server.accept().use {
+                    releaseServer.await(20, TimeUnit.SECONDS)
+                }
+            } catch (_: Throwable) {
+                // Test cleanup closes the listener to unblock accept/read.
+            }
+        }
+        val serviceIntent = Intent(context, DownloadService::class.java)
+            .setAction(DownloadService.ACTION_WAKE_QUEUE)
+        val job = DownloadJob(
+            id = jobId,
+            sourceUrl = "http://127.0.0.1:${server.localPort}/media.mp4",
+            sourceKind = SourceKind.DIRECT_FILE,
+            format = DownloadFormat.BEST_MP4,
+            title = "Service teardown probe",
+            thumbnailUrl = null,
+            status = JobStatus.QUEUED,
+            progress = 0,
+            bytesDownloaded = 0,
+            totalBytes = null,
+            speedBytesPerSecond = null,
+            etaSeconds = null,
+            outputUri = null,
+            fileName = null,
+            mimeType = null,
+            errorMessage = null,
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis(),
+        )
+
+        context.stopService(Intent(context, DownloadService::class.java))
+        for (attempt in 0 until 40) {
+            if (!DownloadService.isRunning) break
+            delay(50)
+        }
+        store.remove(jobId)
+        outputStore.clearStaging(jobId)
+        store.insert(listOf(job))
+
+        try {
+            context.startForegroundService(serviceIntent)
+
+            var running = false
+            for (attempt in 0 until 200) {
+                if (store.get(jobId)?.status == JobStatus.RUNNING) {
+                    running = true
+                    break
+                }
+                delay(50)
+            }
+            assertTrue("DownloadService did not claim the teardown probe", running)
+
+            val staging = outputStore.stagingDirectory(jobId)
+            val partial = File(staging, "video.mp4.part").apply {
+                writeBytes(ByteArray(64 * 1024) { index -> (index % 251).toByte() })
+            }
+
+            assertTrue(context.stopService(Intent(context, DownloadService::class.java)))
+
+            var requeued = false
+            for (attempt in 0 until 200) {
+                if (store.get(jobId)?.status == JobStatus.QUEUED) {
+                    requeued = true
+                    break
+                }
+                delay(50)
+            }
+
+            assertTrue("Service teardown must requeue an active transfer", requeued)
+            assertTrue("Service teardown must preserve resumable staging", partial.isFile)
+        } finally {
+            releaseServer.countDown()
+            runCatching { server.close() }
+            serverThread.join(2_000)
+            context.stopService(Intent(context, DownloadService::class.java))
+            outputStore.clearStaging(jobId)
+            store.remove(jobId)
+        }
+    }
 }
