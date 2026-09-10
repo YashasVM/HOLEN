@@ -4,7 +4,7 @@
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched.
 - Latest inspected baseline: `main` `4b46036d`; `agent-dev` remains based on that commit with no newer `main` work to sync.
-- Latest inspection found no open HOLEN PRs/issues or actionable CodeRabbit / `Yashas's code review bot:` feedback.
+- Latest inspection found no open HOLEN PRs/issues or actionable reviewer feedback.
 
 ## Major completed work since the last weekly review
 
@@ -14,6 +14,7 @@
 - Added focused TLS/certificate classification, including typed `SSLHandshakeException` handling, without recommending disabled certificate verification.
 - Closed Android 16 KB release-payload validation: nested wrapper payloads/assets are recursively checked, the affected arm64 wrapper payload is pinned to the exact upstream PR #350 head, and release APKs exclude emulator-only x86/x86_64 ABIs while the emulator flavor retains them.
 - Corrected direct-download server retry handling: valid long `503 Retry-After` instructions are no longer discarded and replaced with an aggressive short retry. Values beyond HOLEN's 30-second foreground retry budget now return control to the user with the existing actionable service-unavailable message.
+- Fixed service-teardown recovery so service destruction cannot persist an active resumable download as `FAILED`; teardown/FGS-timeout requeue runs in `NonCancellable` context while explicit user cancellation still wins and clears staging.
 
 ## Performance / packaging evidence
 
@@ -37,13 +38,13 @@ Live EJS policy/build/parser validation is green, but live first-fetch/cache-reu
 
 The direct-download `503 Retry-After` task is closed. Commit `7ab232ab` stops automatic retry when a syntactically valid server-requested delay exceeds HOLEN's 30-second foreground budget instead of substituting a much shorter delay. Commit `2da7afe6` covers short, long-seconds, long-HTTP-date, malformed 503 values, and retained 429 behavior. Android CI `34423406403` passed the full Android pipeline, and generic CI for the change also passed.
 
-Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. Several follow-up failures were test-fixture problems rather than teardown evidence: queue ordering was made deterministic, then the local media fixture was found to violate the production HTTPS requirement. Switching that fixture to local HTTPS still left an invalid test premise because a local TLS endpoint cannot satisfy the production public-host/TLS policy without weakening security. Commit `e4353ff9` therefore moves the teardown probe to HOLEN's own public HTTPS V5.0.2 universal APK and waits for non-zero transferred bytes before stopping the service. This keeps the validation on the real direct-download path with production SSRF/TLS checks intact.
+Service teardown recovery is now closed. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. After fixing several invalid test-fixture assumptions, commit `e4353ff9` moved the probe onto HOLEN's own public HTTPS V5.0.2 APK and waits for non-zero transferred bytes before stopping the service. Commit `986e022a` fixed the final nullable progress-check compile error. Android CI `34463113035` passed both jobs: instrumentation passed the active-transfer teardown/requeue probe, while verify passed lint/test/build, APK generation, and strict 16 KB verification.
 
 ## Validation / reviewer state
 
+- Android CI `34463113035` passed instrumentation and the full verify job after the teardown-test correction.
+- Generic CI `34463112947` passed for commit `986e022a`.
 - Android CI `34423406403` passed the Retry-After policy tests along with the full Android workflow.
-- Android CI `34452437369`: build/lint/unit/APK/16 KB verification passed; instrumentation failed while using the invalid local-HTTPS teardown fixture, so it does not invalidate the production teardown fix.
-- Generic CI and Android CI for `e4353ff9` are currently validating the public-HTTPS active-transfer teardown probe.
 - 16 KB release validation and the normal EJS policy/parser/instrumentation path remain green.
 - Strict opt-in EJS validation now fails rather than skips when YouTube rate-limits the probe; a green live run must prove both official `yt-dlp/ejs` GitHub acquisition and explicit `source: cache` reuse.
 - Latest official yt-dlp release inspected remains `2026.08.19`.
@@ -56,10 +57,8 @@ Service teardown recovery remains under validation. Commit `0d277881` prevents `
 - The `universal` release APK intentionally targets ARM physical-device ABIs only; review this distribution policy if physical x86 Android support becomes a requirement.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; service teardown prioritizes that explicit cancellation over automatic requeue.
-- Service-teardown recovery is not considered closed until an actually active public HTTPS transfer proves `QUEUED` persistence with staging intact.
-- The active-transfer lifecycle probe now depends on GitHub release download availability; failure before any transferred bytes should be treated as fixture/network evidence, not a production lifecycle regression.
 - Long server-directed retry delays deliberately return the foreground download attempt to the user instead of silently waiting beyond the 30-second retry budget or violating the server-requested delay.
 
 ## Highest-value next step
 
-Inspect Android CI for commit `e4353ff9`. If the public HTTPS transfer reaches non-zero bytes, use the result after `stopService()` to either close teardown recovery or fix the concrete lifecycle race. If it fails before transfer, improve the fixture without relaxing production URL/TLS protections.
+With teardown recovery validated, return to Android download/recovery profiling and only implement the next change when a measurable throughput, startup-latency, resume, storage, or reliability problem is demonstrated. Keep the live EJS first-fetch/cache-reuse probe pending until a suitable non-rate-limited environment is available.
