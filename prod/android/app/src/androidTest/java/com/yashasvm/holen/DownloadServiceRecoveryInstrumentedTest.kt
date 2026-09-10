@@ -140,7 +140,7 @@ class DownloadServiceRecoveryInstrumentedTest {
         val job = DownloadJob(
             id = jobId,
             sourceUrl = "http://127.0.0.1:${server.localPort}/media.mp4",
-            sourceKind = SourceKind.DIRECT_FILE,
+            sourceKind = SourceKind.MEDIA,
             format = DownloadFormat.BEST_MP4,
             title = "Service teardown probe",
             thumbnailUrl = null,
@@ -180,7 +180,7 @@ class DownloadServiceRecoveryInstrumentedTest {
             }
             assertTrue("DownloadService did not claim the teardown probe", running)
             assertTrue(
-                "Teardown probe did not establish an active direct transfer",
+                "Teardown probe did not establish an active media transfer",
                 connectionAccepted.await(5, TimeUnit.SECONDS),
             )
 
