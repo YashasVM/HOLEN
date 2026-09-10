@@ -37,14 +37,13 @@ Live EJS policy/build/parser validation is green, but live first-fetch/cache-reu
 
 The direct-download `503 Retry-After` task is closed. Commit `7ab232ab` stops automatic retry when a syntactically valid server-requested delay exceeds HOLEN's 30-second foreground budget instead of substituting a much shorter delay. Commit `2da7afe6` covers short, long-seconds, long-HTTP-date, malformed 503 values, and retained 429 behavior. Android CI `34423406403` passed the full Android pipeline, and generic CI for the change also passed.
 
-Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. Android CI `34447750418` proved the queue-priority change itself was not the blocker: its retained instrumentation report showed `status=FAILED error=Only HTTPS links are supported.` The teardown fixture was still using `http://127.0.0.1`, which production media policy correctly rejects before the held transfer could be exercised. Commit `d5624c4c` keeps the local socket fixture but uses `https://127.0.0.1`; the fixture accepts the TLS socket and intentionally withholds the handshake so yt-dlp stays in-flight until service teardown without weakening production URL/TLS policy.
+Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. Several follow-up failures were test-fixture problems rather than teardown evidence: queue ordering was made deterministic, then the local media fixture was found to violate the production HTTPS requirement. Switching that fixture to local HTTPS still left an invalid test premise because a local TLS endpoint cannot satisfy the production public-host/TLS policy without weakening security. Commit `e4353ff9` therefore moves the teardown probe to HOLEN's own public HTTPS V5.0.2 universal APK and waits for non-zero transferred bytes before stopping the service. This keeps the validation on the real direct-download path with production SSRF/TLS checks intact.
 
 ## Validation / reviewer state
 
 - Android CI `34423406403` passed the Retry-After policy tests along with the full Android workflow.
-- Android CI `34447750418`: build/lint/unit/APK/16 KB verification passed; instrumentation had exactly one failure. Artifact inspection identified the exact cause as the test fixture's invalid HTTP media URL, not queue starvation or a teardown result.
-- Generic CI for the deterministic queue-priority commit passed.
-- Android CI `34452437369` and generic CI `34452437348` are validating the corrected HTTPS held-socket teardown fixture.
+- Android CI `34452437369`: build/lint/unit/APK/16 KB verification passed; instrumentation failed while using the invalid local-HTTPS teardown fixture, so it does not invalidate the production teardown fix.
+- Generic CI and Android CI for `e4353ff9` are currently validating the public-HTTPS active-transfer teardown probe.
 - 16 KB release validation and the normal EJS policy/parser/instrumentation path remain green.
 - Strict opt-in EJS validation now fails rather than skips when YouTube rate-limits the probe; a green live run must prove both official `yt-dlp/ejs` GitHub acquisition and explicit `source: cache` reuse.
 - Latest official yt-dlp release inspected remains `2026.08.19`.
@@ -57,9 +56,10 @@ Service teardown recovery remains under validation. Commit `0d277881` prevents `
 - The `universal` release APK intentionally targets ARM physical-device ABIs only; review this distribution policy if physical x86 Android support becomes a requirement.
 - First-time YouTube EJS solver acquisition requires access to yt-dlp's official GitHub-hosted component; live compatibility still needs one successful non-rate-limited Android run.
 - Explicit user cancellation deliberately deletes staging and is not pause/resume; service teardown prioritizes that explicit cancellation over automatic requeue.
-- Service-teardown recovery is not considered closed until the corrected active-transfer instrumentation proves `QUEUED` persistence with staging intact.
+- Service-teardown recovery is not considered closed until an actually active public HTTPS transfer proves `QUEUED` persistence with staging intact.
+- The active-transfer lifecycle probe now depends on GitHub release download availability; failure before any transferred bytes should be treated as fixture/network evidence, not a production lifecycle regression.
 - Long server-directed retry delays deliberately return the foreground download attempt to the user instead of silently waiting beyond the 30-second retry budget or violating the server-requested delay.
 
 ## Highest-value next step
 
-Inspect Android CI `34452437369`. If the HTTPS held-socket fixture reaches the active transfer, validate that `stopService()` leaves the job `QUEUED` and preserves staging. If it fails, use the retained instrumentation artifact to fix that concrete lifecycle/test failure before starting unrelated throughput work.
+Inspect Android CI for commit `e4353ff9`. If the public HTTPS transfer reaches non-zero bytes, use the result after `stopService()` to either close teardown recovery or fix the concrete lifecycle race. If it fails before transfer, improve the fixture without relaxing production URL/TLS protections.
