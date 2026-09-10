@@ -12,6 +12,7 @@ import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -23,6 +24,7 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -252,13 +254,15 @@ class DownloadService : Service() {
                     .getOrDefault(false)
                 if (deleted) outputStore.confirmPublication(job.id)
             }
-            if (job.id in timedOutIds) {
-                runCatching { store.transition(job.id, JobStatus.QUEUED) }
-            } else if (job.id in cancelledIds) {
-                outputStore.clearStaging(job.id)
-                runCatching { store.transition(job.id, JobStatus.CANCELLED) }
-            } else {
-                runCatching {
+            when {
+                job.id in cancelledIds -> withContext(NonCancellable) {
+                    outputStore.clearStaging(job.id)
+                    runCatching { store.transition(job.id, JobStatus.CANCELLED) }
+                }
+                job.id in timedOutIds || stopping -> withContext(NonCancellable) {
+                    runCatching { store.transition(job.id, JobStatus.QUEUED) }
+                }
+                else -> runCatching {
                     store.transition(job.id, JobStatus.FAILED, friendlyFailure(error))
                 }
             }
