@@ -58,9 +58,23 @@ class DirectDownloadRetryPolicyTest {
         assertTrue(DirectDownloadRetryPolicy.shouldRetry(retryAfter, 0, now))
         assertEquals(7_000L, DirectDownloadRetryPolicy.backoffMillis(retryAfter, 0, now))
 
-        val invalidRetryAfter = DirectHttpException(503, "60")
-        assertTrue(DirectDownloadRetryPolicy.shouldRetry(invalidRetryAfter, 0, now))
-        assertEquals(1_000L, DirectDownloadRetryPolicy.backoffMillis(invalidRetryAfter, 0, now))
+        val longRetryAfter = DirectHttpException(503, "60")
+        assertFalse(DirectDownloadRetryPolicy.shouldRetry(longRetryAfter, 0, now))
+
+        val longHttpDate = DateTimeFormatter.RFC_1123_DATE_TIME.format(
+            Instant.ofEpochMilli(now + 60_000L).atZone(ZoneOffset.UTC),
+        )
+        assertFalse(
+            DirectDownloadRetryPolicy.shouldRetry(
+                DirectHttpException(503, longHttpDate),
+                0,
+                now,
+            ),
+        )
+
+        val malformedRetryAfter = DirectHttpException(503, "not-a-delay")
+        assertTrue(DirectDownloadRetryPolicy.shouldRetry(malformedRetryAfter, 0, now))
+        assertEquals(1_000L, DirectDownloadRetryPolicy.backoffMillis(malformedRetryAfter, 0, now))
     }
 
     @Test
