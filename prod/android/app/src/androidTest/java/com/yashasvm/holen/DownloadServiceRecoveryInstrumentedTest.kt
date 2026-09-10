@@ -140,7 +140,9 @@ class DownloadServiceRecoveryInstrumentedTest {
         val now = System.currentTimeMillis()
         val job = DownloadJob(
             id = jobId,
-            sourceUrl = "http://127.0.0.1:${server.localPort}/media.mp4",
+            // Production media jobs require HTTPS. The fixture accepts the TLS socket and
+            // deliberately withholds the handshake so yt-dlp remains in-flight until teardown.
+            sourceUrl = "https://127.0.0.1:${server.localPort}/media.mp4",
             sourceKind = SourceKind.MEDIA,
             format = DownloadFormat.BEST_MP4,
             title = "Service teardown probe",
