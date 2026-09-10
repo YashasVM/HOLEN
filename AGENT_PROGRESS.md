@@ -37,14 +37,14 @@ Live EJS policy/build/parser validation is green, but live first-fetch/cache-reu
 
 The direct-download `503 Retry-After` task is closed. Commit `7ab232ab` stops automatic retry when a syntactically valid server-requested delay exceeds HOLEN's 30-second foreground budget instead of substituting a much shorter delay. Commit `2da7afe6` covers short, long-seconds, long-HTTP-date, malformed 503 values, and retained 429 behavior. Android CI `34423406403` passed the full Android pipeline, and generic CI for the change also passed.
 
-Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. Earlier retries exposed fixture problems rather than teardown failures: the direct loopback fixture violated production URL policy, and Android CI `34443274975` showed the media-backed probe still failed before teardown at queue claim. `claimNextQueued()` is FIFO by `created_at`; commit `42375e64` now makes the teardown probe deterministically oldest so unrelated queued rows cannot occupy both service workers, and reports the final status/error if claim still fails.
+Service teardown recovery remains under validation. Commit `0d277881` prevents `onDestroy()` cancellation from being persisted as `FAILED`: explicit user cancellation still wins and clears staging, while timeout/service shutdown transitions run in `NonCancellable` context and requeue the active job so resumable staging survives. Commit `a83ee5b4` added lifecycle instrumentation. Android CI `34447750418` proved the queue-priority change itself was not the blocker: its retained instrumentation report showed `status=FAILED error=Only HTTPS links are supported.` The teardown fixture was still using `http://127.0.0.1`, which production media policy correctly rejects before the held transfer could be exercised. Commit `d5624c4c` keeps the local socket fixture but uses `https://127.0.0.1`; the fixture accepts the TLS socket and intentionally withholds the handshake so yt-dlp stays in-flight until service teardown without weakening production URL/TLS policy.
 
 ## Validation / reviewer state
 
 - Android CI `34423406403` passed the Retry-After policy tests along with the full Android workflow.
-- Android CI `34443274975`: build/lint/unit/16 KB verification passed; instrumentation had exactly one failure, `DownloadService did not claim the teardown probe`, before teardown was exercised.
-- The same run produced healthy diagnostic timings for app startup, runtime initialization, local extraction, transfer, and resume, so the failure was isolated to the teardown test path rather than a broad Android build/runtime regression.
-- Commit `42375e64` is under Android CI validation with deterministic queue priority and better failure diagnostics.
+- Android CI `34447750418`: build/lint/unit/APK/16 KB verification passed; instrumentation had exactly one failure. Artifact inspection identified the exact cause as the test fixture's invalid HTTP media URL, not queue starvation or a teardown result.
+- Generic CI for the deterministic queue-priority commit passed.
+- Android CI `34452437369` and generic CI `34452437348` are validating the corrected HTTPS held-socket teardown fixture.
 - 16 KB release validation and the normal EJS policy/parser/instrumentation path remain green.
 - Strict opt-in EJS validation now fails rather than skips when YouTube rate-limits the probe; a green live run must prove both official `yt-dlp/ejs` GitHub acquisition and explicit `source: cache` reuse.
 - Latest official yt-dlp release inspected remains `2026.08.19`.
@@ -62,4 +62,4 @@ Service teardown recovery remains under validation. Commit `0d277881` prevents `
 
 ## Highest-value next step
 
-Inspect Android CI for `42375e64`. If the deterministically prioritized probe reaches the held media connection, validate teardown persistence; if it still fails before connection, use the new status/error diagnostics to fix the concrete test or queue-path cause without changing production lifecycle behavior speculatively.
+Inspect Android CI `34452437369`. If the HTTPS held-socket fixture reaches the active transfer, validate that `stopService()` leaves the job `QUEUED` and preserves staging. If it fails, use the retained instrumentation artifact to fix that concrete lifecycle/test failure before starting unrelated throughput work.
