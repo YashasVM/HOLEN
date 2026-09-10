@@ -123,10 +123,12 @@ class DownloadServiceRecoveryInstrumentedTest {
         val outputStore = OutputStore(context)
         val jobId = "service-teardown-${UUID.randomUUID()}"
         val server = ServerSocket(0)
+        val connectionAccepted = CountDownLatch(1)
         val releaseServer = CountDownLatch(1)
         val serverThread = thread(name = "holen-teardown-fixture", isDaemon = true) {
             try {
                 server.accept().use {
+                    connectionAccepted.countDown()
                     releaseServer.await(20, TimeUnit.SECONDS)
                 }
             } catch (_: Throwable) {
@@ -177,6 +179,10 @@ class DownloadServiceRecoveryInstrumentedTest {
                 delay(50)
             }
             assertTrue("DownloadService did not claim the teardown probe", running)
+            assertTrue(
+                "Teardown probe did not establish an active direct transfer",
+                connectionAccepted.await(5, TimeUnit.SECONDS),
+            )
 
             val staging = outputStore.stagingDirectory(jobId)
             val partial = File(staging, "video.mp4.part").apply {
