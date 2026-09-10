@@ -137,6 +137,7 @@ class DownloadServiceRecoveryInstrumentedTest {
         }
         val serviceIntent = Intent(context, DownloadService::class.java)
             .setAction(DownloadService.ACTION_WAKE_QUEUE)
+        val now = System.currentTimeMillis()
         val job = DownloadJob(
             id = jobId,
             sourceUrl = "http://127.0.0.1:${server.localPort}/media.mp4",
@@ -154,8 +155,10 @@ class DownloadServiceRecoveryInstrumentedTest {
             fileName = null,
             mimeType = null,
             errorMessage = null,
-            createdAt = System.currentTimeMillis(),
-            updatedAt = System.currentTimeMillis(),
+            // claimNextQueued() is FIFO. Make this probe older than any normal test
+            // residue so unrelated queued rows cannot occupy both service workers.
+            createdAt = 0L,
+            updatedAt = now,
         )
 
         context.stopService(Intent(context, DownloadService::class.java))
@@ -178,7 +181,12 @@ class DownloadServiceRecoveryInstrumentedTest {
                 }
                 delay(50)
             }
-            assertTrue("DownloadService did not claim the teardown probe", running)
+            val unclaimed = store.get(jobId)
+            assertTrue(
+                "DownloadService did not claim the teardown probe; " +
+                    "status=${unclaimed?.status} error=${unclaimed?.errorMessage}",
+                running,
+            )
             assertTrue(
                 "Teardown probe did not establish an active media transfer",
                 connectionAccepted.await(5, TimeUnit.SECONDS),
