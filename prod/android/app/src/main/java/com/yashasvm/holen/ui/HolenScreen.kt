@@ -465,8 +465,13 @@ private fun DownloadHome(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             HolenButton(
-                                if (preview.entries.all { it.id in selectedEntries }) {
+                                if (
+                                    preview.entries.take(YtDlpEngine.PLAYLIST_QUEUE_LIMIT)
+                                        .all { it.id in selectedEntries }
+                                ) {
                                     "Deselect all"
+                                } else if (preview.entries.size > YtDlpEngine.PLAYLIST_QUEUE_LIMIT) {
+                                    "Select first ${YtDlpEngine.PLAYLIST_QUEUE_LIMIT}"
                                 } else {
                                     "Select all"
                                 },

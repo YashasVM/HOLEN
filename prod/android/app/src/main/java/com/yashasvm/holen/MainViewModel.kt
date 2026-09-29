@@ -250,9 +250,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mutableSelectedEntries.value = selected
     }
 
+    /** Selects as many items as one queue action accepts, or clears a full selection. */
     fun toggleAllEntries() {
         val playlist = mutableAnalysis.value as? SourceAnalysis.Playlist ?: return
-        val selectable = playlist.entries.map { it.id }.toSet()
+        val selectable = playlist.entries.take(YtDlpEngine.PLAYLIST_QUEUE_LIMIT).map { it.id }.toSet()
         mutableSelectedEntries.value =
             if (selectable.all { it in mutableSelectedEntries.value }) emptySet() else selectable
     }

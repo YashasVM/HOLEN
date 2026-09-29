@@ -160,14 +160,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Links arrive only from ShareDownloadActivity's "Open HOLEN" hand-off. */
     private fun populateFromIntent(intent: Intent?) {
-        val candidate = intent?.getStringExtra(EXTRA_SHARED_URL) ?: when (intent?.action) {
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
-                ?.let { SHARED_HTTPS.find(it)?.value ?: it }
-            Intent.ACTION_VIEW -> intent.dataString
-            else -> null
-        }
-        if (!candidate.isNullOrBlank()) {
+        val candidate = intent?.getStringExtra(EXTRA_SHARED_URL)?.let(::extractSharedHttps)
+        if (candidate != null) {
+            // Consume the extra so recreating the activity does not re-analyze an old link.
+            intent.removeExtra(EXTRA_SHARED_URL)
             viewModel.receiveIncomingUrl(candidate, AnalysisMode.FULL)
         }
     }
@@ -213,7 +211,6 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        private val SHARED_HTTPS = Regex("""https://\S+""")
         private const val PROJECT_GITHUB = "https://github.com/YashasVM/HOLEN"
         const val EXTRA_SHARED_URL = "com.yashasvm.holen.extra.SHARED_URL"
     }

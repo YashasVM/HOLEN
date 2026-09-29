@@ -703,19 +703,6 @@ class YtDlpEngine private constructor(private val context: Context) {
                 host.endsWith(".youtube-nocookie.com")
         }
 
-        private fun isYoutubeAuthenticationError(message: String): Boolean {
-            val normalized = message.lowercase()
-            return listOf(
-                "sign in",
-                "login",
-                "age-restricted",
-                "age restricted",
-                "age verification",
-                "confirm you're not a bot",
-                "confirm you’re not a bot",
-            ).any(normalized::contains)
-        }
-
         internal fun isYtDlpTemporaryFileName(fileName: String): Boolean =
             fileName.endsWith(".part") ||
                 fileName.endsWith(".ytdl") ||
