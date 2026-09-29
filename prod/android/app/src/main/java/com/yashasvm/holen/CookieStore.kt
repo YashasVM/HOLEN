@@ -17,7 +17,6 @@ internal data class CookieHealth(
 
 class CookieStore(context: Context) {
     private val cookieFile = File(context.noBackupFilesDir, "auth/cookies.txt")
-    private val stateGeneration = AtomicLong()
 
     fun validFile(): File? = cookieFile.takeIf {
         readBoundedCookieBytes(it)?.let(::validateCookieBytes) == true
@@ -98,6 +97,12 @@ class CookieStore(context: Context) {
     }
 
     companion object {
+        /**
+         * Shared by every instance: the ViewModel saves cookies through its own CookieStore while
+         * the engine builds cache keys through another, and both must see the same generation.
+         */
+        private val stateGeneration = AtomicLong()
+
         const val MAX_BYTES = 1024 * 1024
         const val ERROR_INVALID = "This does not look like a valid, unexpired Netscape cookies.txt file."
         const val ERROR_TOO_LARGE = "The cookies file is too large."
