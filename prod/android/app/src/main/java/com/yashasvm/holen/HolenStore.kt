@@ -11,6 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -270,7 +271,7 @@ class HolenStore private constructor(context: Context) :
         ) == 1
         }.also { updated ->
             if (updated) {
-                mutableJobs.value = mutableJobs.value.map { job ->
+                mutableJobs.update { jobs -> jobs.map { job ->
                     if (job.id == id) job.copy(
                         progress = progress.percent,
                         bytesDownloaded = progress.bytesDownloaded ?: job.bytesDownloaded,
@@ -279,7 +280,7 @@ class HolenStore private constructor(context: Context) :
                         etaSeconds = progress.etaSeconds ?: job.etaSeconds,
                         updatedAt = updatedAt,
                     ) else job
-                }
+                } }
             }
         }
     }
@@ -379,22 +380,36 @@ class HolenStore private constructor(context: Context) :
         delete("jobs", "id = ?", arrayOf(id))
     }
 
+    /**
+     * Loads every unfinished job plus the most recent finished history. Active work must never be
+     * hidden behind a history limit, or a large playlist would run jobs the UI cannot show.
+     */
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        mutableJobs.value = readableDatabase.query(
+        val terminal = arrayOf(
+            JobStatus.COMPLETED.name,
+            JobStatus.FAILED.name,
+            JobStatus.CANCELLED.name,
+        )
+        val active = queryJobs("status NOT IN (?, ?, ?)", terminal, limit = null)
+        val finished = queryJobs("status IN (?, ?, ?)", terminal, limit = HISTORY_LIMIT.toString())
+        mutableJobs.value = (active + finished).sortedByDescending(DownloadJob::createdAt)
+    }
+
+    private fun queryJobs(selection: String, args: Array<String>, limit: String?): List<DownloadJob> =
+        readableDatabase.query(
             "jobs",
             COLUMNS,
-            null,
-            null,
+            selection,
+            args,
             null,
             null,
             "created_at DESC",
-            "100",
+            limit,
         ).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) add(cursor.toJob())
             }
         }
-    }
 
     private suspend fun <T> write(
         refresh: Boolean = true,
@@ -479,6 +494,7 @@ class HolenStore private constructor(context: Context) :
         const val PREF_ONBOARDING_COMPLETED = "onboarding_completed"
         const val PREF_ONBOARDING_VERSION = "onboarding_version"
         const val ONBOARDING_VERSION = 5
+        private const val HISTORY_LIMIT = 100
 
         private val COLUMNS = arrayOf(
             "id",
