@@ -12,8 +12,8 @@ android {
         applicationId = "com.yashasvm.holen"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.gradleProperty("holenVersionCode").orElse("19").get().toInt()
-        versionName = providers.gradleProperty("holenVersionName").orElse("5.1.0").get()
+        versionCode = providers.gradleProperty("holenVersionCode").orElse("20").get().toInt()
+        versionName = providers.gradleProperty("holenVersionName").orElse("5.1.1").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -121,10 +121,13 @@ androidComponents {
             "release" -> abi != "emulator"
             else -> true
         }
-        // Phone debug APKs are what people install, so shrink them like release builds: R8
-        // cuts ~30 MB of unused library code and speeds startup. The emulator flavor stays
-        // unminified because instrumentation tests call internal APIs directly.
-        if (variant.buildType == "debug" && abi != "emulator") {
+        // R8 is off for debug builds. A shrunk build (5.1.0) reported "The media engine could
+        // not start" on a phone and the unshrunk configuration is the one CI exercises;
+        // youtubedl-android loads code and assets by reflection, so shrinking is the suspect
+        // (not confirmed). Opt in with -PholenMinifyDebug=true once a shrunk APK has been
+        // verified on a device or emulator.
+        val minifyDebug = providers.gradleProperty("holenMinifyDebug").orElse("false").get().toBoolean()
+        if (variant.buildType == "debug" && minifyDebug) {
             variant.isMinifyEnabled = true
             variant.shrinkResources = true
         }

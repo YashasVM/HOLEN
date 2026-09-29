@@ -96,7 +96,7 @@ fun friendlyFailure(error: Throwable): String {
             message.contains("could not initialize youtubedl", true) ||
             message.contains("dlopen failed", true) ||
             message.contains("libpython", true) ->
-            "The media engine could not start. Reset or update it in Settings."
+            "The media engine could not start. Reset or update it in Settings." + engineFailureDetail(error)
         error is javax.net.ssl.SSLHandshakeException || isCertificateFailure(normalized) ->
             "The secure connection certificate could not be verified. Check the device date/time and VPN, private DNS, or captive-portal interception, then retry on a trusted network. Do not disable certificate verification."
         isTransientNetworkFailure(normalized) ||
@@ -264,3 +264,16 @@ private fun isTransientNetworkFailure(message: String): Boolean = listOf(
     "unable to download api page",
     "ssl eof",
 ).any(message::contains)
+
+/**
+ * Technical cause of an engine startup failure, appended so a screenshot of the error is enough
+ * to diagnose it. Startup failures come from native/asset loading and carry no personal data.
+ */
+internal fun engineFailureDetail(error: Throwable): String {
+    val causes = generateSequence(error) { it.cause }.take(6).toList()
+    val first = error.suppressed.firstOrNull()
+    val chain = (causes + listOfNotNull(first)).drop(1).map { cause ->
+        "${cause.javaClass.simpleName}: ${cause.message.orEmpty().lineSequence().firstOrNull().orEmpty().take(140)}"
+    }.distinct()
+    return if (chain.isEmpty()) "" else "\n\nDetail: " + chain.joinToString(" <- ")
+}
