@@ -7,6 +7,20 @@ import org.junit.Test
 
 class FriendlyFailureTest {
     @Test
+    fun storageAndFolderFailuresNeedSpecificWording() {
+        assertTrue(friendlyFailure(IOException("write failed: ENOSPC (No space left on device)")).contains("storage space"))
+        assertTrue(friendlyFailure(SecurityException("Permission Denial: opening provider")).contains("folder"))
+
+        // Ordinary words must not be mistaken for device-level failures.
+        val spaceUrl = friendlyFailure(IllegalStateException("ERROR: [BiliBili] https://space.bilibili.com/1: oops"))
+        assertFalse(spaceUrl.contains("storage space"))
+        val accessDenied = friendlyFailure(IllegalStateException("ERROR: Access denied by uploader"))
+        assertFalse(accessDenied.contains("folder"))
+        assertTrue(friendlyFailure(IllegalStateException("ERROR: Unsupported URL: https://x.test")).contains("not supported"))
+        assertFalse(friendlyFailure(IllegalStateException("ERROR: unsupported codec in stream")).contains("URL is not supported"))
+    }
+
+    @Test
     fun directHttpFailuresAreActionableByStatusClass() {
         assertTrue(friendlyFailure(IOException("Network response 401")).contains("denied access"))
         assertTrue(friendlyFailure(IOException("Network response 403")).contains("access"))

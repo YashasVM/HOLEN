@@ -73,16 +73,16 @@ fun friendlyFailure(error: Throwable): String {
         isUnavailableMediaFailure(normalized) ->
             "This media is currently unavailable from the source. Re-analyze the link; if it still plays normally, update the media engine and retry."
         extractorHttpFailure != null -> extractorHttpFailure
-        normalized.contains("unsupported") -> "This URL is not supported by the current engine."
+        normalized.contains("unsupported url") -> "This URL is not supported by the current engine."
         message.startsWith("Network response ", true) -> directHttpFailure(message)
-        message.contains("space", true) ||
-            message.contains("ENOSPC", true) -> "There is not enough storage space."
+        isOutOfSpaceFailure(normalized) -> "There is not enough storage space."
         error is StorageException -> message.lineSequence()
             .firstOrNull { it.isNotBlank() }
             ?.take(180)
             ?: "The selected download folder could not be written."
-        message.contains("permission", true) ||
-            message.contains("denied", true) -> "Download folder access was revoked. Choose the folder again."
+        error is SecurityException ||
+            normalized.contains("permission denied") ||
+            normalized.contains("permission denial") -> "Download folder access was revoked. Choose the folder again."
         isPostProcessingFailure(normalized) ->
             "Media post-processing failed while merging or converting the download. Check free storage, then update or reset the media engine and retry."
         isFragmentTransferFailure(normalized) ->
@@ -151,6 +151,15 @@ private fun httpFailure(status: Int, directFile: Boolean): String = when (status
     in 500..599 -> "The source is temporarily unavailable (HTTP $status). Retry later."
     else -> "The source returned HTTP $status. Check the link and try again."
 }
+
+private fun isOutOfSpaceFailure(message: String): Boolean = listOf(
+    "no space left",
+    "enospc",
+    "not enough space",
+    "not enough storage",
+    "insufficient storage",
+    "disk full",
+).any(message::contains)
 
 private fun isJavascriptChallengeFailure(message: String): Boolean = listOf(
     "signature solving failed",
