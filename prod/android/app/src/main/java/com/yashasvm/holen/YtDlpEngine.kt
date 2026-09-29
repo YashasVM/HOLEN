@@ -73,12 +73,27 @@ internal class EngineOperationGate {
         }
     }
 
-    suspend fun <T> withMaintenance(block: suspend () -> T): T = maintenanceMutex.withLock {
+    /**
+     * [abortIf] is evaluated after new operations are blocked. Callers register long-running
+     * work before entering [withOperation], so a false result guarantees that no such work can
+     * hold the gate for longer than a short metadata request.
+     */
+    suspend fun <T> withMaintenance(
+        abortIf: () -> Throwable? = { null },
+        block: suspend () -> T,
+    ): T = maintenanceMutex.withLock {
         lateinit var finished: CompletableDeferred<Unit>
         val waitForOperations = stateMutex.withLock {
+            abortIf()?.let { throw it }
             maintenanceRequested = true
             finished = CompletableDeferred()
             maintenanceFinished = finished
+            abortIf()?.let { abort ->
+                maintenanceRequested = false
+                maintenanceFinished = null
+                finished.complete(Unit)
+                throw abort
+            }
             if (activeOperations == 0) {
                 null
             } else {
@@ -112,6 +127,9 @@ class YtDlpEngine private constructor(private val context: Context) {
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val operationGate = EngineOperationGate()
     private val downloadToolsPrewarmInFlight = AtomicBoolean(false)
+
+    /** Media downloads that have started or are waiting for a download slot. */
+    private val activeDownloads = java.util.concurrent.atomic.AtomicInteger(0)
     private val automaticUpdateInFlight = AtomicBoolean(false)
     private val ejsCacheDirectory = File(context.cacheDir, EJS_CACHE_DIRECTORY)
 
@@ -266,6 +284,21 @@ class YtDlpEngine private constructor(private val context: Context) {
         isCancelled: () -> Boolean = { false },
         onProgress: (TransferProgress) -> Unit,
     ): StagedDownload = withContext(Dispatchers.IO) {
+        activeDownloads.incrementAndGet()
+        try {
+            downloadLocked(job, directory, authenticationPolicy, isCancelled, onProgress)
+        } finally {
+            activeDownloads.decrementAndGet()
+        }
+    }
+
+    private suspend fun downloadLocked(
+        job: DownloadJob,
+        directory: File,
+        authenticationPolicy: JobAuthenticationPolicy,
+        isCancelled: () -> Boolean,
+        onProgress: (TransferProgress) -> Unit,
+    ): StagedDownload =
         downloadMutex.withPermit {
             operationGate.withOperation {
                 validatePublicHttpsUrl(job.sourceUrl)
@@ -343,7 +376,6 @@ class YtDlpEngine private constructor(private val context: Context) {
                 )
             }
         }
-    }
 
     fun cancel(processId: String) {
         if (initialized) YoutubeDL.destroyProcessById(processId)
@@ -356,8 +388,12 @@ class YtDlpEngine private constructor(private val context: Context) {
         if (processId in activeAnalysisIds) cancel(processId)
     }
 
+    /** True while any media download is running or waiting for a download slot. */
+    val hasActiveDownloads: Boolean
+        get() = activeDownloads.get() > 0
+
     suspend fun updateStable(): String = withContext(Dispatchers.IO) {
-        operationGate.withMaintenance {
+        operationGate.withMaintenance(abortIf = ::downloadsBlockMaintenance) {
             ensureInitialized(needsFfmpeg = false)
             preferences.edit {
                 putLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, System.currentTimeMillis())
@@ -381,8 +417,11 @@ class YtDlpEngine private constructor(private val context: Context) {
     }
 
     suspend fun resetToBundled(): String = withContext(Dispatchers.IO) {
-        operationGate.withMaintenance { resetToBundledLocked() }
+        operationGate.withMaintenance(abortIf = ::downloadsBlockMaintenance) { resetToBundledLocked() }
     }
+
+    private fun downloadsBlockMaintenance(): Throwable? =
+        if (hasActiveDownloads) IOException(DOWNLOADS_ACTIVE_MESSAGE) else null
 
     private suspend fun resetToBundledLocked(): String =
         initMutex.withLock {
@@ -533,6 +572,8 @@ class YtDlpEngine private constructor(private val context: Context) {
         const val PLAYLIST_QUEUE_LIMIT = 25
         const val MAX_ACTIVE_DOWNLOADS = 2
         const val QUICK_ANALYSIS_TIMEOUT_MS = 12_000L
+        const val DOWNLOADS_ACTIVE_MESSAGE =
+            "Engine maintenance waits until downloads finish. Try again when the queue is idle."
         const val METADATA_TIMEOUT_MESSAGE = "Metadata lookup timed out. Check the link or try again."
         internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
         internal const val ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS = 24L * 60 * 60 * 1000

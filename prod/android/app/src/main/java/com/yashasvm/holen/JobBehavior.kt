@@ -44,6 +44,10 @@ fun friendlyFailure(error: Throwable): String {
     val extractorHttpFailure = extractorHttpFailure(normalized)
     return when {
         normalized.contains("drm") -> "This source is DRM-protected and cannot be downloaded."
+        normalized.contains("engine maintenance waits until downloads finish") ->
+            YtDlpEngine.DOWNLOADS_ACTIVE_MESSAGE
+        normalized.startsWith("engine update failed") ->
+            "The engine update could not be downloaded, so the current engine was kept. Check your connection and try again."
         normalized.contains("media engine reset is pending") ||
             normalized.contains("close and reopen holen") ->
             "The media engine was reset. Close and reopen HOLEN before analyzing or downloading media."
