@@ -43,8 +43,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableSelectedEntries = MutableStateFlow<Set<String>>(emptySet())
     val selectedEntries = mutableSelectedEntries.asStateFlow()
 
+    /** True while a link is being analyzed. */
     private val mutableBusy = MutableStateFlow(false)
     val busy = mutableBusy.asStateFlow()
+
+    /** True while selected items are being written to the queue; guards double taps. */
+    private val mutableQueueing = MutableStateFlow(false)
+    val queueing = mutableQueueing.asStateFlow()
+
+    /** True while an engine update or reset runs. Independent of analysis and queueing. */
+    private val mutableEngineBusy = MutableStateFlow(false)
+    val engineBusy = mutableEngineBusy.asStateFlow()
 
     /**
      * A short, user-facing status for an interactive metadata request. This is
@@ -249,6 +258,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun queue() {
+        if (mutableQueueing.value) return
         val preview = mutableAnalysis.value ?: return
         if (preview is SourceAnalysis.Playlist &&
             mutableSelectedEntries.value.size > YtDlpEngine.PLAYLIST_QUEUE_LIMIT
@@ -265,55 +275,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             mutableError.value = "Acknowledge the download-rights notice first."
             return
         }
+        mutableQueueing.value = true
         viewModelScope.launch {
-            if (!withContext(Dispatchers.IO) { outputStore.hasValidTreeGrant() }) {
-                mutableFolderGranted.value = false
-                mutableError.value = "Choose a download folder first."
-                return@launch
+            try {
+                queueLocked(preview)
+            } finally {
+                mutableQueueing.value = false
             }
-            mutableBusy.value = true
-            val now = System.currentTimeMillis()
-            val jobs = when (preview) {
-                is SourceAnalysis.DirectFile -> listOf(
-                    preview.toJob(
-                        id = UUID.randomUUID().toString(),
-                        createdAt = now,
-                    ),
-                )
-                is SourceAnalysis.Media -> listOf(
-                    preview.toJob(
+        }
+    }
+
+    private suspend fun queueLocked(preview: SourceAnalysis) {
+        if (!withContext(Dispatchers.IO) { outputStore.hasValidTreeGrant() }) {
+            mutableFolderGranted.value = false
+            mutableError.value = "Choose a download folder first."
+            return
+        }
+        val now = System.currentTimeMillis()
+        val jobs = when (preview) {
+            is SourceAnalysis.DirectFile -> listOf(
+                preview.toJob(
+                    id = UUID.randomUUID().toString(),
+                    createdAt = now,
+                ),
+            )
+            is SourceAnalysis.Media -> listOf(
+                preview.toJob(
+                    id = UUID.randomUUID().toString(),
+                    format = mutableSelectedFormat.value,
+                    createdAt = now,
+                ),
+            )
+            is SourceAnalysis.Playlist -> preview.entries
+                .filter { it.id in mutableSelectedEntries.value }
+                .mapIndexed { index, entry ->
+                    entry.toJob(
                         id = UUID.randomUUID().toString(),
                         format = mutableSelectedFormat.value,
-                        createdAt = now,
-                    ),
-                )
-                is SourceAnalysis.Playlist -> preview.entries
-                    .filter { it.id in mutableSelectedEntries.value }
-                    .mapIndexed { index, entry ->
-                        entry.toJob(
-                            id = UUID.randomUUID().toString(),
-                            format = mutableSelectedFormat.value,
-                            createdAt = now + index,
-                        )
-                    }
-            }
-            if (jobs.isEmpty()) {
-                mutableError.value = "Select at least one playlist item."
-            } else {
-                runCatching {
-                    store.insert(jobs)
-                    DownloadService.wake(getApplication())
-                }.onSuccess {
-                    mutableAnalysis.value = null
-                    mutableUrl.value = ""
-                    mutableSelectedEntries.value = emptySet()
-                    mutableError.value = null
-                    mutableQueueEvents.tryEmit(Unit)
-                }.onFailure {
-                    mutableError.value = friendlyFailure(it)
+                        createdAt = now + index,
+                    )
                 }
+        }
+        if (jobs.isEmpty()) {
+            mutableError.value = "Select at least one playlist item."
+        } else {
+            runCatching {
+                store.insert(jobs)
+                DownloadService.wake(getApplication())
+            }.onSuccess {
+                mutableAnalysis.value = null
+                mutableUrl.value = ""
+                mutableSelectedEntries.value = emptySet()
+                mutableError.value = null
+                mutableQueueEvents.tryEmit(Unit)
+            }.onFailure {
+                mutableError.value = friendlyFailure(it)
             }
-            mutableBusy.value = false
         }
     }
 
@@ -430,6 +447,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             mutableOnboardingCompleted.value = true
             mutableError.value = null
             warmEngine()
+            startHomeMaintenance()
             if (mutableUrl.value.isNotBlank()) analyze()
         }
     }
@@ -440,10 +458,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { engine.warmup() }
                 .onSuccess { mutableEngineVersion.value = engine.activeVersion }
             warmupJob = null
-            if (analysisJob?.isActive != true && !mutableBusy.value) {
-                checkAppUpdate()
-            }
         }
+    }
+
+    /**
+     * Home-screen-only background work. The share sheet deliberately skips this so a quick share
+     * never pays for a GitHub update check.
+     */
+    fun startHomeMaintenance() {
+        if (!mutableOnboardingCompleted.value) return
+        // The bundled yt-dlp ages with the APK; YouTube changes often enough that a never-updated
+        // engine is the most common cause of failures, so refresh it immediately once.
+        if (engine.neverUpdated && !DownloadService.isRunning) engine.scheduleBackgroundRefreshIfDue()
+        checkAppUpdate()
     }
 
     fun refreshFolderGrant() = viewModelScope.launch {
@@ -464,9 +491,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateEngine() {
-        if (mutableBusy.value) return
+        if (mutableEngineBusy.value) return
+        mutableEngineBusy.value = true
         viewModelScope.launch {
-            mutableBusy.value = true
             mutableEngineMessage.value = null
             runCatching { engine.updateStable() }
                 .onSuccess {
@@ -477,22 +504,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     mutableEngineVersion.value = engine.activeVersion
                     mutableEngineMessage.value = friendlyFailure(it)
                 }
-            mutableBusy.value = false
+            mutableEngineBusy.value = false
         }
     }
 
     fun resetEngine() {
-        if (mutableBusy.value) return
+        if (mutableEngineBusy.value) return
+        mutableEngineBusy.value = true
         viewModelScope.launch {
-            mutableBusy.value = true
             mutableEngineMessage.value = null
             runCatching { engine.resetToBundled() }
                 .onSuccess {
-                    mutableEngineVersion.value = it
-                    mutableEngineMessage.value = "Engine files cleared. Close and reopen HOLEN to rebuild them."
+                    mutableEngineVersion.value = engine.activeVersion
+                    mutableEngineMessage.value = it
                 }
                 .onFailure { mutableEngineMessage.value = friendlyFailure(it) }
-            mutableBusy.value = false
+            mutableEngineBusy.value = false
         }
     }
 

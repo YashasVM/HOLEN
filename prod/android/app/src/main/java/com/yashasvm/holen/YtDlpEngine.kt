@@ -388,6 +388,10 @@ class YtDlpEngine private constructor(private val context: Context) {
         if (processId in activeAnalysisIds) cancel(processId)
     }
 
+    /** True until a stable engine update has succeeded on this installation. */
+    val neverUpdated: Boolean
+        get() = preferences.getLong(HolenStore.PREF_ENGINE_LAST_SUCCESSFUL_UPDATE_AT, 0L) <= 0L
+
     /** True while any media download is running or waiting for a download slot. */
     val hasActiveDownloads: Boolean
         get() = activeDownloads.get() > 0
@@ -575,8 +579,8 @@ class YtDlpEngine private constructor(private val context: Context) {
         const val DOWNLOADS_ACTIVE_MESSAGE =
             "Engine maintenance waits until downloads finish. Try again when the queue is idle."
         const val METADATA_TIMEOUT_MESSAGE = "Metadata lookup timed out. Check the link or try again."
-        internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
-        internal const val ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS = 24L * 60 * 60 * 1000
+        internal const val ENGINE_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
+        internal const val ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS = 6L * 60 * 60 * 1000
         private const val ANALYSIS_PROCESS_PREFIX = "analysis-"
         private const val EJS_CACHE_DIRECTORY = "yt-dlp-ejs-cache"
         private const val RESTART_REQUIRED_MESSAGE =

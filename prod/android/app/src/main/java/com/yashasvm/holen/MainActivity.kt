@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         viewModel.recoverQueue()
+        if (savedInstanceState == null) viewModel.startHomeMaintenance()
     }
 
     override fun onNewIntent(intent: Intent) {

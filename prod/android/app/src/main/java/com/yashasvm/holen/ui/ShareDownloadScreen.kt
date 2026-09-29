@@ -44,6 +44,7 @@ fun ShareDownloadScreen(
     val sharedUrl by viewModel.url.collectAsStateWithLifecycle()
     val format by viewModel.selectedFormat.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val queueing by viewModel.queueing.collectAsStateWithLifecycle()
     val analysisPhase by viewModel.analysisPhase.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val setupComplete by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
@@ -120,7 +121,7 @@ fun ShareDownloadScreen(
                 analysis is SourceAnalysis.DirectFile -> {
                     val item = analysis as SourceAnalysis.DirectFile
                     SharedTitle(item.title, "Original file")
-                    PrimaryButton("Download original", onDownload, enabled = !busy)
+                    PrimaryButton("Download original", onDownload, enabled = !busy && !queueing)
                 }
                 analysis is SourceAnalysis.Media -> {
                     val item = analysis as SourceAnalysis.Media
@@ -130,7 +131,7 @@ fun ShareDownloadScreen(
                         onSelected = viewModel::setFormat,
                         estimatedSizes = item.estimatedSizes,
                     )
-                    PrimaryButton("Download", onDownload, enabled = !busy)
+                    PrimaryButton("Download", onDownload, enabled = !busy && !queueing)
                 }
                 analysis is SourceAnalysis.Playlist -> {
                     val item = analysis as SourceAnalysis.Playlist

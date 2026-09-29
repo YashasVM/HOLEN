@@ -179,6 +179,8 @@ private fun DownloadHome(
     val format by viewModel.selectedFormat.collectAsStateWithLifecycle()
     val selectedEntries by viewModel.selectedEntries.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val queueing by viewModel.queueing.collectAsStateWithLifecycle()
+    val engineBusy by viewModel.engineBusy.collectAsStateWithLifecycle()
     val analysisPhase by viewModel.analysisPhase.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val folderGranted by viewModel.folderGranted.collectAsStateWithLifecycle()
@@ -396,7 +398,7 @@ private fun DownloadHome(
                             "Queue original",
                             onQueue,
                             HolenGreen,
-                            enabled = !busy && folderGranted && rightsAcknowledged,
+                            enabled = !busy && !queueing && folderGranted && rightsAcknowledged,
                         )
                     }
                 }
@@ -423,7 +425,7 @@ private fun DownloadHome(
                             "Add to queue",
                             onQueue,
                             HolenGreen,
-                            enabled = !busy && folderGranted && rightsAcknowledged,
+                            enabled = !busy && !queueing && folderGranted && rightsAcknowledged,
                         )
                     }
                 }
@@ -479,6 +481,7 @@ private fun DownloadHome(
                                 enabled = selectedEntries.isNotEmpty() &&
                                     selectedEntries.size <= YtDlpEngine.PLAYLIST_QUEUE_LIMIT &&
                                     !busy &&
+                                    !queueing &&
                                     folderGranted &&
                                     rightsAcknowledged,
                             )
@@ -613,7 +616,7 @@ private fun DownloadHome(
             cookieMessage = cookieMessage,
             filenameSuffixEnabled = filenameSuffixEnabled,
             appUpdate = appUpdate,
-            busy = busy,
+            busy = engineBusy,
             onChooseFolder = onChooseFolder,
             onUpdate = viewModel::updateEngine,
             onReset = viewModel::resetEngine,

@@ -262,23 +262,23 @@ class CoreLogicTest {
     }
 
     @Test
-    fun successfulEngineChecksRemainRateLimitedToOncePerWeek() {
+    fun successfulEngineChecksRunAtMostOncePerDay() {
         val now = 10_000_000_000L
         assertTrue(YtDlpEngine.isEngineCheckDue(0L, 0L, now))
-        val sixDaysAgo = now - 6L * 24 * 60 * 60 * 1000
-        assertFalse(YtDlpEngine.isEngineCheckDue(sixDaysAgo, sixDaysAgo, now))
-        val eightDaysAgo = now - 8L * 24 * 60 * 60 * 1000
-        assertTrue(YtDlpEngine.isEngineCheckDue(eightDaysAgo, eightDaysAgo, now))
+        val twentyThreeHoursAgo = now - 23L * 60 * 60 * 1000
+        assertFalse(YtDlpEngine.isEngineCheckDue(twentyThreeHoursAgo, twentyThreeHoursAgo, now))
+        val twentyFiveHoursAgo = now - 25L * 60 * 60 * 1000
+        assertTrue(YtDlpEngine.isEngineCheckDue(twentyFiveHoursAgo, twentyFiveHoursAgo, now))
     }
 
     @Test
-    fun failedEngineChecksRetryAfterOneDayInsteadOfOneWeek() {
+    fun failedEngineChecksRetryAfterSixHoursInsteadOfOneDay() {
         val now = 10_000_000_000L
-        val previousSuccess = now - 8L * 24 * 60 * 60 * 1000
-        val failed23HoursAgo = now - 23L * 60 * 60 * 1000
-        assertFalse(YtDlpEngine.isEngineCheckDue(failed23HoursAgo, previousSuccess, now))
-        val failed25HoursAgo = now - 25L * 60 * 60 * 1000
-        assertTrue(YtDlpEngine.isEngineCheckDue(failed25HoursAgo, previousSuccess, now))
+        val previousSuccess = now - 2L * 24 * 60 * 60 * 1000
+        val failedFiveHoursAgo = now - 5L * 60 * 60 * 1000
+        assertFalse(YtDlpEngine.isEngineCheckDue(failedFiveHoursAgo, previousSuccess, now))
+        val failedSevenHoursAgo = now - 7L * 60 * 60 * 1000
+        assertTrue(YtDlpEngine.isEngineCheckDue(failedSevenHoursAgo, previousSuccess, now))
     }
 
     @Test
