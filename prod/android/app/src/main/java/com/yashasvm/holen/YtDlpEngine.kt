@@ -322,10 +322,12 @@ class YtDlpEngine private constructor(private val context: Context) {
                             "--continue",
                             "--windows-filenames",
                             "--no-overwrites",
-                            "--embed-metadata",
+                            // yt-dlp already runs aria2c with 16 connections. Do not pass
+                            // --downloader-args for aria2c: youtubedl-android appends its own
+                            // (including the CA bundle path) before HOLEN's commands, and yt-dlp
+                            // keeps only the last value for a downloader.
                             "--downloader", "libaria2c.so",
                             "--downloader", "dash,m3u8:native",
-                            "--downloader-args", "aria2c:--max-tries=4 --connect-timeout=20 --timeout=20",
                             "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
@@ -602,34 +604,42 @@ class YtDlpEngine private constructor(private val context: Context) {
                 emptyList()
             }
 
+        /**
+         * Every selector ends in a merged best-video+best-audio fallback and then any single
+         * file, so a video is never refused just because a preferred container is missing.
+         * Capped qualities prefer H.264 (avc1) first because it plays on every Android device;
+         * "Best" takes the highest resolution in any codec (VP9/AV1 for 1440p and 4K).
+         */
         fun downloadArguments(format: DownloadFormat): List<String> = when (format) {
             DownloadFormat.ORIGINAL -> error("Original format is handled by the direct downloader.")
             DownloadFormat.BEST_MP4 -> listOf(
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "-f", "bv*+ba[ext=m4a]/bv*+ba/b",
                 "--merge-output-format", "mp4",
             )
-            DownloadFormat.MP4_1080 -> listOf(
-                "-f",
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
-                "--merge-output-format", "mp4",
-            )
-            DownloadFormat.MP4_720 -> listOf(
-                "-f",
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-                "--merge-output-format", "mp4",
-            )
+            DownloadFormat.MP4_1080 -> listOf("-f", cappedVideoSelector(1080), "--merge-output-format", "mp4")
+            DownloadFormat.MP4_720 -> listOf("-f", cappedVideoSelector(720), "--merge-output-format", "mp4")
             DownloadFormat.AUDIO_M4A -> listOf(
-                "-f", "bestaudio[ext=m4a]/bestaudio",
+                "-f", "ba[ext=m4a]/ba/b",
                 "--extract-audio",
                 "--audio-format", "m4a",
+                "--embed-metadata",
             )
             DownloadFormat.AUDIO_MP3 -> listOf(
-                "-f", "bestaudio",
+                "-f", "ba/b",
                 "--extract-audio",
                 "--audio-format", "mp3",
                 "--audio-quality", "0",
+                "--embed-metadata",
             )
         }
+
+        private fun cappedVideoSelector(height: Int): String = listOf(
+            "bv*[height<=$height][vcodec^=avc1]+ba[ext=m4a]",
+            "bv*[height<=$height][ext=mp4]+ba[ext=m4a]",
+            "bv*[height<=$height]+ba",
+            "b[height<=$height]",
+            "bv*+ba/b",
+        ).joinToString("/")
 
         internal fun estimateSize(formats: JSONArray, target: DownloadFormat): Long? {
             data class Candidate(val bytes: Long, val video: Boolean, val audio: Boolean)

@@ -151,42 +151,38 @@ class CoreLogicTest {
     @Test
     fun everyMediaFormatHasLockedArguments() {
         assertEquals(
-            listOf(
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--merge-output-format", "mp4",
-            ),
+            listOf("-f", "bv*+ba[ext=m4a]/bv*+ba/b", "--merge-output-format", "mp4"),
             YtDlpEngine.downloadArguments(DownloadFormat.BEST_MP4),
         )
         assertEquals(
             listOf(
                 "-f",
-                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
+                "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/" +
+                    "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
                 "--merge-output-format", "mp4",
             ),
             YtDlpEngine.downloadArguments(DownloadFormat.MP4_1080),
         )
+        assertTrue(YtDlpEngine.downloadArguments(DownloadFormat.MP4_720)[1].startsWith("bv*[height<=720][vcodec^=avc1]"))
         assertEquals(
             listOf(
-                "-f",
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-                "--merge-output-format", "mp4",
-            ),
-            YtDlpEngine.downloadArguments(DownloadFormat.MP4_720),
-        )
-        assertEquals(
-            listOf(
-                "-f", "bestaudio[ext=m4a]/bestaudio",
-                "--extract-audio", "--audio-format", "m4a",
+                "-f", "ba[ext=m4a]/ba/b",
+                "--extract-audio", "--audio-format", "m4a", "--embed-metadata",
             ),
             YtDlpEngine.downloadArguments(DownloadFormat.AUDIO_M4A),
         )
         assertEquals(
             listOf(
-                "-f", "bestaudio", "--extract-audio", "--audio-format", "mp3",
-                "--audio-quality", "0",
+                "-f", "ba/b", "--extract-audio", "--audio-format", "mp3",
+                "--audio-quality", "0", "--embed-metadata",
             ),
             YtDlpEngine.downloadArguments(DownloadFormat.AUDIO_MP3),
         )
+        // Every video selector ends in an unconditional fallback so no video is refused.
+        listOf(DownloadFormat.BEST_MP4, DownloadFormat.MP4_1080, DownloadFormat.MP4_720).forEach {
+            assertTrue(YtDlpEngine.downloadArguments(it)[1].endsWith("bv*+ba/b"))
+            assertFalse(YtDlpEngine.downloadArguments(it).contains("--embed-metadata"))
+        }
         assertThrows(IllegalStateException::class.java) {
             YtDlpEngine.downloadArguments(DownloadFormat.ORIGINAL)
         }
