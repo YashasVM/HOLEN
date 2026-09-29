@@ -27,6 +27,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class DownloadService : Service() {
     private data class NotificationState(
@@ -54,6 +55,12 @@ class DownloadService : Service() {
     @Volatile
     private var stopping = false
 
+    /** Newest start ID delivered; stopping with it fails if another start arrives first. */
+    private val latestStartId = AtomicInteger(0)
+
+    /** Queue runs requested but not yet finished, so idle checks never race a new wake. */
+    private val pendingQueueRuns = AtomicInteger(0)
+
     private var blockedPublicationIds: Set<String> = emptySet()
     private var lastProgressNotificationAt = 0L
 
@@ -69,15 +76,42 @@ class DownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId.accumulateAndGet(startId) { current, next -> maxOf(current, next) }
         when (intent?.action ?: ACTION_WAKE_QUEUE) {
-            ACTION_CANCEL -> intent?.getStringExtra(EXTRA_JOB_ID)?.let { cancelJob(it, startId) }
+            ACTION_CANCEL -> {
+                val jobId = intent?.getStringExtra(EXTRA_JOB_ID)
+                if (jobId == null) stopIfIdle() else cancelJob(jobId)
+            }
             ACTION_WAKE_QUEUE -> {
                 if (stopping) return START_NOT_STICKY
-                startTransferForeground(notification("Preparing queue", 0, null, null, null))
-                scope.launch { processQueue(startId) }
+                if (!startTransferForeground(notification("Preparing queue", 0, null, null, null))) {
+                    // Android can refuse a background foreground-service start (for example a
+                    // sticky restart). The queue stays persisted and resumes when HOLEN opens.
+                    stopIfIdle()
+                    return START_NOT_STICKY
+                }
+                pendingQueueRuns.incrementAndGet()
+                scope.launch {
+                    try {
+                        processQueue()
+                    } finally {
+                        pendingQueueRuns.decrementAndGet()
+                        stopIfIdle()
+                    }
+                }
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * Stops only when no queue run is pending and no transfer is active. Using the newest start
+     * ID makes the stop fail atomically if another command was delivered in the meantime; that
+     * command's own completion performs the next idle check.
+     */
+    private fun stopIfIdle() {
+        if (stopping || pendingQueueRuns.get() > 0 || activeJobIds.isNotEmpty()) return
+        if (stopSelfResult(latestStartId.get())) stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -124,7 +158,7 @@ class DownloadService : Service() {
         }
     }
 
-    private fun cancelJob(id: String, startId: Int) {
+    private fun cancelJob(id: String) {
         cancelledIds += id
         if (id in activeJobIds) {
             directDownloaders[id]?.cancel()
@@ -138,10 +172,11 @@ class DownloadService : Service() {
                     cancelledIds -= id
                 }
             }
+            stopIfIdle()
         }
     }
 
-    private suspend fun processQueue(startId: Int) = processorMutex.withLock {
+    private suspend fun processQueue() = processorMutex.withLock {
         if (!recovered) {
             blockedPublicationIds = recoverPublishedFiles()
             store.requeueInterrupted(blockedPublicationIds)
@@ -164,7 +199,6 @@ class DownloadService : Service() {
                 }
             }.joinAll()
         }
-        if (stopSelfResult(startId)) stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private suspend fun processJobs() {
@@ -499,12 +533,16 @@ class DownloadService : Service() {
             .build()
     }
 
-    private fun startTransferForeground(notification: Notification) {
+    private fun startTransferForeground(notification: Notification): Boolean = try {
         startForeground(
             NOTIFICATION_ID,
             notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
+        true
+    } catch (_: IllegalStateException) {
+        // ForegroundServiceStartNotAllowedException extends IllegalStateException.
+        false
     }
 
     private fun showCompletionNotification(
@@ -572,7 +610,7 @@ class DownloadService : Service() {
         private const val COMPLETION_CHANNEL_ID = "download_completions"
         private const val NOTIFICATION_ID = 410
         private const val PROGRESS_NOTIFICATION_BASE = 100_000
-        private const val COMPLETION_NOTIFICATION_BASE = 10_000
+        private const val COMPLETION_NOTIFICATION_BASE = 200_000
         private const val NOTIFICATION_UPDATE_INTERVAL_MS = 1_000L
 
         @Volatile
