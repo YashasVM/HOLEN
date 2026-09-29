@@ -41,7 +41,7 @@ sealed interface AppUpdateState {
 }
 
 /**
- * Checks one explicit GitHub repository and downloads only its ARM64 release asset. The platform
+ * Checks one explicit GitHub repository and downloads the release asset for this device's ABI. The platform
  * package installer remains the final authority and always asks the person using the device.
  */
 class AppUpdateManager(private val context: Context) {
@@ -52,7 +52,7 @@ class AppUpdateManager(private val context: Context) {
         val tag = release.optString("tag_name").trim()
         val versionName = AppUpdateVersion.androidVersionFromTag(tag) ?: return@withContext null
         if (!AppUpdateVersion.isNewer(versionName, BuildConfig.VERSION_NAME)) return@withContext null
-        val asset = selectArm64Asset(release.optJSONArray("assets")) ?: return@withContext null
+        val asset = selectDeviceAsset(release.optJSONArray("assets")) ?: return@withContext null
         AppRelease(
             tag = tag,
             versionName = versionName,
@@ -68,7 +68,7 @@ class AppUpdateManager(private val context: Context) {
             val updates = File(context.cacheDir, UPDATE_DIRECTORY).apply { mkdirs() }
             if (!updates.isDirectory) throw IOException("Update storage is unavailable.")
             updates.listFiles()?.forEach { if (it.name.endsWith(".apk", true)) it.delete() }
-            val target = File(updates, "HOLEN-${release.versionName}-arm64.apk")
+            val target = File(updates, sanitizeFileName(release.assetName, "HOLEN-${release.versionName}.apk"))
             val temporary = File(updates, "${target.name}.part")
             temporary.delete()
             downloadFile(release.assetUrl, temporary, onProgress)
@@ -80,15 +80,16 @@ class AppUpdateManager(private val context: Context) {
             target
         }
 
-    private fun selectArm64Asset(assets: JSONArray?): JSONObject? {
+    private fun selectDeviceAsset(assets: JSONArray?): JSONObject? {
         if (assets == null) return null
-        return (0 until assets.length())
+        val candidates = (0 until assets.length())
             .mapNotNull { assets.optJSONObject(it) }
-            .firstOrNull { asset ->
-                val name = asset.optString("name").lowercase()
-                name.endsWith(".apk") && "arm64" in name &&
-                    isAllowedUrl(asset.optString("browser_download_url"))
-            }
+            .filter { isAllowedUrl(it.optString("browser_download_url")) }
+        val chosen = AppUpdateVersion.selectApkAssetName(
+            candidates.map { it.optString("name") },
+            Build.SUPPORTED_ABIS.toList(),
+        ) ?: return null
+        return candidates.first { it.optString("name") == chosen }
     }
 
     private fun getText(url: String): String {

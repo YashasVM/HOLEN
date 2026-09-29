@@ -24,6 +24,25 @@ internal object AppUpdateVersion {
             ?: false
     }
 
+    /**
+     * Picks the release APK for the device's preferred ABI, falling back to the universal APK.
+     * Installing an APK without a matching native ABI fails, so an unknown ABI yields null.
+     */
+    fun selectApkAssetName(assetNames: List<String>, supportedAbis: List<String>): String? {
+        val apks = assetNames.filter { it.endsWith(".apk", ignoreCase = true) }
+        for (abi in supportedAbis) {
+            val tokens = when (abi) {
+                "arm64-v8a" -> listOf("arm64-v8a", "arm64")
+                "armeabi-v7a" -> listOf("armeabi-v7a", "armv7")
+                else -> continue
+            }
+            apks.firstOrNull { name -> tokens.any { name.contains(it, ignoreCase = true) } }
+                ?.let { return it }
+        }
+        val supportsArm = supportedAbis.any { it == "arm64-v8a" || it == "armeabi-v7a" }
+        return apks.firstOrNull { supportsArm && it.contains("universal", ignoreCase = true) }
+    }
+
     fun isAllowedGitHubHost(host: String?): Boolean = host?.lowercase() in setOf(
         "api.github.com",
         "github.com",
