@@ -43,14 +43,22 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
             }
             return@withContext analyzeWithExtractorRecovery(url, mode, processId)
         }
-        val probe = probe(endpoint)
-        if (isDirectFile(probe.contentDisposition, probe.mimeType)) {
+        // The probe only decides whether this is a plain file. Many media sites reject HEAD,
+        // unknown user agents, or respond slowly; none of that means yt-dlp cannot read them.
+        val probe = try {
+            probe(endpoint)
+        } catch (_: IOException) {
+            null
+        }
+        if (probe != null && isDirectFile(probe.contentDisposition, probe.mimeType)) {
             val name = sanitizeFileName(
                 DirectDownloader.fileNameFromDisposition(probe.contentDisposition)
                     ?: URI(probe.finalUrl).path.substringAfterLast('/').ifBlank { "download" },
             )
             SourceAnalysis.DirectFile(
-                sourceUrl = probe.finalUrl,
+                // Keep the link the person shared. Redirect targets are often signed CDN URLs
+                // that expire before a later retry; the downloader re-follows redirects anyway.
+                sourceUrl = url,
                 title = name,
                 fileName = name,
                 mimeType = probe.mimeType,

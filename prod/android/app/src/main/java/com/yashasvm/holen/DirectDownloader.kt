@@ -89,7 +89,9 @@ class DirectDownloader {
             val total = if (completedResume) existing else totalLength(connection, existing)
             val disposition = connection.header("Content-Disposition")
             val suggested = fileNameFromDisposition(disposition)
-                ?: URI(job.sourceUrl).path.substringAfterLast('/').ifBlank { job.title }
+                ?: job.fileName?.takeIf(String::isNotBlank)
+                ?: connection.request.url.pathSegments.lastOrNull { it.isNotBlank() }
+                ?: job.title
             val fileName = completionFileName(suggested)
             val mimeType = OutputStore.mimeTypeFor(fileName, connection.header("Content-Type")?.substringBefore(';'))
             var downloaded = existing
