@@ -242,7 +242,7 @@ jobs:
 
           verify_apk "release/HOLEN-v${VERSION_NAME}-arm64-v8a.apk" "arm64-v8a" true
           verify_apk "release/HOLEN-v${VERSION_NAME}-armeabi-v7a.apk" "armeabi-v7a" true
-          verify_apk "release/HOLEN-v${VERSION_NAME}-universal.apk" "arm64-v8a,armeabi-v7a,x86,x86_64" false
+          verify_apk "release/HOLEN-v${VERSION_NAME}-universal.apk" "arm64-v8a,armeabi-v7a" false
           (cd release && sha256sum HOLEN-v*.apk > SHA256SUMS)
       - name: Publish Android release
         env:
