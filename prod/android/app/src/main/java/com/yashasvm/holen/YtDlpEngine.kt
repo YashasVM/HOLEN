@@ -493,13 +493,17 @@ class YtDlpEngine private constructor(private val context: Context) {
         entries: JSONArray,
         limit: Int,
     ): SourceAnalysis.Playlist {
+        // Playlists may list the same video more than once. Entry IDs key the selection set
+        // and the Compose list, so duplicates must be dropped rather than rendered twice.
+        val seenIds = mutableSetOf<String>()
         val preview = buildList {
             for (index in 0 until minOf(entries.length(), limit)) {
                 val item = entries.optJSONObject(index) ?: continue
-                val id = item.optString("id").ifBlank { index.toString() }
+                val id = item.optString("id").ifBlank { "index-$index" }
                 val candidate = item.optString("webpage_url")
                     .ifBlank { item.optString("url") }
                 if (!candidate.startsWith("https://")) continue
+                if (!seenIds.add(id)) continue
                 add(
                     PlaylistEntry(
                         id = id,
