@@ -6,7 +6,7 @@
    Fonts: "DM Sans" (body) + "Syne" (display)
    ═══════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Syne:wght@700;800&display=swap');
+/* System fonts keep the first screen independent of a third-party font request. */
 
 /* ─── Design Tokens ────────────────────────────────────── */
 
@@ -26,8 +26,8 @@
   --shadow-sm: 3px 3px 0 var(--ink);
   --shadow-xs: 2px 2px 0 var(--ink);
   --radius: 0px;
-  --font-body: "DM Sans", system-ui, sans-serif;
-  --font-display: "Syne", "DM Sans", system-ui, sans-serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Trebuchet MS", system-ui, sans-serif;
   --transition-fast: 0.12s ease;
   --transition-med: 0.25s ease;
 }
@@ -371,24 +371,23 @@ img { display: block; max-width: 100%; }
   line-height: 1.4;
 }
 
-/* ─── Loading State ────────────────────────────────────── */
+/* ─── Cold-start screen ───────────────────────────────── */
 
-.loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  z-index: 1;
+.boot-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
 }
-
-.loading-state p {
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
+.boot-panel { width: min(560px, 100%); padding: clamp(24px, 6vw, 48px); border: 2px solid var(--ink); background: var(--surface); box-shadow: var(--shadow); }
+.boot-mark { width: 48px; height: 48px; display: grid; place-items: center; margin-bottom: 28px; background: var(--blue); color: #fff; font: 800 1.5rem/1 var(--font-display); }
+.boot-kicker { color: var(--blue); font-weight: 700; font-size: .85rem; }
+.boot-copy h1 { margin-top: 8px; font: 800 clamp(2rem, 7vw, 3rem)/1.15 var(--font-display); letter-spacing: -.035em; overflow-wrap: normal; }
+.boot-copy p { margin-top: 18px; max-width: 42ch; color: #544d43; line-height: 1.6; }
+.boot-copy .boot-eta { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 600; }
+.app-enter { animation: app-enter .42s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes app-enter { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
 
 /* ═══════════════════════════════════════════════════════════
    PENDING APPROVAL PAGE
@@ -2580,4 +2579,27 @@ p, h1, h2, h3, span, strong, small, label { overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {
   .entry-primary, .entry-secondary { transition: none; }
+}
+
+/* Download controls stay readable at phone widths and report real activity. */
+.source-options { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+.source-help { margin-top: 14px; color: #544d43; font-size: .85rem; line-height: 1.55; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
+button:disabled { cursor: wait; opacity: .6; }
+.job-top { flex-wrap: wrap; align-items: center; }
+.job-top strong { flex-basis: 65%; }
+.job-msg { white-space: normal; overflow-wrap: anywhere; }
+.job-transfer { display: inline-flex; }
+.playlist-entry { width: 100%; text-align: left; }
+.entry-copy h1 { line-height: 1.1; }
+.entry-copy h1 span, .entry-copy h1 em { white-space: normal; }
+.entry-access h2 { white-space: normal; line-height: 1.2; }
+@media (max-width: 640px) {
+  .boot-screen { padding: 16px; }
+  .source-options { align-items: stretch; }
+  .source-options .format-picker { width: 100%; }
+  .source-options > button { min-height: 44px; }
+  .job-top strong { order: 3; flex-basis: 100%; }
+  .job-transfer { font-size: .75rem; }
+  .job-bottom { flex-wrap: wrap; }
 }

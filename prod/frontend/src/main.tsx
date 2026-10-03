@@ -1,69 +1,130 @@
 import { ClerkProvider, useAuth } from "@clerk/react";
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { AdminDashboard } from "./AdminDashboard";
+const AdminDashboard = lazy(() => import("./AdminDashboard").then((module) => ({ default: module.AdminDashboard })));
 import { DownloaderPage } from "./DownloaderPage";
 import { LoginPage } from "./LoginPage";
 import type { AppUser } from "./types";
+import { requestJson } from "./lib/api";
 import "./styles.css";
 
-const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
-if (!publishableKey) throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY");
+// Never throw at module top: a missing key would blank the whole app with no
+// UI at all. Render a fallback card instead (see MissingKeyCard / Root).
+const publishableKey = (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined) ?? "";
+
+/* ── ErrorBoundary ─────────────────────────────────────────── */
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    console.error("UI crashed:", error, info);
+  }
+
+  render(): React.ReactNode {
+    if (this.state.error) {
+      return (
+        <main className="auth-shell">
+          <section className="auth-card error-card" role="alert">
+            <AlertTriangle size={36} />
+            <h1>Something broke</h1>
+            <p>{this.state.error.message || "The app hit an unexpected error."}</p>
+            <button className="btn btn-outline" type="button" onClick={() => window.location.reload()}>
+              Reload
+            </button>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function MissingKeyCard() {
+  return (
+    <main className="auth-shell">
+      <section className="auth-card error-card" role="alert">
+        <AlertTriangle size={36} />
+        <h1>Sign-in unavailable</h1>
+        <p>Missing VITE_CLERK_PUBLISHABLE_KEY. Set it in the frontend environment and rebuild.</p>
+      </section>
+    </main>
+  );
+}
+
+/* ── BootScreen ────────────────────────────────────────────── */
+
+function BootScreen() {
+  return (
+    <main className="boot-screen" aria-busy="true" aria-live="polite">
+      <section className="boot-panel">
+        <div className="boot-mark" aria-hidden="true">H</div>
+        <div className="boot-copy">
+          <span className="boot-kicker">Holen</span>
+          <h1>Getting ready</h1>
+          <p className="boot-eta"><Loader2 className="spin" size={18} aria-hidden="true" /> Connecting your account…</p>
+          <p>The server sleeps when it is idle. Your account will open as soon as it is ready.</p>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/* ── App ───────────────────────────────────────────────────── */
 
 function AppContent() {
   const { isLoaded, isSignedIn, getToken } = useAuth();
   const [view, setView] = useState<"downloader" | "admin">("downloader");
   const [user, setUser] = useState<AppUser | null>(null);
-  const [backendToken, setBackendToken] = useState("");
   const [profileError, setProfileError] = useState("");
+
+  const loadProfile = useCallback(() => requestJson<AppUser>("/api/me", getToken), [getToken]);
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn) {
       setUser(null);
-      setBackendToken("");
+      setProfileError("");
       return;
     }
-    let mounted = true;
-    const loadProfile = async () => {
+    let active = true;
+    let inflight = false;
+    const syncProfile = async () => {
+      if (inflight) return;
+      inflight = true;
       try {
-        const token = await getToken();
-        if (!token) throw new Error("Clerk did not return a session token");
-        const response = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body.detail || "Could not load your account");
-        if (mounted) {
-          setBackendToken(token);
-          setUser(body as AppUser);
-          setProfileError("");
-        }
+        const profile = await loadProfile();
+        if (!active) return;
+        setUser(profile);
+        setProfileError("");
       } catch (error) {
-        if (mounted) setProfileError(error instanceof Error ? error.message : "Could not load your account");
+        if (!active) return;
+        setProfileError(error instanceof Error ? error.message : "Could not load your account");
+      } finally {
+        inflight = false;
       }
     };
-    void loadProfile();
-    const timer = window.setInterval(() => void loadProfile(), 45_000);
-    return () => {
-      mounted = false;
-      window.clearInterval(timer);
+    void syncProfile();
+    const onVisible = () => {
+      if (!document.hidden) void syncProfile();
     };
-  }, [getToken, isLoaded, isSignedIn]);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      active = false;
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [isLoaded, isSignedIn, loadProfile]);
 
-  if (!isLoaded || (isSignedIn && !user && !profileError)) {
-    return (
-      <main className="auth-shell">
-        <div className="bauhaus-deco bauhaus-circle" aria-hidden="true" />
-        <div className="bauhaus-deco bauhaus-rect" aria-hidden="true" />
-        <div className="loading-state slide-up">
-          <Loader2 className="spin" size={36} />
-          <p>Loading profile</p>
-        </div>
-      </main>
-    );
-  }
+  if (!isLoaded) return <BootScreen />;
 
   if (!isSignedIn) return <LoginPage />;
-  if (profileError) return (
+  if (profileError && !user) return (
     <main className="auth-shell">
       <section className="auth-card error-card" role="alert">
         <AlertTriangle size={36} />
@@ -73,17 +134,17 @@ function AppContent() {
       </section>
     </main>
   );
-  if (!user) return null;
-
+  if (!user) return <BootScreen />;
   if (view === "admin" && user.is_admin) {
-    return <AdminDashboard user={user} token={backendToken} onBack={() => setView("downloader")} />;
+    return <Suspense fallback={<BootScreen />}><AdminDashboard user={user} onBack={() => setView("downloader")} /></Suspense>;
   }
 
-  return <DownloaderPage user={user} token={backendToken} onAdminClick={() => setView("admin")} />;
+  return <div className="app-enter"><DownloaderPage user={user} onAdminClick={() => setView("admin")} /></div>;
 }
 
-createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
+function Root() {
+  if (!publishableKey) return <MissingKeyCard />;
+  return (
     <ClerkProvider
       publishableKey={publishableKey}
       afterSignOutUrl="/"
@@ -93,7 +154,7 @@ createRoot(document.getElementById("root")!).render(
           colorBackground: "#fffbf0",
           colorForeground: "#1a1714",
           borderRadius: "0px",
-          fontFamily: '"DM Sans", sans-serif',
+          fontFamily: 'system-ui, sans-serif',
         },
         elements: {
           cardBox: "clerk-card-box",
@@ -109,5 +170,13 @@ createRoot(document.getElementById("root")!).render(
     >
       <AppContent />
     </ClerkProvider>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <Root />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

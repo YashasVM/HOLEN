@@ -1,0 +1,15 @@
+[Unit]
+Description=Holen on-demand wake proxy
+After=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yvm/holen/HOLEN
+ExecStart=/usr/bin/python3 -B -u /home/yvm/holen/HOLEN/prod/holen-on-demand.py
+ExecStop=/usr/bin/docker compose --env-file .env -f prod/docker-compose.yml stop
+TimeoutStopSec=75
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

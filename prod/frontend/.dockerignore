@@ -2,3 +2,6 @@ node_modules
 dist
 .env
 .env.*
+# Build context hygiene: agent skills and wrangler state must never ship.
+.agents
+.wrangler

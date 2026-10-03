@@ -1,4 +1,4 @@
-import { UserButton, useClerk } from "@clerk/react";
+import { UserButton, useClerk, useAuth } from "@clerk/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -16,6 +16,8 @@ import {
   Users,
 } from "lucide-react";
 import type { AppUser } from "./types";
+import { fmtBytes } from "./lib/format";
+import { requestJson } from "./lib/api";
 
 type CachedFile = {
   id: string;
@@ -42,65 +44,118 @@ type AdminTelemetry = {
 
 interface AdminDashboardProps {
   user: AppUser;
-  token: string;
   onBack: () => void;
 }
 
-function fmtBytes(bytes: number): string {
-  if (bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** unit).toFixed(unit < 2 ? 0 : 1)} ${units[unit]}`;
-}
+const LIMIT_PRESETS_GB = [5, 10, 25, 50, 100, 250];
+const GB = 1024 ** 3;
 
 function usagePercent(user: AppUser): number {
   return Math.min(100, Math.round((user.used_bytes / Math.max(1, user.usage_limit_bytes)) * 100));
 }
 
-export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
+/** Quota <select> options: presets plus the user's current value so a
+ *  non-preset limit (e.g. a 2 GB restricted quota) still matches an
+ *  <option> instead of rendering blank + a React warning. */
+function limitOptions(currentBytes: number): number[] {
+  const presets = LIMIT_PRESETS_GB.map((gb) => gb * GB);
+  if (presets.includes(currentBytes)) return presets;
+  return [...presets, currentBytes].sort((a, b) => a - b);
+}
+
+function formatLimitOption(bytes: number): string {
+  if (bytes % GB === 0) return `${bytes / GB} GB`;
+  return `${fmtBytes(bytes)} (current)`;
+}
+
+export function AdminDashboard({ user, onBack }: AdminDashboardProps) {
+  const { getToken } = useAuth();
   const { signOut } = useClerk();
   const [files, setFiles] = useState<CachedFile[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [telemetry, setTelemetry] = useState<AdminTelemetry | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [busyKey, setBusyKey] = useState("");
+  // Per-operation busy keys (e.g. `delete-<fileId>`, `user-<userId>`) so
+  // independent rows can run in parallel; only the same row is blocked.
+  const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<Notice | null>(null);
+  // Inline (non-blocking) delete confirmation; null = no pending confirm.
+  const [pendingDelete, setPendingDelete] = useState<string[] | null>(null);
 
-  const request = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
-    const response = await fetch(path, {
-      ...init,
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...init?.headers },
+  const isBusy = useCallback((key: string) => busyKeys.has(key), [busyKeys]);
+
+  const setKeysBusy = useCallback((keys: string[], busy: boolean) => {
+    setBusyKeys((current) => {
+      const next = new Set(current);
+      for (const key of keys) {
+        if (busy) next.add(key);
+        else next.delete(key);
+      }
+      return next;
     });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.detail || "Request failed");
-    return body as T;
-  }, [token]);
+  }, []);
+
+  const request = useCallback(<T,>(path: string, init?: RequestInit) => requestJson<T>(path, getToken, init), [getToken]);
 
   const reload = useCallback(async () => {
-    if (!token) return;
+    // Skip background refreshes; visibilitychange/focus handlers below
+    // trigger a reload when the tab becomes visible again.
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     setLoading(true);
     try {
-      const [fileRows, userRows, telemetryData] = await Promise.all([
+      // allSettled: one failing endpoint must not wipe the slices that
+      // did succeed (partial UI instead of a blank dashboard).
+      const [filesResult, usersResult, telemetryResult] = await Promise.allSettled([
         request<CachedFile[]>("/api/admin/files"),
         request<AppUser[]>("/api/admin/users"),
         request<AdminTelemetry>("/api/admin/telemetry"),
       ]);
-      setFiles(fileRows);
-      setUsers(userRows);
-      setTelemetry(telemetryData);
-      setSelected((current) => new Set([...current].filter((id) => fileRows.some((file) => file.id === id))));
+      const failed: string[] = [];
+      if (filesResult.status === "fulfilled") {
+        setFiles(filesResult.value);
+        setSelected((current) => new Set([...current].filter((id) => filesResult.value.some((file) => file.id === id))));
+      } else {
+        failed.push("cached files");
+      }
+      if (usersResult.status === "fulfilled") {
+        setUsers(usersResult.value);
+      } else {
+        failed.push("users");
+      }
+      if (telemetryResult.status === "fulfilled") {
+        setTelemetry(telemetryResult.value);
+      } else {
+        failed.push("telemetry");
+      }
+      if (failed.length === 3) {
+        const firstError = filesResult.status === "rejected" ? filesResult.reason : null;
+        setNotice({
+          text: firstError instanceof Error ? firstError.message : "Could not load the dashboard",
+          kind: "error",
+        });
+      } else if (failed.length > 0) {
+        setNotice({ text: `Partially loaded: could not refresh ${failed.join(", ")}.`, kind: "error" });
+      }
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : "Could not load the dashboard", kind: "error" });
     } finally {
       setLoading(false);
     }
-  }, [request, token]);
+  }, [request]);
 
   useEffect(() => { void reload(); }, [reload]);
   useEffect(() => {
-    const timer = window.setInterval(() => void reload(), 15_000);
-    return () => window.clearInterval(timer);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    const onFocus = () => void reload();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [reload]);
 
   const totalCache = useMemo(() => files.reduce((sum, file) => sum + file.size_bytes, 0), [files]);
@@ -117,6 +172,11 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
     () => telemetry?.activity.reduce((sum, point) => sum + point.downloads, 0) || 0,
     [telemetry],
   );
+  // Any in-flight delete blocks only delete buttons, never quota updates.
+  const anyDeleteBusy = useMemo(
+    () => [...busyKeys].some((key) => key.startsWith("delete-")),
+    [busyKeys],
+  );
 
   function toggle(id: string) {
     setSelected((current) => {
@@ -126,9 +186,16 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
     });
   }
 
-  async function deleteFiles(ids: string[]) {
-    if (!ids.length || !window.confirm(`Delete ${ids.length} cached file${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
-    setBusyKey("delete-files");
+  function requestDelete(ids: string[]) {
+    if (!ids.length) return;
+    setPendingDelete(ids);
+  }
+
+  async function confirmDelete() {
+    const ids = pendingDelete;
+    if (!ids?.length) return;
+    const keys = ids.map((id) => `delete-${id}`);
+    setKeysBusy(keys, true);
     try {
       const result = await request<{ deleted: number; freed_bytes: number }>("/api/admin/files", {
         method: "DELETE",
@@ -136,16 +203,19 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
       });
       setNotice({ text: `Deleted ${result.deleted} file(s) and freed ${fmtBytes(result.freed_bytes)}.`, kind: "success" });
       setSelected(new Set());
+      setPendingDelete(null);
       await reload();
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : "Delete failed", kind: "error" });
     } finally {
-      setBusyKey("");
+      setKeysBusy(keys, false);
     }
   }
 
   async function updateUser(target: AppUser, patch: { usage_limit_bytes?: number }) {
-    setBusyKey(`user-${target.id}`);
+    const key = `user-${target.id}`;
+    if (isBusy(key)) return;
+    setKeysBusy([key], true);
     try {
       const updated = await request<AppUser>(`/api/admin/users/${encodeURIComponent(target.id)}`, {
         method: "PATCH",
@@ -156,7 +226,7 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : "Update failed", kind: "error" });
     } finally {
-      setBusyKey("");
+      setKeysBusy([key], false);
     }
   }
 
@@ -181,6 +251,24 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
 
       {notice && <div className={`notice notice-${notice.kind}`} role="status"><span>{notice.text}</span><button onClick={() => setNotice(null)} aria-label="Dismiss">×</button></div>}
 
+      {pendingDelete && pendingDelete.length > 0 && (
+        <div className="notice notice-error" role="alertdialog" aria-label="Confirm delete">
+          <span>Delete {pendingDelete.length} cached file{pendingDelete.length === 1 ? "" : "s"}? This cannot be undone.</span>
+          <span style={{ display: "inline-flex", gap: "0.5rem", marginLeft: "0.75rem" }}>
+            <button
+              className="btn btn-delete"
+              type="button"
+              onClick={() => void confirmDelete()}
+              disabled={pendingDelete.some((id) => isBusy(`delete-${id}`))}
+            >
+              {pendingDelete.some((id) => isBusy(`delete-${id}`)) ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+              Confirm delete
+            </button>
+            <button className="btn btn-outline" type="button" onClick={() => setPendingDelete(null)}>Cancel</button>
+          </span>
+        </div>
+      )}
+
       <section className="admin-summary" aria-label="Dashboard summary">
         <article><Database size={22} /><span>Cache</span><strong>{fmtBytes(telemetry?.cache.used_bytes ?? totalCache)}</strong><small>{telemetry ? `${telemetry.cache.percent_used}% of ${fmtBytes(telemetry.cache.limit_bytes)}` : `${files.length} file(s)`}</small></article>
         <article><Activity size={22} /><span>Bandwidth</span><strong>{fmtBytes(telemetry?.bandwidth.total_bytes ?? 0)}</strong><small>In {fmtBytes(telemetry?.bandwidth.ingress_bytes ?? 0)} · Out {fmtBytes(telemetry?.bandwidth.egress_bytes ?? 0)}</small></article>
@@ -191,7 +279,7 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
       <section className="admin-section telemetry-section" aria-labelledby="activity-heading">
         <div className="section-heading">
           <div><span className="header-tag header-tag-red">Live monitor</span><h2 id="activity-heading">Download activity</h2></div>
-          <p>Fourteen-day history and the current download queue. Refreshes every 15 seconds.</p>
+          <p>Fourteen-day history and the current download queue. Refreshes every 15 seconds while this tab is visible.</p>
         </div>
 
         <div className="telemetry-grid">
@@ -237,8 +325,8 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
           <div><span className="header-tag">Storage</span><h2 id="cache-heading">Cached files</h2></div>
           <div className="section-actions">
             {selected.size > 0 && <span className="selection-readout">{selected.size} selected · {fmtBytes(selectedSize)}</span>}
-            <button className="btn btn-delete" type="button" disabled={!selected.size || busyKey === "delete-files"} onClick={() => void deleteFiles([...selected])}>
-              {busyKey === "delete-files" ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />} Delete selected
+            <button className="btn btn-delete" type="button" disabled={!selected.size || anyDeleteBusy} onClick={() => requestDelete([...selected])}>
+              {anyDeleteBusy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />} Delete selected
             </button>
           </div>
         </div>
@@ -250,16 +338,21 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
             </button>
             <span>File</span><span>Format</span><span>Size</span><span>Cached</span><span>Action</span>
           </div>}
-          {files.map((file) => <article className={`data-row cache-grid ${selected.has(file.id) ? "is-selected" : ""}`} key={file.id}>
-            <button className="check-button" type="button" onClick={() => toggle(file.id)} aria-label={`Select ${file.title || file.file_name || file.id}`}>
-              {selected.has(file.id) ? <CheckSquare size={18} /> : <Square size={18} />}
-            </button>
-            <div className="file-identity"><HardDrive size={16} /><span title={file.title || file.file_name}>{file.title || file.file_name || file.id}</span></div>
-            <span className="mono-cell">{file.format}</span>
-            <span className="mono-cell">{fmtBytes(file.size_bytes)}</span>
-            <span>{new Date(file.created_at).toLocaleDateString()}</span>
-            <button className="row-delete" type="button" onClick={() => void deleteFiles([file.id])} aria-label={`Delete ${file.title || file.file_name || "file"}`}><Trash2 size={16} /><span>Delete</span></button>
-          </article>)}
+          {files.map((file) => {
+            const rowBusy = isBusy(`delete-${file.id}`);
+            return <article className={`data-row cache-grid ${selected.has(file.id) ? "is-selected" : ""}`} key={file.id}>
+              <button className="check-button" type="button" onClick={() => toggle(file.id)} aria-label={`Select ${file.title || file.file_name || file.id}`}>
+                {selected.has(file.id) ? <CheckSquare size={18} /> : <Square size={18} />}
+              </button>
+              <div className="file-identity"><HardDrive size={16} /><span title={file.title || file.file_name}>{file.title || file.file_name || file.id}</span></div>
+              <span className="mono-cell">{file.format}</span>
+              <span className="mono-cell">{fmtBytes(file.size_bytes)}</span>
+              <span>{new Date(file.created_at).toLocaleDateString()}</span>
+              <button className="row-delete" type="button" disabled={rowBusy} onClick={() => requestDelete([file.id])} aria-label={`Delete ${file.title || file.file_name || "file"}`}>
+                {rowBusy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}<span>Delete</span>
+              </button>
+            </article>;
+          })}
           {!loading && files.length === 0 && <div className="empty-state"><HardDrive size={32} /><p>The cache is empty.</p></div>}
           {loading && <div className="empty-state"><Loader2 className="spin" size={28} /><p>Reading cache…</p></div>}
         </div>
@@ -273,7 +366,8 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
 
         <div className="access-grid">
           {users.map((target) => {
-            const isBusy = busyKey === `user-${target.id}`;
+            const rowBusy = isBusy(`user-${target.id}`);
+            const options = limitOptions(target.usage_limit_bytes);
             return <article className="access-card" key={target.id}>
               <div className="access-card-top">
                 <div className="access-identity">
@@ -286,8 +380,8 @@ export function AdminDashboard({ user, token, onBack }: AdminDashboardProps) {
               <div className="usage-track"><span style={{ transform: `scaleX(${usagePercent(target) / 100})` }} /></div>
               <div className="usage-breakdown"><span>In {fmtBytes(target.ingress_bytes)}</span><span>Out {fmtBytes(target.egress_bytes)}</span><strong>{usagePercent(target)}%</strong></div>
               <div className="access-controls">
-                <label><span>Usage limit</span><select value={target.usage_limit_bytes} disabled={isBusy} onChange={(event) => void updateUser(target, { usage_limit_bytes: Number(event.target.value) })}>
-                  {[5, 10, 25, 50, 100, 250].map((gb) => <option key={gb} value={gb * 1024 ** 3}>{gb} GB</option>)}
+                <label><span>Usage limit</span><select value={target.usage_limit_bytes} disabled={rowBusy} onChange={(event) => void updateUser(target, { usage_limit_bytes: Number(event.target.value) })}>
+                  {options.map((bytes) => <option key={bytes} value={bytes}>{formatLimitOption(bytes)}</option>)}
                 </select></label>
               </div>
             </article>;

@@ -54,10 +54,17 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      - run: npm ci && npm run build && node check-api-proxy.mjs
+        working-directory: prod/frontend
+      - run: ./node_modules/.bin/tsc src/lib/api.ts --outDir /tmp/holen-api-check --module commonjs --target ES2020 --lib ES2020,DOM --skipLibCheck && node src/lib/api.test.cjs /tmp/holen-api-check/lib/api.js
+        working-directory: prod/frontend
       # actions/setup-python v5.6.0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
       - run: python -m compileall -q app
         working-directory: backend
+      - run: pip install -r prod/backend/requirements.txt httpx==0.28.1
+      - run: python prod/test_on_demand.py
+      - run: python prod/backend/checks/download_regression.py
       - run: node --check bin/holen.js

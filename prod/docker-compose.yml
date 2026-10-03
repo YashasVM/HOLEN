@@ -1,10 +1,11 @@
+name: holen
+
 services:
   backend:
     build:
       context: ./backend
       cache_from:
         - type=local,src=/tmp/docker-cache/backend
-    restart: unless-stopped
     # The public Clerk key lets the API derive its issuer when a dedicated
     # CLERK_FRONTEND_API_URL is not set in the root environment.
     env_file:
@@ -18,9 +19,8 @@ services:
       MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
       MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-25}
       MAX_JOBS_PER_USER: ${MAX_JOBS_PER_USER:-5}
-      DEFAULT_USAGE_LIMIT_GB: ${DEFAULT_USAGE_LIMIT_GB:-5}
-      RESTRICTED_EMAIL_USAGE_LIMIT_GB: ${RESTRICTED_EMAIL_USAGE_LIMIT_GB:-2}
-      TRUSTED_EMAIL_DOMAINS: ${TRUSTED_EMAIL_DOMAINS:-gmail.com,duck.com,hotmail.com,outlook.com}
+      DEFAULT_USAGE_LIMIT_GB: ${DEFAULT_USAGE_LIMIT_GB:-20}
+      DOWNLOAD_ACCEL_REDIRECT: "true"
       CACHE_LIMIT_GB: ${CACHE_LIMIT_GB:-45}
       DOWNLOAD_LINK_TTL_SECONDS: ${DOWNLOAD_LINK_TTL_SECONDS:-3600}
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
@@ -48,6 +48,8 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()"]
       interval: 30s
+      start_interval: 1s
+      start_period: 30s
       timeout: 5s
       retries: 3
 
@@ -58,12 +60,14 @@ services:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
       cache_from:
         - type=local,src=/tmp/docker-cache/frontend
-    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "8888:80"
+      # The on-demand proxy owns the public port and wakes this stack.
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ${DOWNLOAD_DIR:-./downloads}:/downloads:ro
     deploy:
       resources:
         limits:
