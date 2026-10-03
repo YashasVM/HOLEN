@@ -1,7 +1,9 @@
 package com.yashasvm.holen
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.core.content.edit
+import com.yausername.aria2c.Aria2c
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -15,7 +17,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -107,12 +111,21 @@ class YtDlpEngine private constructor(private val context: Context) {
     private val activeAnalysisIds = ConcurrentHashMap.newKeySet<String>()
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val operationGate = EngineOperationGate()
+    private val downloadToolsPrewarmInFlight = AtomicBoolean(false)
+    private val automaticUpdateInFlight = AtomicBoolean(false)
+    private val ejsCacheDirectory = File(context.cacheDir, EJS_CACHE_DIRECTORY)
 
     @Volatile
     private var initialized = false
 
     @Volatile
     private var ffmpegInitialized = false
+
+    @Volatile
+    private var aria2cInitialized = false
+
+    @Volatile
+    private var runtimeRestartRequired = false
 
     val bundledVersion: String = "youtubedl-android $WRAPPER_VERSION"
 
@@ -151,6 +164,9 @@ class YtDlpEngine private constructor(private val context: Context) {
                     val request = YoutubeDLRequest(url).apply {
                         addOption("--ignore-config")
                         addCommands(cookieStore.cookieArguments())
+                        if (mode == AnalysisMode.FULL) {
+                            addCommands(youtubeEjsArguments(url, ejsCacheDirectory))
+                        }
                         addOption("--dump-single-json")
                         addOption("--flat-playlist")
                         addOption("--playlist-end", playlistPreviewLimit(mode))
@@ -168,6 +184,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                         json.toMedia(url, includeEstimates = mode == AnalysisMode.FULL)
                     }
                     analysisCache.put(cacheKey, analysis, mode)
+                    if (mode == AnalysisMode.FULL) prewarmDownloadTools()
                     analysis
                 } catch (error: Throwable) {
                     if (timedOut.get()) throw IOException(METADATA_TIMEOUT_MESSAGE, error)
@@ -185,27 +202,74 @@ class YtDlpEngine private constructor(private val context: Context) {
         }
     }
 
-    /** Prepares the Python/yt-dlp runtime during app idle time without starting a transfer. */
+    /**
+     * Prepares only Python and yt-dlp during app idle time. Network update checks are deliberately
+     * kept off the foreground startup path so the first metadata request cannot queue behind them.
+     */
     suspend fun warmup() = withContext(Dispatchers.IO) {
         operationGate.withOperation { ensureInitialized(needsFfmpeg = false) }
-        // A stable update check is intentionally rate-limited and runs only from the
-        // non-interactive warm-up path. withMaintenance waits for any active transfer
-        // instead of terminating it, so an update can never interrupt a download.
-        if (isEngineCheckDue(preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L))) {
-            runCatching { updateStable() }
+    }
+
+    /**
+     * Performs a due stable-engine refresh only after the UI has moved to the background. The
+     * caller skips this while the download service is active, and this guard prevents duplicate
+     * background refreshes from repeated lifecycle transitions.
+     */
+    fun scheduleBackgroundRefreshIfDue() {
+        if (runtimeRestartRequired) return
+        if (!automaticUpdateInFlight.compareAndSet(false, true)) return
+        watchdogScope.launch(Dispatchers.IO) {
+            try {
+                val lastCheckAt = preferences.getLong(HolenStore.PREF_ENGINE_LAST_CHECK_AT, 0L)
+                val lastSuccessfulCheckAt = preferences.getLong(
+                    HolenStore.PREF_ENGINE_LAST_SUCCESSFUL_UPDATE_AT,
+                    0L,
+                )
+                if (isEngineCheckDue(lastCheckAt, lastSuccessfulCheckAt)) {
+                    updateStable()
+                }
+            } catch (_: Throwable) {
+                // Automatic refresh is best-effort. Manual updates still surface actionable errors,
+                // and failed checks retain the shorter retry cadence.
+            } finally {
+                automaticUpdateInFlight.set(false)
+            }
+        }
+    }
+
+    /**
+     * After a successful full metadata request the user normally spends time choosing a format.
+     * Use that think-time to extract the download-only tools, without adding work to app startup,
+     * quick shared-link previews, or the metadata request's own critical path.
+     */
+    private fun prewarmDownloadTools() {
+        if (ffmpegInitialized && aria2cInitialized) return
+        if (!downloadToolsPrewarmInFlight.compareAndSet(false, true)) return
+        watchdogScope.launch(Dispatchers.IO) {
+            try {
+                operationGate.withOperation {
+                    ensureInitialized(needsFfmpeg = true, needsAria2c = true)
+                }
+            } catch (_: Throwable) {
+                // Prewarm is best-effort. A real download retries initialization and surfaces
+                // the actionable startup failure instead of showing an error before the user acts.
+            } finally {
+                downloadToolsPrewarmInFlight.set(false)
+            }
         }
     }
 
     suspend fun download(
         job: DownloadJob,
         directory: File,
+        authenticationPolicy: JobAuthenticationPolicy = JobAuthenticationPolicy.CONFIGURED,
         isCancelled: () -> Boolean = { false },
         onProgress: (TransferProgress) -> Unit,
     ): StagedDownload = withContext(Dispatchers.IO) {
-        downloadMutex.withLock {
+        downloadMutex.withPermit {
             operationGate.withOperation {
                 validatePublicHttpsUrl(job.sourceUrl)
-                ensureInitialized(needsFfmpeg = true)
+                ensureInitialized(needsFfmpeg = true, needsAria2c = true)
                 if (isCancelled()) throw CancellationException("Download cancelled")
                 directory.mkdirs()
                 val existingFiles = completedFiles(directory).mapTo(mutableSetOf()) { it.canonicalPath }
@@ -215,23 +279,25 @@ class YtDlpEngine private constructor(private val context: Context) {
                 )
                 val request = YoutubeDLRequest(job.sourceUrl).apply {
                     addOption("--ignore-config")
-                    addCommands(cookieStore.cookieArguments())
+                    if (authenticationPolicy.usesConfiguredCookies) {
+                        addCommands(cookieStore.cookieArguments())
+                    }
+                    addCommands(youtubeEjsArguments(job.sourceUrl, ejsCacheDirectory))
                     addCommands(downloadArguments(job.format))
                     addCommands(
                         listOf(
                             "--continue",
-                            // Keep a readable title while yt-dlp still strips characters
-                            // which are unsafe for the destination document provider.
                             "--windows-filenames",
                             "--no-overwrites",
                             "--embed-metadata",
-                            "--concurrent-fragments", "2",
+                            "--downloader", "libaria2c.so",
+                            "--downloader", "dash,m3u8:native",
+                            "--downloader-args", "aria2c:--max-tries=4 --connect-timeout=20 --timeout=20",
+                            "--concurrent-fragments", "8",
                             "--retries", "3",
                             "--fragment-retries", "3",
+                            "--abort-on-unavailable-fragments",
                             "--socket-timeout", "20",
-                            // --print normally makes yt-dlp quiet. Request progress explicitly
-                            // and use a machine-readable template so the wrapper callback does
-                            // not depend on yt-dlp's human-facing wording.
                             "--progress",
                             "--progress-template",
                             "download:$PROGRESS_MARKER %(progress._percent_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s",
@@ -244,23 +310,17 @@ class YtDlpEngine private constructor(private val context: Context) {
                 }
                 var lastUpdate = 0L
                 var lastProgress: TransferProgress? = null
-                // yt-dlp writes progress to stderr. The wrapper only delivers its
-                // stdout stream to the callback, so merge stderr before launching
-                // the process or no live progress ever reaches the app.
-                val response = YoutubeDL.execute(request, job.id, true) { wrapperPercent, wrapperEta, line ->
+                val response = executeYtDlpDownload(request, job.id, isCancelled) { wrapperPercent, wrapperEta, line ->
                     if (isCancelled()) {
                         YoutubeDL.destroyProcessById(job.id)
                     } else {
-                        val now = System.currentTimeMillis()
+                        val now = SystemClock.elapsedRealtime()
                         val progress = transferProgressFromCallback(
                             line = line,
                             wrapperPercent = wrapperPercent,
                             wrapperEta = wrapperEta,
                             previous = lastProgress,
                         )
-                        // Do not allow a noisy non-progress line to consume the one-second
-                        // window before the actual progress record arrives.  Real progress is
-                        // still capped to four UI/DB writes per second.
                         if (progress != null && (now - lastUpdate >= 250 || progress.percent >= 100)) {
                             if (progress != lastProgress || progress.percent >= 100) {
                                 onProgress(progress)
@@ -292,7 +352,6 @@ class YtDlpEngine private constructor(private val context: Context) {
     fun createAnalysisProcessId(): String =
         "$ANALYSIS_PROCESS_PREFIX${analysisProcessSequence.incrementAndGet()}"
 
-    /** Cancels only the metadata request owned by the caller. */
     fun cancelAnalysis(processId: String) {
         if (processId in activeAnalysisIds) cancel(processId)
     }
@@ -312,8 +371,11 @@ class YtDlpEngine private constructor(private val context: Context) {
                 }
                 version
             } catch (error: Throwable) {
-                resetToBundledLocked()
-                throw IOException("Engine update failed. Close and reopen HOLEN to restore the bundled engine.", error)
+                // youtubedl-android checks the network before replacing the active binary and
+                // restores its bundled binary if installation itself fails. Clearing HOLEN's
+                // whole runtime here would turn an ordinary offline update check into a forced
+                // restart even though the previous engine is still usable.
+                throw IOException("Engine update failed. The current engine was kept.", error)
             }
         }
     }
@@ -324,14 +386,16 @@ class YtDlpEngine private constructor(private val context: Context) {
 
     private suspend fun resetToBundledLocked(): String =
         initMutex.withLock {
-            clearRuntimeLocked()
+            clearRuntimeLocked(requiresRestart = true)
             preferences.edit { putString(HolenStore.PREF_ENGINE_VERSION, "Bundled (restores after restart)") }
             "Bundled runtime cleared. Close and reopen HOLEN to rebuild it."
         }
 
-    private suspend fun ensureInitialized(needsFfmpeg: Boolean) {
-        if (initialized && (!needsFfmpeg || ffmpegInitialized)) return
+    private suspend fun ensureInitialized(needsFfmpeg: Boolean, needsAria2c: Boolean = false) {
+        if (runtimeRestartRequired) throw IOException(RESTART_REQUIRED_MESSAGE)
+        if (initialized && (!needsFfmpeg || ffmpegInitialized) && (!needsAria2c || aria2cInitialized)) return
         initMutex.withLock {
+            if (runtimeRestartRequired) throw IOException(RESTART_REQUIRED_MESSAGE)
             if (!initialized) {
                 try {
                     YoutubeDL.init(context)
@@ -344,7 +408,7 @@ class YtDlpEngine private constructor(private val context: Context) {
                     initialized = true
                 } catch (firstError: Throwable) {
                     try {
-                        clearRuntimeLocked()
+                        clearRuntimeLocked(requiresRestart = false)
                         YoutubeDL.init(context)
                         preferences.edit {
                             putString(HolenStore.PREF_ENGINE_VERSION, bundledVersion)
@@ -366,23 +430,30 @@ class YtDlpEngine private constructor(private val context: Context) {
                     throw IOException("Media engine startup failed. The media tools could not load.", error)
                 }
             }
+            if (needsAria2c && !aria2cInitialized) {
+                try {
+                    Aria2c.init(context)
+                    aria2cInitialized = true
+                } catch (error: Throwable) {
+                    throw IOException("Media engine startup failed. The aria2c downloader could not load.", error)
+                }
+            }
         }
     }
 
-    /**
-     * The wrapper extracts Python, yt-dlp, and FFmpeg into this directory. Clearing only
-     * yt-dlp leaves a broken Python/FFmpeg runtime behind, so recovery must remove all of it.
-     */
-    private fun clearRuntimeLocked() {
+    private fun clearRuntimeLocked(requiresRestart: Boolean) {
         File(context.noBackupFilesDir, YoutubeDL.baseName).deleteRecursively()
         context.getSharedPreferences("youtubedl-android", Context.MODE_PRIVATE).edit {
             remove("pythonLibVersion")
             remove("ffmpegLibVersion")
+            remove("aria2cLibVersion")
             remove("dlpVersion")
             remove("dlpVersionName")
         }
         initialized = false
         ffmpegInitialized = false
+        aria2cInitialized = false
+        runtimeRestartRequired = requiresRestart
     }
 
     private fun validateVersion(): String {
@@ -456,15 +527,31 @@ class YtDlpEngine private constructor(private val context: Context) {
         const val PLAYLIST_PREVIEW_LIMIT = 100
         const val QUICK_PLAYLIST_PREVIEW_LIMIT = 3
         const val PLAYLIST_QUEUE_LIMIT = 25
+        const val MAX_ACTIVE_DOWNLOADS = 2
         const val QUICK_ANALYSIS_TIMEOUT_MS = 12_000L
         const val METADATA_TIMEOUT_MESSAGE = "Metadata lookup timed out. Check the link or try again."
         internal const val ENGINE_CHECK_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
+        internal const val ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS = 24L * 60 * 60 * 1000
         private const val ANALYSIS_PROCESS_PREFIX = "analysis-"
+        private const val EJS_CACHE_DIRECTORY = "yt-dlp-ejs-cache"
+        private const val RESTART_REQUIRED_MESSAGE =
+            "Media engine reset is pending. Close and reopen HOLEN before analyzing or downloading media."
+        private val FRAGMENT_TEMP_FILE_REGEX = Regex("\\.part-Frag\\d+(?:\\.part)?$")
 
         private fun playlistPreviewLimit(mode: AnalysisMode): Int = when (mode) {
             AnalysisMode.QUICK -> QUICK_PLAYLIST_PREVIEW_LIMIT
             AnalysisMode.FULL -> PLAYLIST_PREVIEW_LIMIT
         }
+
+        internal fun youtubeEjsArguments(url: String, cacheDirectory: File): List<String> =
+            if (isYoutubeUrl(url)) {
+                listOf(
+                    "--cache-dir", cacheDirectory.absolutePath,
+                    "--remote-components", "ejs:github",
+                )
+            } else {
+                emptyList()
+            }
 
         fun downloadArguments(format: DownloadFormat): List<String> = when (format) {
             DownloadFormat.ORIGINAL -> error("Original format is handled by the direct downloader.")
@@ -495,16 +582,24 @@ class YtDlpEngine private constructor(private val context: Context) {
             )
         }
 
-        private fun estimateSize(formats: JSONArray, target: DownloadFormat): Long? {
-            val matching = buildList {
+        internal fun estimateSize(formats: JSONArray, target: DownloadFormat): Long? {
+            data class Candidate(val bytes: Long, val video: Boolean, val audio: Boolean)
+
+            val candidates = buildList {
                 for (index in 0 until formats.length()) {
                     val item = formats.optJSONObject(index) ?: continue
                     val size = item.optLong("filesize").takeIf { it > 0 }
                         ?: item.optLong("filesize_approx").takeIf { it > 0 }
                         ?: continue
                     val height = item.optInt("height")
-                    val video = item.optString("vcodec") != "none"
-                    val audio = item.optString("acodec") != "none"
+                    fun codecPresent(name: String): Boolean {
+                        val value = item.opt(name) ?: return false
+                        if (value === JSONObject.NULL) return false
+                        val codec = value.toString().trim()
+                        return codec.isNotEmpty() && !codec.equals("none", ignoreCase = true)
+                    }
+                    val video = codecPresent("vcodec")
+                    val audio = codecPresent("acodec")
                     val ext = item.optString("ext")
                     val match = when (target) {
                         DownloadFormat.BEST_MP4 -> video
@@ -514,10 +609,23 @@ class YtDlpEngine private constructor(private val context: Context) {
                         DownloadFormat.AUDIO_MP3 -> audio && !video
                         DownloadFormat.ORIGINAL -> false
                     }
-                    if (match) add(size)
+                    add(Candidate(size, video, audio) to match)
                 }
             }
-            return matching.maxOrNull()
+            val matching = candidates.filter { it.second }.map { it.first }
+            if (matching.isEmpty()) return null
+            if (target == DownloadFormat.AUDIO_M4A || target == DownloadFormat.AUDIO_MP3) {
+                return matching.maxOf(Candidate::bytes)
+            }
+
+            val videoOnly = matching.filter { it.video && !it.audio }.maxOfOrNull(Candidate::bytes)
+            val audioOnly = candidates.map { it.first }
+                .filter { it.audio && !it.video }
+                .maxOfOrNull(Candidate::bytes)
+            return when {
+                videoOnly != null -> videoOnly + (audioOnly ?: 0L)
+                else -> matching.maxOf(Candidate::bytes)
+            }
         }
 
         private fun String.toJsonObject(): JSONObject {
@@ -549,13 +657,14 @@ class YtDlpEngine private constructor(private val context: Context) {
             ).any(normalized::contains)
         }
 
+        internal fun isYtDlpTemporaryFileName(fileName: String): Boolean =
+            fileName.endsWith(".part") ||
+                fileName.endsWith(".ytdl") ||
+                fileName.endsWith(".temp") ||
+                FRAGMENT_TEMP_FILE_REGEX.containsMatchIn(fileName)
+
         private fun completedFiles(directory: File): Sequence<File> = directory.walkTopDown()
-            .filter { file ->
-                file.isFile &&
-                    !file.name.endsWith(".part") &&
-                    !file.name.endsWith(".ytdl") &&
-                    !file.name.endsWith(".temp")
-            }
+            .filter { file -> file.isFile && !isYtDlpTemporaryFileName(file.name) }
 
         private fun completedOutputFrom(output: String, directory: File): File? {
             val directoryPath = directory.canonicalFile.toPath()
@@ -563,8 +672,9 @@ class YtDlpEngine private constructor(private val context: Context) {
                 .map(String::trim)
                 .mapNotNull { line -> runCatching { File(line).canonicalFile }.getOrNull() }
                 .lastOrNull { file ->
-                    file.isFile && file.toPath().startsWith(directoryPath) &&
-                        !file.name.endsWith(".part") && !file.name.endsWith(".ytdl")
+                    file.isFile &&
+                        file.toPath().startsWith(directoryPath) &&
+                        !isYtDlpTemporaryFileName(file.name)
                 }
         }
 
@@ -582,10 +692,19 @@ class YtDlpEngine private constructor(private val context: Context) {
 
         internal fun isEngineCheckDue(
             lastCheckAt: Long,
+            lastSuccessfulCheckAt: Long = lastCheckAt,
             now: Long = System.currentTimeMillis(),
-        ): Boolean = lastCheckAt <= 0L || now - lastCheckAt >= ENGINE_CHECK_INTERVAL_MS
+        ): Boolean {
+            if (lastCheckAt <= 0L) return true
+            val interval = if (lastCheckAt > lastSuccessfulCheckAt) {
+                ENGINE_FAILED_CHECK_RETRY_INTERVAL_MS
+            } else {
+                ENGINE_CHECK_INTERVAL_MS
+            }
+            return now - lastCheckAt >= interval
+        }
 
-        private val downloadMutex = Mutex()
+        private val downloadMutex = Semaphore(MAX_ACTIVE_DOWNLOADS)
 
         @Volatile
         private var instance: YtDlpEngine? = null
@@ -613,7 +732,7 @@ class YtDlpEngine private constructor(private val context: Context) {
         @Synchronized
         fun get(key: Key): SourceAnalysis? {
             val value = values[key] ?: return null
-            if (value.expiresAt > System.currentTimeMillis()) return value.analysis
+            if (value.expiresAt > SystemClock.elapsedRealtime()) return value.analysis
             values.remove(key)
             return null
         }
@@ -621,13 +740,13 @@ class YtDlpEngine private constructor(private val context: Context) {
         @Synchronized
         fun put(key: Key, analysis: SourceAnalysis, mode: AnalysisMode) {
             val ttl = if (mode == AnalysisMode.QUICK) QUICK_CACHE_TTL_MS else FULL_CACHE_TTL_MS
-            values[key] = Value(analysis, System.currentTimeMillis() + ttl)
+            values[key] = Value(analysis, SystemClock.elapsedRealtime() + ttl)
         }
 
         private companion object {
-            const val MAX_ENTRIES = 32
-            const val QUICK_CACHE_TTL_MS = 90_000L
-            const val FULL_CACHE_TTL_MS = 45_000L
+            const val MAX_ENTRIES = 64
+            const val QUICK_CACHE_TTL_MS = 5 * 60_000L
+            const val FULL_CACHE_TTL_MS = 10 * 60_000L
         }
     }
 }

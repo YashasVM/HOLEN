@@ -97,6 +97,7 @@ import com.yashasvm.holen.JobStatus
 import com.yashasvm.holen.MainViewModel
 import com.yashasvm.holen.SourceAnalysis
 import com.yashasvm.holen.YtDlpEngine
+import com.yashasvm.holen.shouldOfferCookieIsolationRetry
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -577,12 +578,20 @@ private fun DownloadHome(
             }
         } else {
             items(jobs, key = { it.id }) { job ->
+                val offerCookieIsolationRetry = shouldOfferCookieIsolationRetry(
+                    sourceKind = job.sourceKind,
+                    status = job.status,
+                    errorMessage = job.errorMessage,
+                    cookiesConfigured = cookiesConfigured,
+                )
                 MotionEntrance(reducedMotion, "job-${job.id}", Modifier.animateItem()) {
                     JobCard(
                         job = job,
                         reducedMotion = reducedMotion,
+                        offerCookieIsolationRetry = offerCookieIsolationRetry,
                         onCancel = { viewModel.cancel(job) },
                         onRetry = { viewModel.retry(job) },
+                        onRetryWithoutCookies = { viewModel.retryWithoutCookies(job) },
                         onOpen = { onOpen(job) },
                         onShare = { onShare(job) },
                         onDelete = { deleteCandidate = job },
@@ -790,8 +799,10 @@ internal fun FormatPicker(
 private fun JobCard(
     job: DownloadJob,
     reducedMotion: Boolean,
+    offerCookieIsolationRetry: Boolean,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
+    onRetryWithoutCookies: () -> Unit,
     onOpen: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
@@ -884,7 +895,22 @@ private fun JobCard(
         when (job.status) {
             JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.FINALIZING ->
                 HolenButton("Cancel", onCancel, HolenRed)
-            JobStatus.FAILED, JobStatus.CANCELLED ->
+            JobStatus.FAILED -> FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                HolenButton("Retry", onRetry, HolenBlue)
+                if (offerCookieIsolationRetry) {
+                    HolenButton(
+                        "Retry without cookies",
+                        onRetryWithoutCookies,
+                        background = HolenSurfaceTwo,
+                        foreground = HolenInk,
+                        modifier = Modifier.semantics { testTag = "retry-without-cookies-${job.id}" },
+                    )
+                }
+            }
+            JobStatus.CANCELLED ->
                 HolenButton("Retry", onRetry, HolenBlue)
             JobStatus.COMPLETED -> Row(
                 modifier = Modifier.fillMaxWidth(),

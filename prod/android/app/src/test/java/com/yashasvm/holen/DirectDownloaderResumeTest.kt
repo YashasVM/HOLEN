@@ -1,0 +1,185 @@
+package com.yashasvm.holen
+
+import java.io.File
+import kotlin.io.path.createTempDirectory
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+
+class DirectDownloaderResumeTest {
+    @Test
+    fun strongEtagIsAcceptedForIfRange() {
+        assertEquals(
+            "\"abc123\"",
+            DirectDownloader.selectResumeValidator("\"abc123\""),
+        )
+    }
+
+    @Test
+    fun strongEtagIsPreferredOverLastModified() {
+        assertEquals(
+            "\"abc123\"",
+            DirectDownloader.selectResumeValidator(
+                "\"abc123\"",
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:10 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun weakEtagDoesNotEnableResume() {
+        assertNull(DirectDownloader.selectResumeValidator("W/\"abc123\""))
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                "W/\"abc123\"",
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:02:00 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun lastModifiedIsAcceptedWithConservativeClockMargin() {
+        assertEquals(
+            "Sun, 30 Aug 2026 10:00:00 GMT",
+            DirectDownloader.selectResumeValidator(
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:01:00 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun oneSecondLastModifiedGapDoesNotEnableResumeForUnknownOriginClock() {
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:01 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun lastModifiedIsRejectedWhenResponseDateIsNotLater() {
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun malformedLastModifiedDoesNotEnableResume() {
+        assertNull(
+            DirectDownloader.selectResumeValidator(
+                null,
+                "not-a-date",
+                "Sun, 30 Aug 2026 10:00:10 GMT",
+            ),
+        )
+    }
+
+    @Test
+    fun resumeIsDisabledWithoutAUsableValidator() {
+        assertNull(DirectDownloader.selectResumeValidator(null))
+    }
+
+    @Test
+    fun resumeStateRequiresHttpsResourceAndStrongValidator() {
+        assertNotNull(
+            DirectDownloader.createResumeState(
+                "https://cdn.example.test/media.mp4",
+                "\"abc123\"",
+            ),
+        )
+        assertNotNull(
+            DirectDownloader.createResumeState(
+                "https://cdn.example.test/media.mp4",
+                null,
+                "Sun, 30 Aug 2026 10:00:00 GMT",
+                "Sun, 30 Aug 2026 10:01:00 GMT",
+            ),
+        )
+        assertNull(
+            DirectDownloader.createResumeState(
+                "http://cdn.example.test/media.mp4",
+                "\"abc123\"",
+            ),
+        )
+    }
+
+    @Test
+    fun changedRedirectTargetDoesNotReuseResumeState() {
+        val original = "https://cdn.example.test/a/media.mp4"
+        assertTrue(DirectDownloader.resumeTargetMatches(original, original))
+        assertFalse(
+            DirectDownloader.resumeTargetMatches(
+                original,
+                "https://cdn.example.test/b/media.mp4",
+            ),
+        )
+    }
+
+    @Test
+    fun resumeMetadataFilenameCannotReplaceCompletedPayload() {
+        assertEquals(
+            "download-download.resume",
+            DirectDownloader.completionFileName("download.resume"),
+        )
+        assertEquals(
+            "download-download.part",
+            DirectDownloader.completionFileName("download.part"),
+        )
+    }
+
+    @Test
+    fun stagingDirectoryPreparationFailureIsClassifiedAsStorage() {
+        val occupiedPath = File.createTempFile("holen-staging", ".tmp")
+        try {
+            DirectDownloader.preparePrivateDownloadDirectory(occupiedPath)
+            fail("Expected staging-path conflict to fail")
+        } catch (error: StorageException) {
+            assertEquals("Could not prepare private download storage.", error.message)
+        } finally {
+            occupiedPath.delete()
+        }
+    }
+
+    @Test
+    fun staleResumeStateIsRemovedBeforeFreshTransfer() {
+        val resumeFile = File.createTempFile("holen-resume", ".state")
+        try {
+            resumeFile.writeText("stale")
+            DirectDownloader.clearResumeState(resumeFile)
+            assertFalse(resumeFile.exists())
+        } finally {
+            resumeFile.delete()
+        }
+    }
+
+    @Test
+    fun staleResumeStateThatCannotBeRemovedIsAStorageFailure() {
+        val parent = createTempDirectory("holen-resume-").toFile()
+        val occupiedResumePath = File(parent, "download.resume").apply {
+            mkdir()
+            File(this, "blocker").writeText("x")
+        }
+        try {
+            DirectDownloader.clearResumeState(occupiedResumePath)
+            fail("Expected stale resume-state cleanup to fail")
+        } catch (error: StorageException) {
+            assertEquals("Could not clear stale download resume state.", error.message)
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+}

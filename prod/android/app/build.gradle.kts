@@ -12,8 +12,8 @@ android {
         applicationId = "com.yashasvm.holen"
         minSdk = 29
         targetSdk = 36
-        versionCode = providers.gradleProperty("holenVersionCode").orElse("16").get().toInt()
-        versionName = providers.gradleProperty("holenVersionName").orElse("5.0.0").get()
+        versionCode = providers.gradleProperty("holenVersionCode").orElse("18").get().toInt()
+        versionName = providers.gradleProperty("holenVersionName").orElse("5.0.2").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -30,7 +30,10 @@ android {
         }
         create("universal") {
             dimension = "abi"
-            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            // Release distribution targets physical Android devices. Keep x86/x86_64
+            // in the dedicated emulator flavor so the release APK does not ship
+            // emulator-only payloads that upstream does not yet provide as 16 KB-safe.
+            ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
         create("emulator") {
             dimension = "abi"
@@ -139,6 +142,7 @@ dependencies {
     implementation(libs.coil.network)
     implementation(libs.youtubedl.library)
     implementation(libs.youtubedl.ffmpeg)
+    implementation(libs.youtubedl.aria2c)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)

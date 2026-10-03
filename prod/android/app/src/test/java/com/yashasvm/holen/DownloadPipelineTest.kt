@@ -1,5 +1,7 @@
 package com.yashasvm.holen
 
+import java.io.File
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -26,15 +28,37 @@ class DownloadPipelineTest {
     fun publicationRecoveryNeverTreatsUnknownOrPartialOutputAsComplete() {
         assertEquals(
             PublicationMatch.COMPLETE,
-            OutputStore.publicationMatch("video.mp4", 100, "video.mp4", 100),
+            publicationMatch("video.mp4", 100, "video.mp4", 100),
         )
         assertEquals(
             PublicationMatch.PARTIAL,
-            OutputStore.publicationMatch("video.mp4", 100, "video.mp4", 99),
+            publicationMatch("video.mp4", 100, "video.mp4", 99),
         )
         assertEquals(
             PublicationMatch.UNAVAILABLE,
-            OutputStore.publicationMatch("video.mp4", 100, "video.mp4", null),
+            publicationMatch("video.mp4", 100, "video.mp4", null),
         )
+    }
+
+    @Test
+    fun fallbackProgressIgnoresYtDlpFragmentAndJournalFiles() {
+        val directory = Files.createTempDirectory("holen-progress-").toFile()
+        try {
+            val media = File(directory, "video.mp4.part").apply { writeBytes(ByteArray(8)) }
+            val numberedFragment = File(directory, "video.mp4.part-Frag49.part").apply {
+                writeBytes(ByteArray(4))
+            }
+            val currentFragment = File(directory, "video.mp4.part-Frag1").apply {
+                writeBytes(ByteArray(4))
+            }
+            val journal = File(directory, "video.mp4.ytdl").apply { writeText("state") }
+
+            assertTrue(isStagingProgressPayload(media))
+            assertFalse(isStagingProgressPayload(numberedFragment))
+            assertFalse(isStagingProgressPayload(currentFragment))
+            assertFalse(isStagingProgressPayload(journal))
+        } finally {
+            directory.deleteRecursively()
+        }
     }
 }

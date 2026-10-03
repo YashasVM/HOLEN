@@ -1,28 +1,49 @@
 package com.yashasvm.holen
 
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.IOException
 import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.LinkedHashMap
 import okhttp3.Request
 
 class SourceAnalyzer(private val engine: YtDlpEngine) {
+    private val quickYoutubeCache = object : LinkedHashMap<String, CachedQuickYoutube>(
+        QUICK_YOUTUBE_CACHE_MAX_ENTRIES,
+        0.75f,
+        true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, CachedQuickYoutube>,
+        ): Boolean = size > QUICK_YOUTUBE_CACHE_MAX_ENTRIES
+    }
+
     suspend fun analyze(
         rawUrl: String,
         mode: AnalysisMode = AnalysisMode.FULL,
         processId: String? = null,
     ): SourceAnalysis = withContext(Dispatchers.IO) {
-        // Validate before handing an extractor-first URL to the media engine too.
-        // The direct probe below additionally pins its actual network sockets.
-        val url = validatePublicHttpsUrl(rawUrl)
+        // Resolve and validate once up front. Direct-file probes reuse this exact
+        // validated endpoint so metadata discovery does not repeat DNS lookups
+        // before HEAD/range-GET requests or reopen a DNS-rebinding window.
+        val endpoint = resolvePublicHttpsEndpoint(rawUrl)
+        val url = endpoint.url
         if (isExtractorFirstHost(URI(url).host)) {
-            return@withContext if (processId == null) {
-                engine.analyze(url, mode)
-            } else {
-                engine.analyze(url, mode, processId)
+            // A share-sheet preview only needs title/channel/thumbnail before the user can
+            // choose a format. YouTube's oEmbed response is dramatically lighter than
+            // starting the Python + yt-dlp extractor and enumerating every media format.
+            // Private/age-restricted/unsupported links automatically fall back to yt-dlp,
+            // preserving cookies and the existing extractor behavior.
+            if (mode == AnalysisMode.QUICK && !isYoutubePlaylist(url)) {
+                quickYoutubeMetadata(url)?.let { return@withContext it }
             }
+            return@withContext analyzeWithExtractorRecovery(url, mode, processId)
         }
-        val probe = probe(url)
+        val probe = probe(endpoint)
         if (isDirectFile(probe.contentDisposition, probe.mimeType)) {
             val name = sanitizeFileName(
                 DirectDownloader.fileNameFromDisposition(probe.contentDisposition)
@@ -36,20 +57,86 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
                 sizeBytes = probe.contentLength,
             )
         } else {
+            analyzeWithExtractorRecovery(url, mode, processId)
+        }
+    }
+
+    private suspend fun analyzeWithExtractorRecovery(
+        url: String,
+        mode: AnalysisMode,
+        processId: String?,
+    ): SourceAnalysis = runWithSingleStaleExtractorRecovery(
+        operation = {
             if (processId == null) {
                 engine.analyze(url, mode)
             } else {
                 engine.analyze(url, mode, processId)
             }
+        },
+        refresh = { engine.updateStable() },
+    )
+
+    private fun quickYoutubeMetadata(url: String): SourceAnalysis.Media? {
+        val now = SystemClock.elapsedRealtime()
+        synchronized(quickYoutubeCache) {
+            quickYoutubeCache[url]?.let { cached ->
+                if (cached.expiresAt > now) return cached.media
+                quickYoutubeCache.remove(url)
+            }
         }
+
+        val fresh = runCatching {
+            val encoded = URLEncoder.encode(url, StandardCharsets.UTF_8.name())
+            val endpoint = resolvePublicHttpsEndpoint(
+                "https://www.youtube.com/oembed?url=$encoded&format=json",
+            )
+            val request = Request.Builder()
+                .url(endpoint.url)
+                .header("User-Agent", USER_AGENT)
+                .build()
+            pinnedPublicHttpsClient(endpoint, QUICK_YOUTUBE_TIMEOUT_MS)
+                .newCall(request)
+                .execute()
+                .use { response ->
+                    if (!response.isSuccessful) return@runCatching null
+                    val body = response.body?.string()?.takeIf { it.isNotBlank() }
+                        ?: return@runCatching null
+                    val json = JSONObject(body)
+                    val title = json.optString("title").takeIf { it.isNotBlank() }
+                        ?: return@runCatching null
+                    SourceAnalysis.Media(
+                        sourceUrl = url,
+                        title = title,
+                        uploader = json.optString("author_name").takeIf { it.isNotBlank() },
+                        durationSeconds = null,
+                        thumbnailUrl = json.optString("thumbnail_url").takeIf { it.isNotBlank() },
+                        estimatedSizes = emptyMap(),
+                    )
+                }
+        }.getOrNull()
+
+        synchronized(quickYoutubeCache) {
+            quickYoutubeCache[url] = CachedQuickYoutube(
+                media = fresh,
+                expiresAt = SystemClock.elapsedRealtime() + if (fresh == null) {
+                    QUICK_YOUTUBE_NEGATIVE_CACHE_TTL_MS
+                } else {
+                    QUICK_YOUTUBE_CACHE_TTL_MS
+                },
+            )
+        }
+        return fresh
     }
 
-    private fun probe(rawUrl: String): ProbeResult {
+    private fun probe(endpoint: PublicHttpsEndpoint): ProbeResult {
         val deadlineNanos = System.nanoTime() + PROBE_BUDGET_MS * 1_000_000L
         var method = "HEAD"
         while (true) {
-            val result = request(rawUrl, method, deadlineNanos)
-            if (method == "HEAD" && result.status in setOf(405, 501)) {
+            val result = request(endpoint, method, deadlineNanos)
+            // Some CDNs allow the file GET but reject HEAD with 403. Retry with
+            // the existing one-byte range GET so metadata discovery still works
+            // without downloading the body or weakening URL/IP validation.
+            if (method == "HEAD" && result.status in setOf(403, 405, 501)) {
                 method = "GET"
                 continue
             }
@@ -60,8 +147,12 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         }
     }
 
-    private fun request(rawUrl: String, method: String, deadlineNanos: Long): ProbeResult {
-        var endpoint = resolvePublicHttpsEndpoint(rawUrl)
+    private fun request(
+        initialEndpoint: PublicHttpsEndpoint,
+        method: String,
+        deadlineNanos: Long,
+    ): ProbeResult {
+        var endpoint = initialEndpoint
         repeat(MAX_REDIRECTS + 1) { redirect ->
             val request = Request.Builder().url(endpoint.url).method(method, null)
                 .header("User-Agent", USER_AGENT)
@@ -109,12 +200,35 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
         val contentLength: Long?,
     )
 
+    private data class CachedQuickYoutube(
+        val media: SourceAnalysis.Media?,
+        val expiresAt: Long,
+    )
+
     companion object {
         private const val MAX_REDIRECTS = 5
         private const val TIMEOUT_MS = 3_000
         private const val PROBE_BUDGET_MS = 4_000
+        private const val QUICK_YOUTUBE_TIMEOUT_MS = 2_500L
+        private const val QUICK_YOUTUBE_CACHE_MAX_ENTRIES = 32
+        private const val QUICK_YOUTUBE_CACHE_TTL_MS = 5 * 60_000L
+        private const val QUICK_YOUTUBE_NEGATIVE_CACHE_TTL_MS = 30_000L
         private const val USER_AGENT = "Holen Android/1"
         private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+        private val BINARY_MIME_TYPES = setOf(
+            "application/gzip",
+            "application/pdf",
+            "application/vnd.rar",
+            "application/vnd.android.package-archive",
+            "application/x-7z-compressed",
+            "application/x-bzip2",
+            "application/x-gzip",
+            "application/x-rar-compressed",
+            "application/x-tar",
+            "application/x-xz",
+            "application/zip",
+            "application/x-zip-compressed",
+        )
 
         fun isExtractorFirstHost(host: String?): Boolean {
             val normalized = host?.trimEnd('.')?.lowercase() ?: return false
@@ -125,10 +239,23 @@ class SourceAnalyzer(private val engine: YtDlpEngine) {
                 normalized.endsWith(".youtube-nocookie.com")
         }
 
+        private fun isYoutubePlaylist(url: String): Boolean {
+            val uri = runCatching { URI(url) }.getOrNull() ?: return false
+            if (uri.path.equals("/playlist", ignoreCase = true)) return true
+            return uri.rawQuery
+                ?.split('&')
+                ?.any { parameter -> parameter.substringBefore('=') == "list" }
+                ?: false
+        }
+
         fun isDirectFile(contentDisposition: String?, mimeType: String?): Boolean {
             if (contentDisposition?.contains("attachment", ignoreCase = true) == true) return true
             val type = mimeType?.substringBefore(';')?.trim()?.lowercase() ?: return false
-            return type !in setOf("text/html", "application/xhtml+xml")
+            return type.startsWith("audio/") ||
+                type.startsWith("video/") ||
+                type.startsWith("image/") ||
+                type == "application/octet-stream" ||
+                type in BINARY_MIME_TYPES
         }
     }
 }

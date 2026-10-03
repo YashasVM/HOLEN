@@ -50,8 +50,9 @@ class ShareDownloadActivity : ComponentActivity() {
             }
         }
         if (savedInstanceState == null) window.decorView.post {
-            // The share sheet exposes per-format sizes, which are available from full analysis.
-            sharedUrl?.let { viewModel.receiveIncomingUrl(it, AnalysisMode.FULL) }
+            // The share sheet should become interactive as quickly as possible.
+            // Quick analysis skips expensive format-size inspection; format choice still works.
+            sharedUrl?.let { viewModel.receiveIncomingUrl(it, AnalysisMode.QUICK) }
         }
     }
 
@@ -65,7 +66,7 @@ class ShareDownloadActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         sharedUrl = extractSharedHttps(intent)
-        sharedUrl?.let { viewModel.receiveIncomingUrl(it, AnalysisMode.FULL) }
+        sharedUrl?.let { viewModel.receiveIncomingUrl(it, AnalysisMode.QUICK) }
     }
 
     private fun queueWithNotificationPermission() {

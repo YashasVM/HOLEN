@@ -366,13 +366,12 @@ class HolenStore private constructor(context: Context) :
         if (ids.isNullOrEmpty()) {
             delete("jobs", "status IN (?, ?, ?)", terminal)
         } else {
-            ids.forEach { id ->
-                delete(
-                    "jobs",
-                    "id = ? AND status IN (?, ?, ?)",
-                    arrayOf(id, *terminal),
-                )
-            }
+            val placeholders = ids.joinToString(",") { "?" }
+            delete(
+                "jobs",
+                "id IN ($placeholders) AND status IN (?, ?, ?)",
+                arrayOf(*ids.toTypedArray(), *terminal),
+            )
         }
     }
 
