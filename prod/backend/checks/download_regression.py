@@ -1,8 +1,10 @@
 """Run: python checks/download_regression.py (install backend requirements + httpx)."""
+import asyncio
 import concurrent.futures
 import importlib.util
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -52,6 +54,18 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             statuses = list(pool.map(lambda _: client.get('/api/jobs/one/download').status_code, range(2)))
         assert sorted(statuses) == [200, 429] and owner()['egress_bytes'] == 29
+        assert client.post('/api/jobs/one/download-ticket').status_code == 429
+        with app.open_db() as db:
+            db.execute("UPDATE access_users SET usage_limit_bytes=1000 WHERE user_id='owner'")
+        missing = app.DOWNLOAD_DIR / 'one.test.mp4'
+        missing.rename(missing.with_suffix('.hidden'))
+        assert client.post('/api/jobs/one/download-ticket').status_code == 404
+        missing.with_suffix('.hidden').rename(missing)
+        with app.open_db() as db:
+            db.execute("UPDATE jobs SET file_path=? WHERE id='one'", (str(Path(temp) / 'outside.mp4'),))
+        assert client.post('/api/jobs/one/download-ticket').status_code == 403
+        with app.open_db() as db:
+            db.execute("UPDATE jobs SET file_path=? WHERE id='one'", (str(missing),))
         cookie = client.cookies.get('holen_download_ticket')
         with app.open_db() as db:
             db.execute("UPDATE download_tickets SET expires_at='2000-01-01'")
@@ -67,6 +81,17 @@ def main():
         app.init_db()
         assert owner()['usage_limit_bytes'] == 2 * 1024**3  # Subsequent custom changes survive.
         assert app.CLERK_AUDIENCE == ''
+        key = type('Key', (), {'key': 'mock-key'})()
+        with patch.object(app, 'CLERK_FRONTEND_API_URL', 'https://test.clerk.accounts.dev'), patch.object(app, '_clerk_jwks', object()), patch.object(app, '_clerk_signing_key', return_value=key), patch.object(app.jwt, 'decode', return_value={'sub': 'owner', 'azp': 'http://127.0.0.1:5173'}):
+            assert app.verify_token('mock')['sub'] == 'owner'
+        with patch.object(app, 'CLERK_FRONTEND_API_URL', 'https://test.clerk.accounts.dev'), patch.object(app, '_clerk_jwks', object()), patch.object(app, '_clerk_signing_key', return_value=key), patch.object(app.jwt, 'decode', return_value={'sub': 'owner', 'azp': 'https://untrusted.example'}):
+            try:
+                app.verify_token('mock')
+                raise AssertionError('Untrusted authorized party was accepted')
+            except app.HTTPException as exc:
+                assert exc.status_code == 401
+        cors = client.options('/api/jobs/one/download', headers={'Origin': 'http://127.0.0.1:5173', 'Access-Control-Request-Method': 'HEAD', 'Access-Control-Request-Headers': 'Range,If-Range'})
+        assert cors.status_code == 200 and cors.headers['access-control-allow-origin'] == 'http://127.0.0.1:5173'
         assert app.format_selector('mp3') == 'ba/b'
         assert 'height<=720' in app.format_selector('720p')
         info = {'title': 'video', 'duration': 10, 'requested_formats': [{'filesize': 100}, {'filesize': 20}], 'formats': [{'format_id': 'large', 'filesize': 999999, 'height': 2160, 'vcodec': 'h264', 'acodec': 'none'}]}
@@ -74,6 +99,91 @@ def main():
             meta = app.run_metadata('https://youtu.be/example', '720p')
             assert meta['reserved_bytes'] == 264
             assert app.run_metadata('https://youtu.be/example', '720p') is meta and run.call_count == 1
+        with patch.object(app.subprocess, 'run', return_value=type('Result', (), {'returncode': 0, 'stdout': json.dumps(info)})()):
+            audio = app.run_metadata('https://youtu.be/example', 'mp3')
+            assert audio['reserved_bytes'] >= 2 * 10 * 192000 / 8
+        live_info = {**info, 'is_live': True}
+        with patch.object(app.subprocess, 'run', return_value=type('Result', (), {'returncode': 0, 'stdout': json.dumps(live_info)})()):
+            try:
+                app.run_metadata('https://youtu.be/live', 'best')
+                raise AssertionError('Live stream was accepted')
+            except app.HTTPException as exc:
+                assert exc.status_code == 400
+        assert '192K' in app.command_for('audio', 'https://youtu.be/example', 'mp3')
+        async def empty_lines():
+            if False:
+                yield b''
+        class Process:
+            returncode = 0
+            def __init__(self, code=0):
+                self.returncode = code
+                self.stdout = empty_lines()
+            async def wait(self):
+                return self.returncode
+        def insert_job(job_id):
+            with app.open_db() as db:
+                db.execute("INSERT INTO jobs (id,url,format,status,created_at,updated_at,user_email,reserved_bytes) VALUES (?,'x','best','running',?,?,'owner',100)", (job_id, app.now_iso(), app.now_iso()))
+        insert_job('finish')
+        final_path = app.DOWNLOAD_DIR / 'finish.video.mp4'
+        final_path.write_bytes(b'finished')
+        class AtomicConnection(sqlite3.Connection):
+            def commit(self):
+                super().commit()
+                row = self.execute("SELECT status, file_path FROM jobs WHERE id='finish'").fetchone()
+                if row and row['status'] == 'completed':
+                    assert row['file_path'] == str(final_path), 'Completion was published before its file reference'
+        def checked_db():
+            conn = sqlite3.connect(app.SQLITE_PATH, factory=AtomicConnection)
+            conn.row_factory = sqlite3.Row
+            return conn
+        before = owner()['ingress_bytes']
+        async def spawn(*args, **kwargs):
+            return Process()
+        with patch.object(app, 'open_db', checked_db), patch.object(app.asyncio, 'create_subprocess_exec', spawn), patch.object(app, 'cleanup_expired', side_effect=PermissionError('simulated housekeeping failure')), patch.object(app.logging, 'getLogger'):
+            asyncio.run(app.run_job('finish', 'x', 'best'))
+        assert app.get_job_or_404('finish')['status'] == 'completed'
+        assert owner()['ingress_bytes'] == before + 8  # No second failed-job charge after cleanup errors.
+        insert_job('failed')
+        (app.DOWNLOAD_DIR / 'failed.video.mp4.part').write_bytes(b'partial')
+        async def fail_spawn(*args, **kwargs):
+            return Process(1)
+        before = owner()['ingress_bytes']
+        with patch.object(app.asyncio, 'create_subprocess_exec', fail_spawn):
+            asyncio.run(app.run_job('failed', 'x', 'best'))
+        assert owner()['ingress_bytes'] == before + 7
+        insert_job('cancelled')
+        (app.DOWNLOAD_DIR / 'cancelled.audio.m4a.part').write_bytes(b'audio')
+        app.update_job('cancelled', status='cancelled')
+        before = owner()['ingress_bytes']
+        asyncio.run(app.run_job('cancelled', 'x', 'best'))
+        assert owner()['ingress_bytes'] == before + 5
+        insert_job('broken')
+        (app.DOWNLOAD_DIR / 'broken.video.mp4.part').write_bytes(b'broken')
+        async def broken_lines():
+            raise RuntimeError('simulated output reader failure')
+            yield b''
+        class BrokenProcess:
+            returncode = None
+            terminated = False
+            stdout = broken_lines()
+            def terminate(self):
+                self.terminated = True
+            async def wait(self):
+                self.returncode = -15
+                return self.returncode
+        broken = BrokenProcess()
+        async def broken_spawn(*args, **kwargs):
+            return broken
+        before = owner()['ingress_bytes']
+        with patch.object(app.asyncio, 'create_subprocess_exec', broken_spawn):
+            asyncio.run(app.run_job('broken', 'x', 'best'))
+        assert broken.terminated and owner()['ingress_bytes'] == before + 6
+        insert_job('interrupted')
+        (app.DOWNLOAD_DIR / 'interrupted.video.mp4.part').write_bytes(b'restart')
+        before = owner()['ingress_bytes']
+        app.reset_interrupted_jobs()
+        app.reset_interrupted_jobs()
+        assert owner()['ingress_bytes'] == before + 7  # Restart accounting happens once.
         (app.DOWNLOAD_DIR / 'output.test.mp4').write_bytes(b'a')
         (app.DOWNLOAD_DIR / 'output.test.jpg').write_bytes(b'b')
         (app.DOWNLOAD_DIR / 'output.test.mp4.part').write_bytes(b'c')
@@ -86,7 +196,7 @@ def main():
         app.cleanup_expired()
         assert active_path.exists()
         assert app.health()['active_jobs'] == 1
-        print('PASS: resumable authorization, byte quotas, concurrent enforcement, cached links, selected format reservations, safe cleanup, nginx offload, health')
+        print('PASS: resumable delivery, quota concurrency, ticket preflight, atomic completion, nonfatal cleanup, audio estimates, failed/cancelled/restart accounting, process termination, live-stream rejection')
 
 
 if __name__ == '__main__':

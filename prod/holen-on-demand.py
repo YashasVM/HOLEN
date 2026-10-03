@@ -20,7 +20,9 @@ const statusText=document.getElementById('status'),retry=document.getElementById
 
 class App:
     def __init__(self, compose, idle_seconds, startup_seconds):
-        self.command = ["docker", "compose", "--env-file", ".env", "-f", compose]
+        self.command = ["docker", "compose", "--env-file", ".env"]
+        for path in ([compose] if isinstance(compose, str) else compose):
+            self.command.extend(["-f", path])
         self.idle_seconds = idle_seconds
         self.startup_seconds = startup_seconds
         self.lock = threading.Lock()
@@ -30,6 +32,8 @@ class App:
         self.active_requests = 0
         self.last_activity = time.monotonic()
         self.ready_until = 0
+        self.ready_generation = 0
+        self.stopping = False
 
     def health(self):
         connection = http.client.HTTPConnection("127.0.0.1", 8088, timeout=2)
@@ -43,19 +47,34 @@ class App:
         finally:
             connection.close()
 
+    def invalidate_readiness(self):
+        with self.lock:
+            self.ready_generation += 1
+            self.ready_until = 0
+
     def running(self):
-        # ponytail: three-second readiness cache; invalidate on proxy errors or stop.
-        if time.monotonic() < self.ready_until:
-            return True
-        if self.health() is not None:
-            self.ready_until = time.monotonic() + 3
-            return True
-        return False
+        # ponytail: three-second cache; generations discard probes across a stop.
+        with self.lock:
+            if self.stopping:
+                return False
+            if time.monotonic() < self.ready_until:
+                return True
+            generation = self.ready_generation
+        healthy = self.health() is not None
+        with self.lock:
+            if self.stopping or generation != self.ready_generation:
+                return False
+            if healthy:
+                self.ready_until = time.monotonic() + 3
+            return healthy
 
     def ensure_running(self):
         if self.running():
             return True
         with self.startup_lock:
+            with self.lock:
+                if self.error:
+                    return False
             if self.running():
                 return True
             deadline = time.monotonic() + self.startup_seconds
@@ -63,12 +82,14 @@ class App:
                 subprocess.run(self.command + ["up", "-d", "--remove-orphans"], check=True, timeout=self.startup_seconds)
                 while time.monotonic() < deadline:
                     if self.running():
-                        self.error = None
+                        with self.lock:
+                            self.error = None
                         return True
                     time.sleep(.5)
             except (subprocess.SubprocessError, OSError) as exc:
                 print(f"Holen startup failed: {exc}", flush=True)
-            self.error = "startup_failed"
+            with self.lock:
+                self.error = "startup_failed"
         return False
 
     def begin_start(self, retry=False):
@@ -102,12 +123,19 @@ class App:
             with self.lock:
                 if self.starting or self.active_requests or time.monotonic() - self.last_activity < self.idle_seconds:
                     return False
+                self.stopping = True
+                self.ready_generation += 1
                 self.ready_until = 0
-                try:
-                    subprocess.run(self.command + ["stop"], check=True, timeout=60)
-                except (subprocess.SubprocessError, OSError) as exc:
-                    print(f"Holen stop failed: {exc}", flush=True)
-                    return False
+            try:
+                subprocess.run(self.command + ["stop"], check=True, timeout=60)
+            except (subprocess.SubprocessError, OSError) as exc:
+                print(f"Holen stop failed: {exc}", flush=True)
+                return False
+            finally:
+                with self.lock:
+                    self.ready_generation += 1
+                    self.ready_until = 0
+                    self.stopping = False
             return True
 
     def stop_when_idle(self):
@@ -207,29 +235,61 @@ class Handler(BaseHTTPRequestHandler):
                 if response.length not in (None, 0):
                     self.close_connection = True  # Truncated file: close so clients can detect/retry.
         except (OSError, http.client.HTTPException) as exc:
-            app.ready_until = 0
+            app.invalidate_readiness()
             self.close_connection = True
             if not sent_headers and not isinstance(exc, (BrokenPipeError, ConnectionResetError)):
                 self.send_error(502, "Holen connection failed; retry in a moment")
         finally:
             if connection is not None:
                 connection.close()
+            try:
+                self.connection.settimeout(self.timeout)
+            except OSError:
+                pass
             with app.lock:
                 app.active_requests -= 1
                 app.last_activity = time.monotonic()
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    def __init__(self, address, handler, max_connections=32):
+        super().__init__(address, handler)
+        self.slots = threading.BoundedSemaphore(max_connections)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: 2\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--compose", default="prod/docker-compose.yml")
+    parser.add_argument("--compose", action="append")
     parser.add_argument("--idle-seconds", type=int, default=900)
     parser.add_argument("--startup-seconds", type=int, default=90)
     args = parser.parse_args()
     if min(args.idle_seconds, args.startup_seconds) <= 0:
         parser.error("timeouts must be positive")
-    Handler.app = App(args.compose, args.idle_seconds, args.startup_seconds)
+    Handler.app = App(args.compose or ["prod/docker-compose.yml"], args.idle_seconds, args.startup_seconds)
     threading.Thread(target=Handler.app.stop_when_idle, daemon=True).start()
-    ThreadingHTTPServer(("127.0.0.1", 8888), Handler).serve_forever()
+    BoundedHTTPServer(("127.0.0.1", 8888), Handler).serve_forever()
 
 
 if __name__ == "__main__":

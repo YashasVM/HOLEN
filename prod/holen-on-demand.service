@@ -6,7 +6,6 @@ After=docker.service
 Type=simple
 WorkingDirectory=/home/yvm/holen/HOLEN
 ExecStart=/usr/bin/python3 -B -u /home/yvm/holen/HOLEN/prod/holen-on-demand.py
-ExecStop=/usr/bin/docker compose --env-file .env -f prod/docker-compose.yml stop
 TimeoutStopSec=75
 Restart=always
 RestartSec=3

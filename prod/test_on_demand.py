@@ -3,6 +3,7 @@ import http.client
 import importlib.util
 import json
 import subprocess
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,7 +49,12 @@ release = threading.Event()
 upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
 app = proxy.App("unused.yml", 1, 1)
 proxy.Handler.app = app
-server = ThreadingHTTPServer(("127.0.0.1", 0), proxy.Handler)
+completed_timeouts = []
+class ObservedHandler(proxy.Handler):
+    def proxy(self):
+        super().proxy()
+        completed_timeouts.append(self.connection.gettimeout())
+server = proxy.BoundedHTTPServer(("127.0.0.1", 0), ObservedHandler)
 for instance in (upstream, server):
     threading.Thread(target=instance.serve_forever, daemon=True).start()
 original_connection = http.client.HTTPConnection
@@ -82,6 +88,7 @@ try:
         response = client.getresponse()
         assert response.status == 200 and response.getheader("Content-Length") == "123"
         assert response.read() == b""
+        assert completed_timeouts and all(value == 30 for value in completed_timeouts), "Completed transfers must restore the idle timeout"
         client.close()
         for _ in range(100):
             if not app.active_requests: break
@@ -113,11 +120,62 @@ try:
         assert app.stop_if_idle()
         assert run.call_args.args[0][-1] == "stop"
         assert app.ready_until == 0
-    with patch.object(app, "running", return_value=False), patch.object(proxy.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "docker")):
+    with patch.object(app, "running", return_value=False), patch.object(proxy.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "docker")) as run:
         assert not app.ensure_running() and app.error == "startup_failed"
+        assert not app.ensure_running() and run.call_count == 1, "Failed startup must be shared by waiting requests"
+        resumed = threading.Event()
+        with patch.object(app, "ensure_running", side_effect=lambda: resumed.set()):
+            app.begin_start(retry=True)
+            assert resumed.wait(1) and app.error is None, "Explicit retry must clear startup failure"
+
+    stale = proxy.App("unused.yml", 1, 1)
+    stale.last_activity = 0
+    probing, finish_probe = threading.Event(), threading.Event()
+    results = []
+    def health_during_stop():
+        if threading.current_thread().name == "stale-probe":
+            probing.set()
+            assert finish_probe.wait(1)
+        return {"status": "ok", "active_jobs": 0}
+    def stop_guard(*args, **kwargs):
+        assert not stale.running(), "Readiness must stay false during stop"
+    with patch.object(stale, "health", side_effect=health_during_stop), patch.object(proxy.subprocess, "run", side_effect=stop_guard):
+        probe = threading.Thread(target=lambda: results.append(stale.running()), name="stale-probe")
+        probe.start()
+        assert probing.wait(1)
+        assert stale.stop_if_idle(), "Stop must not block status probes behind its subprocess"
+        finish_probe.set()
+        probe.join(1)
+        assert results == [False] and stale.ready_until == 0, "Pre-stop probes must not republish readiness"
+
+    bounded = proxy.BoundedHTTPServer(("127.0.0.1", 0), proxy.Handler, max_connections=1)
+    threading.Thread(target=bounded.serve_forever, daemon=True).start()
+    blocker = socket.create_connection(("127.0.0.1", bounded.server_port), timeout=1)
+    try:
+        for _ in range(100):
+            if bounded.slots._value == 0: break
+            time.sleep(.01)
+        assert bounded.slots._value == 0
+        overflow = original_connection("127.0.0.1", bounded.server_port, timeout=1)
+        overflow.request("GET", "/")
+        response = overflow.getresponse()
+        assert response.status == 503 and response.getheader("Retry-After") == "2"
+        overflow.close()
+        blocker.close()
+        for _ in range(100):
+            if bounded.slots._value == 1: break
+            time.sleep(.01)
+        assert bounded.slots._value == 1, "Closed connections must release capacity"
+    finally:
+        blocker.close()
+        bounded.shutdown()
+        bounded.server_close()
+
+    composed = proxy.App(["base.yml", "plex.yml"], 1, 1)
+    assert composed.command == ["docker", "compose", "--env-file", ".env", "-f", "base.yml", "-f", "plex.yml"]
     assert proxy.LOADING_PAGE.count(b"<html") == 1
     assert b"fonts.googleapis.com" not in proxy.LOADING_PAGE
-    print("PASS: immediate SSE, HEAD, truncated downloads, active stream/job idle guards, failed readiness, startup error")
+    print("PASS: immediate SSE, HEAD, truncated downloads, active stream/job idle guards, failed readiness, shared startup error/retry, stale probes, connection bounds, compose overrides")
 finally:
     release.set()
     server.shutdown()

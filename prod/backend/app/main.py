@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -132,13 +133,13 @@ app = FastAPI(title="Homelab Downloader", lifespan=lifespan)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Only allow the configured public origin + localhost for dev
-_allowed_origins = [PUBLIC_ORIGIN, "http://localhost:5173", "http://localhost:8888"]
+_allowed_origins = [PUBLIC_ORIGIN] + [f"http://{host}:{port}" for host in ("localhost", "127.0.0.1") for port in (5173, 8888, 8088)]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Range", "If-Range"],
     max_age=600,
 )
 
@@ -621,8 +622,22 @@ async def ensure_temp_capacity_async() -> None:
         raise HTTPException(status_code=507, detail=f"Download storage is full. Limit is {CACHE_LIMIT_GB:g} GB")
 
 
+def job_output_bytes(job_id: str) -> int:
+    total = 0
+    for path in DOWNLOAD_DIR.glob(f"{job_id}.*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def reset_interrupted_jobs() -> None:
     with db_lock, open_db() as conn:
+        for row in conn.execute("SELECT id, user_email FROM jobs WHERE status = 'running'").fetchall():
+            if row["user_email"]:
+                conn.execute("UPDATE access_users SET ingress_bytes = ingress_bytes + ?, updated_at = ? WHERE user_id = ?", (job_output_bytes(row["id"]), now_iso(), row["user_email"]))
         conn.execute(
             """
             UPDATE jobs
@@ -681,7 +696,10 @@ def cleanup_expired() -> None:
 async def cleanup_loop() -> None:
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        await asyncio.to_thread(cleanup_expired)
+        try:
+            await asyncio.to_thread(cleanup_expired)
+        except OSError:
+            logging.getLogger(__name__).exception("Periodic cache cleanup failed")
 
 
 def normalized_options(info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -760,6 +778,8 @@ def run_metadata(url: str, selected_format: str = "best") -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=(completed.stderr or "Metadata lookup failed")[-500:])
     info = json.loads(completed.stdout)
     duration = info.get("duration")
+    if info.get("is_live") or info.get("is_upcoming"):
+        raise HTTPException(status_code=400, detail="Live and upcoming streams cannot be queued")
     if isinstance(duration, (int, float)) and duration > MAX_DURATION_SECONDS:
         raise HTTPException(status_code=400, detail=f"Videos must be {MAX_DURATION_SECONDS // 60} minutes or shorter")
     formats = [
@@ -778,6 +798,9 @@ def run_metadata(url: str, selected_format: str = "best") -> dict[str, Any]:
     ]
     selected = info.get("requested_formats") or [info]
     expected_bytes = sum(int(item.get("filesize") or item.get("filesize_approx") or ((item.get("tbr") or 0) * 1000 / 8 * (duration or 0))) for item in selected)
+    expected_output_bytes = expected_bytes
+    if selected_format in {"audio", "mp3"}:
+        expected_output_bytes = max(expected_bytes, int((duration or 0) * 192000 / 8))
     result = {
         "title": info.get("title"),
         "thumbnail": info.get("thumbnail"),
@@ -787,7 +810,7 @@ def run_metadata(url: str, selected_format: str = "best") -> dict[str, Any]:
         "formats": formats[-12:],
         "options": normalized_options(info),
         # Include ingress and the first full download, plus a margin for remuxing.
-        "reserved_bytes": int(expected_bytes * 2.2),
+        "reserved_bytes": int(expected_output_bytes * 2.2),
     }
     if len(_metadata_cache) >= 32:
         _metadata_cache.pop(next(iter(_metadata_cache)))
@@ -815,7 +838,7 @@ def command_for(job_id: str, url: str, selected_format: str) -> list[str]:
     base += ["-f", format_selector(selected_format)]
     if selected_format in {"audio", "mp3"}:
         audio_format = "mp3" if selected_format == "mp3" else "m4a"
-        return base + ["-x", "--audio-format", audio_format, "--embed-thumbnail", "--embed-metadata", url]
+        return base + ["-x", "--audio-format", audio_format, "--audio-quality", "192K", "--embed-thumbnail", "--embed-metadata", url]
     return base + ["--merge-output-format", "mp4", url]
 
 
@@ -826,6 +849,7 @@ def detect_output_file(job_id: str) -> Path | None:
 
 async def run_job(job_id: str, url: str, selected_format: str) -> None:
     last_message = "Starting"
+    process = None
     try:
         if get_job_or_404(job_id)["status"] == "cancelled":
             return
@@ -869,20 +893,43 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
         with db_lock, open_db() as conn:
             if row and row["user_email"]:
                 conn.execute("UPDATE access_users SET ingress_bytes = ingress_bytes + ?, updated_at = ? WHERE user_id = ?", (file_path.stat().st_size, now_iso(), row["user_email"]))
-            conn.execute("UPDATE jobs SET reserved_bytes = 0, status = 'completed' WHERE id = ?", (job_id,))
+            conn.execute(
+                "UPDATE jobs SET reserved_bytes = 0, status = 'completed', progress = 100, message = 'Ready', file_path = ?, file_name = ?, expires_at = ?, updated_at = ? WHERE id = ?",
+                (str(file_path), file_path.name.removeprefix(f"{job_id}."), expires_at, now_iso(), job_id),
+            )
+            completed = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             conn.commit()
-        update_job(job_id, status="completed", progress=100, message="Ready", file_path=str(file_path), file_name=file_path.name.removeprefix(f"{job_id}."), expires_at=expires_at)
-        await asyncio.to_thread(cleanup_expired)
+        _last_sse_notify.pop(job_id, None)
+        if completed:
+            _notify_sse(row_to_job(completed))
+        try:
+            await asyncio.to_thread(cleanup_expired)
+        except OSError:
+            logging.getLogger(__name__).exception("Cache cleanup failed after download %s", job_id)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         with db_lock, open_db() as conn:
             row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row and row["status"] != "cancelled":
+        if row and row["status"] not in {"cancelled", "completed"}:
             update_job(job_id, status="failed", message=f"Download failed: {str(exc)[-240:]}", progress=0)
     finally:
+        if process is not None and process.returncode is None:
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+            except ProcessLookupError:
+                pass
         running_processes.pop(job_id, None)
         with db_lock, open_db() as conn:
+            final = conn.execute("SELECT status, user_email FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if final and final["status"] in {"failed", "cancelled"} and final["user_email"]:
+                # ponytail: partial files conservatively count retained intermediate copies; exact network bytes need yt-dlp transfer telemetry.
+                partial_bytes = job_output_bytes(job_id)
+                conn.execute("UPDATE access_users SET ingress_bytes = ingress_bytes + ?, updated_at = ? WHERE user_id = ?", (partial_bytes, now_iso(), final["user_email"]))
             conn.execute("UPDATE jobs SET reserved_bytes = 0 WHERE id = ?", (job_id,))
             conn.commit()
         await schedule_next_jobs()
@@ -1396,6 +1443,15 @@ def get_job(job_id: str, user: dict[str, Any] = Depends(require_user)) -> dict[s
 
 # ── File download ─────────────────────────────────────────────────────────────
 
+def cached_download_path(job: dict[str, Any]) -> Path:
+    path = Path(job["file_path"]).resolve()
+    if DOWNLOAD_DIR not in path.parents:
+        raise HTTPException(status_code=403, detail="Invalid file path")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File expired or missing")
+    return path
+
+
 @app.post("/api/jobs/{job_id}/download-ticket")
 def issue_download_ticket(job_id: str, user: dict[str, Any] = Depends(require_user)) -> JSONResponse:
     """Authorize one cached file, including resumable requests, until expiry."""
@@ -1405,6 +1461,8 @@ def issue_download_ticket(job_id: str, user: dict[str, Any] = Depends(require_us
     if job["status"] != "completed" or not job.get("file_path"):
         raise HTTPException(status_code=404, detail="File not ready")
 
+    path = cached_download_path(job)
+    assert_quota(user, path.stat().st_size)
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_TICKET_TTL_SECONDS, tz=timezone.utc).isoformat()
@@ -1483,11 +1541,7 @@ def download_file(job_id: str, request: Request, holen_download_ticket: str | No
         raise HTTPException(status_code=404, detail="File not found")
     if job["status"] != "completed" or not job.get("file_path"):
         raise HTTPException(status_code=404, detail="File not ready")
-    path = Path(job["file_path"]).resolve()
-    if DOWNLOAD_DIR not in path.parents:
-        raise HTTPException(status_code=403, detail="Invalid file path")
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="File expired or missing")
+    path = cached_download_path(job)
     stat = path.stat()
     size = stat.st_size
     response = FileResponse(path, filename=job.get("file_name") or path.name, stat_result=stat, headers={"Cache-Control": "private, no-store"})

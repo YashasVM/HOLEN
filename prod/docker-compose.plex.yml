@@ -1,0 +1,9 @@
+# Optional owner-only Plex export. The download website does not need this mount.
+services:
+  backend:
+    volumes:
+      - type: bind
+        source: ${PLEX_MUSIC_DROP_DIR:?Set a pre-created dedicated Plex drop folder}
+        target: /mnt/BackupDrive/Media/Audio
+        bind:
+          create_host_path: false

@@ -20,7 +20,7 @@ export async function requestJson<T>(path: string, getToken: TokenGetter, init?:
     response = await request();
     if (response.status === 401) response = await request(true);
   } catch (error) {
-    if (error instanceof ApiError) throw error;
+    if (error instanceof ApiError || (error instanceof DOMException && error.name === "AbortError" && init?.signal?.aborted)) throw error;
     throw new ApiError(0, error instanceof DOMException && error.name === "TimeoutError"
       ? "The server took too long to respond. Try again."
       : "Connection interrupted. Check your connection and try again.");

@@ -607,9 +607,9 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
   }, []);
 
   const handleCancelJob = useCallback(async (jobId: string) => {
-    setJobs((cur) => cur.map((j) => j.id === jobId ? { ...j, status: "cancelled" as const } : j));
     try {
       await apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+      setJobs((cur) => cur.map((j) => j.id === jobId ? { ...j, status: "cancelled" as const } : j));
       showToast("Job cancelled");
     } catch (err) {
       showToast(friendlyError(err), false);
@@ -691,6 +691,7 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
   useEffect(() => {
     let stopped = false;
     let inflight = false;
+    let failures = 0;
     let timer: number | undefined;
     const controller = new AbortController();
     const refresh = async () => {
@@ -699,12 +700,14 @@ export function DownloaderPage({ user, onAdminClick }: DownloaderPageProps) {
       window.clearTimeout(timer);
       try {
         const list = await apiFetch<Job[]>("/api/jobs", { signal: controller.signal });
-        if (!stopped) { applyJobsList(list); setQueueError(""); }
+        if (!stopped) { failures = 0; applyJobsList(list); setQueueError(""); }
       } catch (err) {
-        if (!stopped) setQueueError(friendlyError(err));
+        if (!stopped) { failures += 1; setQueueError(friendlyError(err)); }
       } finally {
         inflight = false;
-        if (!stopped && hasActiveJobs && !document.hidden) timer = window.setTimeout(() => void refresh(), 3000);
+        if (!stopped && !document.hidden && (hasActiveJobs || (failures > 0 && failures < 3))) {
+          timer = window.setTimeout(() => void refresh(), hasActiveJobs ? 3000 : 5000);
+        }
       }
     };
     const onVisible = () => { if (!document.hidden) void refresh(); };
