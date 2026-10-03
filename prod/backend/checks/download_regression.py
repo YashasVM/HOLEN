@@ -10,6 +10,7 @@ import tempfile
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+import yt_dlp_ejs  # Required by yt-dlp for YouTube JavaScript challenges.
 
 
 def main():
