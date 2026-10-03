@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -19,13 +20,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import jwt
 from jwt import InvalidTokenError, PyJWKClient
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 
@@ -57,23 +58,24 @@ MAX_ACTIVE_JOBS = int(os.environ.get("MAX_ACTIVE_JOBS", "1"))
 MAX_QUEUED_JOBS = int(os.environ.get("MAX_QUEUED_JOBS", "25"))
 CACHE_LIMIT_GB = float(os.environ.get("CACHE_LIMIT_GB", "45"))
 DOWNLOAD_LINK_TTL_SECONDS = int(os.environ.get("DOWNLOAD_LINK_TTL_SECONDS", os.environ.get("FILE_TTL_SECONDS", str(60 * 60))))
-DOWNLOAD_TICKET_TTL_SECONDS = 60
+DOWNLOAD_TICKET_TTL_SECONDS = DOWNLOAD_LINK_TTL_SECONDS
+DOWNLOAD_ACCEL_REDIRECT = os.environ.get("DOWNLOAD_ACCEL_REDIRECT", "false").lower() == "true"
 CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", str(15 * 60)))
 YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
 # Per-user limits: max queued+running jobs per verified Clerk user ID
 MAX_JOBS_PER_USER = int(os.environ.get("MAX_JOBS_PER_USER", "5"))
-DEFAULT_USAGE_LIMIT_BYTES = int(float(os.environ.get("DEFAULT_USAGE_LIMIT_GB", "5")) * 1024**3)
-RESTRICTED_EMAIL_USAGE_LIMIT_BYTES = int(float(os.environ.get("RESTRICTED_EMAIL_USAGE_LIMIT_GB", "2")) * 1024**3)
-TRUSTED_EMAIL_DOMAINS = frozenset(
-    domain.strip().casefold()
-    for domain in os.environ.get(
-        "TRUSTED_EMAIL_DOMAINS",
-        "gmail.com,duck.com,hotmail.com,outlook.com",
-    ).split(",")
-    if domain.strip()
-)
+DEFAULT_USAGE_LIMIT_BYTES = int(float(os.environ.get("DEFAULT_USAGE_LIMIT_GB", "20")) * 1024**3)
 SERVER_START_TIME = time.time()
 _clerk_jwks = PyJWKClient(f"{CLERK_FRONTEND_API_URL}/.well-known/jwks.json") if CLERK_FRONTEND_API_URL else None
+
+
+# Default Clerk session tokens have no aud claim; only require an explicit audience.
+CLERK_AUDIENCE = os.environ.get("CLERK_AUDIENCE", "").strip()
+
+# PyJWKClient signing-key cache with TTL + retry (avoids hammering JWKS on every request).
+_JWKS_CACHE_TTL_SECONDS = 600
+_jwks_key_cache: dict[str, tuple[float, Any]] = {}
+_jwks_cache_lock = threading.Lock()
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -81,9 +83,14 @@ SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
 db_lock = threading.Lock()
 scheduler_lock: asyncio.Lock | None = None
 
-_sse_clients: set[asyncio.Queue] = set()
+# SSE: queue -> user_id so broadcasts can be filtered server-side per user.
+_sse_clients: dict[asyncio.Queue, str] = {}
+# Debounce broadcast storms: last notify monotonic time per job id.
+_last_sse_notify: dict[str, float] = {}
+_SSE_NOTIFY_THROTTLE_SECONDS = 1.0
 running_processes: dict[str, asyncio.subprocess.Process] = {}
 _clerk_profile_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_metadata_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
 # Rate limiting: store as {key: [timestamps]}
 _analyze_calls: dict[str, list[float]] = {}
@@ -116,19 +123,23 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Homelab Downloader", lifespan=lifespan)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Only allow the configured public origin + localhost for dev
-_allowed_origins = [PUBLIC_ORIGIN, "http://localhost:5173", "http://localhost:8888"]
+_allowed_origins = [PUBLIC_ORIGIN] + [f"http://{host}:{port}" for host in ("localhost", "127.0.0.1") for port in (5173, 8888, 8088)]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Range", "If-Range"],
     max_age=600,
 )
 
@@ -219,25 +230,66 @@ def init_db() -> None:
         # Admin access is reserved for the verified GitHub owner account.
         # This also removes any legacy elevated roles on startup.
         conn.execute("UPDATE access_users SET is_admin = 0 WHERE is_owner = 0")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+            # Treat legacy 2/5 GB values as defaults once; later admin edits survive wakes.
+            conn.execute("UPDATE access_users SET usage_limit_bytes = ? WHERE usage_limit_bytes IN (?, ?)", (DEFAULT_USAGE_LIMIT_BYTES, 5 * 1024**3, 2 * 1024**3))
+            conn.execute("PRAGMA user_version = 1")
         conn.commit()
 
 
 init_db()
 
 
+def _clerk_signing_key(token: str) -> Any:
+    """Fetch the JWKS signing key with retry + TTL cache (keyed by kid)."""
+    assert _clerk_jwks is not None
+    try:
+        kid = jwt.get_unverified_header(token).get("kid", "")
+    except InvalidTokenError:
+        kid = ""
+    with _jwks_cache_lock:
+        cached = _jwks_key_cache.get(kid)
+        if cached and time.time() - cached[0] < _JWKS_CACHE_TTL_SECONDS:
+            return cached[1]
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            key = _clerk_jwks.get_signing_key_from_jwt(token)
+            with _jwks_cache_lock:
+                _jwks_key_cache[kid] = (time.time(), key)
+            return key
+        except Exception as exc:  # network/JWKS fetch or unknown kid
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(0.2 * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
+
+
 def verify_token(token: str) -> dict[str, Any]:
     if not CLERK_FRONTEND_API_URL or not _clerk_jwks:
         raise HTTPException(status_code=503, detail="Clerk authentication is not configured")
     try:
-        signing_key = _clerk_jwks.get_signing_key_from_jwt(token)
-        return jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            issuer=CLERK_FRONTEND_API_URL,
-            options={"require": ["exp", "iat", "sub"], "verify_aud": False},
-        )
+        signing_key = _clerk_signing_key(token)
+        decode_kwargs: dict[str, Any] = {
+            "algorithms": ["RS256"],
+            "issuer": CLERK_FRONTEND_API_URL,
+            "options": {"require": ["exp", "iat", "sub"]},
+            "leeway": 30,
+        }
+        if CLERK_AUDIENCE:
+            decode_kwargs["audience"] = CLERK_AUDIENCE
+        else:
+            decode_kwargs["options"]["verify_aud"] = False
+        claims = jwt.decode(token, signing_key.key, **decode_kwargs)
+        if claims.get("azp") and claims["azp"] not in _allowed_origins:
+            raise HTTPException(status_code=401, detail="Invalid Clerk session origin")
+        return claims
     except (InvalidTokenError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired Clerk session") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired Clerk session") from exc
 
 
@@ -288,31 +340,8 @@ def profile_fields(profile: dict[str, Any]) -> tuple[str | None, str | None, str
     return name or profile.get("username"), email, github_username
 
 
-def is_trusted_email(email: str | None) -> bool:
-    """Return whether an email belongs to one of the approved quota domains."""
-    if not email or "@" not in email:
-        return False
-    _, domain = email.rsplit("@", 1)
-    return domain.casefold() in TRUSTED_EMAIL_DOMAINS
-
-
 def usage_limit_for_email(email: str | None) -> int:
-    return DEFAULT_USAGE_LIMIT_BYTES if is_trusted_email(email) else RESTRICTED_EMAIL_USAGE_LIMIT_BYTES
-
-
-def format_quota_gb(quota_bytes: int) -> str:
-    return f"{quota_bytes / 1024**3:g} GB"
-
-
-def email_quota_notice(email: str | None) -> str | None:
-    if is_trusted_email(email):
-        return None
-    return (
-        "Nice try! Using temp mail to get more usage, huh? I like it. "
-        "But unfortunately, I'm tight on inference, so you only get "
-        f"{format_quota_gb(RESTRICTED_EMAIL_USAGE_LIMIT_BYTES)} instead of "
-        f"{format_quota_gb(DEFAULT_USAGE_LIMIT_BYTES)}. Nice try, though :)"
-    )
+    return DEFAULT_USAGE_LIMIT_BYTES
 
 
 def ensure_access_user(auth: dict[str, Any]) -> dict[str, Any]:
@@ -369,20 +398,25 @@ def public_user(row: dict[str, Any] | sqlite3.Row) -> dict[str, Any]:
         "egress_bytes": int(data["egress_bytes"]),
         "used_bytes": used,
         "remaining_bytes": max(0, int(data["usage_limit_bytes"]) - used),
-        "is_restricted_email": not is_trusted_email(data["email"]),
-        "quota_notice": email_quota_notice(data["email"]),
+        "is_restricted_email": False,
+        "quota_notice": None,
         "created_at": data["created_at"],
     }
 
 
-def assert_quota(user: dict[str, Any], additional_bytes: int = 0) -> None:
-    used = int(user["ingress_bytes"]) + int(user["egress_bytes"])
-    with db_lock, open_db() as conn:
-        reserved = conn.execute(
-            "SELECT COALESCE(SUM(reserved_bytes), 0) FROM jobs WHERE user_email = ? AND status IN ('queued', 'running')",
-            (user["user_id"],),
-        ).fetchone()[0]
-    if used + int(reserved) + additional_bytes > int(user["usage_limit_bytes"]):
+def assert_quota(user: dict[str, Any], additional_bytes: int = 0, conn: sqlite3.Connection | None = None) -> None:
+    if conn is None:
+        with db_lock, open_db() as connection:
+            return assert_quota(user, additional_bytes, connection)
+    current = conn.execute("SELECT * FROM access_users WHERE user_id = ?", (user["user_id"],)).fetchone()
+    if not current:
+        raise HTTPException(status_code=401, detail="Account no longer exists")
+    used = int(current["ingress_bytes"]) + int(current["egress_bytes"])
+    reserved = conn.execute(
+        "SELECT COALESCE(SUM(reserved_bytes), 0) FROM jobs WHERE user_email = ? AND status IN ('queued', 'running')",
+        (user["user_id"],),
+    ).fetchone()[0]
+    if used + int(reserved) + additional_bytes > int(current["usage_limit_bytes"]):
         raise HTTPException(status_code=429, detail="Your bandwidth allowance is exhausted. Ask an admin to raise it.")
 
 
@@ -394,21 +428,34 @@ def consume_download_ticket(job_id: str, token: str | None) -> dict[str, Any]:
     if not token:
         raise HTTPException(status_code=401, detail="Download authorization is missing or expired")
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = now_iso()
     with db_lock, open_db() as conn:
         ticket = conn.execute(
             "SELECT job_id, user_id, expires_at FROM download_tickets WHERE token_hash = ?",
             (token_hash,),
         ).fetchone()
-        if not ticket or ticket["job_id"] != job_id or ticket["expires_at"] <= now_iso():
+        # Validate the reusable ticket on every request.
+        if not ticket:
+            raise HTTPException(status_code=401, detail="Download authorization is missing or expired")
+        if ticket["job_id"] != job_id:
+            raise HTTPException(status_code=401, detail="Download authorization is missing or expired")
+        if ticket["expires_at"] <= now:
+            # Expired: clean up this single expired ticket, then reject.
             conn.execute("DELETE FROM download_tickets WHERE token_hash = ?", (token_hash,))
             conn.commit()
             raise HTTPException(status_code=401, detail="Download authorization is missing or expired")
-        conn.execute("DELETE FROM download_tickets WHERE token_hash = ?", (token_hash,))
-        user = conn.execute("SELECT * FROM access_users WHERE user_id = ?", (ticket["user_id"],)).fetchone()
-        conn.commit()
-    if not user:
-        raise HTTPException(status_code=401, detail="Download authorization is no longer valid")
-    return dict(user)
+        user_row = conn.execute("SELECT * FROM access_users WHERE user_id = ?", (ticket["user_id"],)).fetchone()
+        if not user_row:
+            raise HTTPException(status_code=401, detail="Download authorization is no longer valid")
+        job_row = conn.execute("SELECT user_email, status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job_row:
+            raise HTTPException(status_code=404, detail="File not found")
+        # Ownership check before consuming: ticket owner must own the job (admins bypass in download_file).
+        if job_row["user_email"] != ticket["user_id"] and not user_row["is_admin"]:
+            raise HTTPException(status_code=404, detail="File not found")
+        # Keep job-scoped authorization until expiry for HEAD and Range retries.
+        user = dict(user_row)
+    return user
 
 
 def add_usage(user_id: str, column: str, amount: int) -> None:
@@ -423,14 +470,28 @@ def add_usage(user_id: str, column: str, amount: int) -> None:
 
 
 def validate_url(url: str) -> str:
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    cleaned = url.strip()
+    parsed = urlparse(cleaned)
+    # Use hostname (strips port/userinfo) instead of netloc.
+    hostname = (parsed.hostname or "").lower().removeprefix("www.")
+    if parsed.scheme not in {"http", "https"} or not hostname:
         raise HTTPException(status_code=400, detail="Enter a valid http(s) URL")
-    host = parsed.netloc.lower().removeprefix("www.")
-    allowed_hosts = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
-    if host not in allowed_hosts:
+    allowed_hosts = {
+        "youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "youtube-nocookie.com",
+    }
+    if hostname not in allowed_hosts:
         raise HTTPException(status_code=400, detail="Only YouTube URLs are allowed")
-    return url.strip()
+    # Force https for all accepted URLs.
+    if parsed.scheme == "http":
+        rebuilt = parsed._replace(scheme="https")
+        from urllib.parse import urlunparse as _urlunparse
+
+        return _urlunparse(rebuilt)
+    return cleaned
 
 
 def _rate_limit(store: dict[str, list[float]], key: str, limit: int, window: int) -> None:
@@ -443,17 +504,45 @@ def _rate_limit(store: dict[str, list[float]], key: str, limit: int, window: int
     store[key].append(now)
 
 
-def _notify_sse(jobs: list[dict[str, Any]]) -> None:
+def _notify_sse(job_or_jobs: dict[str, Any] | list[dict[str, Any]]) -> None:
+    """Push SSE updates, filtered server-side per user.
+
+    Accepts a single-job patch (preferred) or a legacy full list. Single-job
+    patches are only queued to connections owned by that job's user, which
+    avoids leaking other users' rows and avoids broadcast storms.
+    """
     if not _sse_clients:
         return
-    data = json.dumps(jobs)
-    dead = set()
-    for q in _sse_clients:
-        try:
-            q.put_nowait(data)
-        except asyncio.QueueFull:
-            dead.add(q)
-    _sse_clients.difference_update(dead)
+    dead: list[asyncio.Queue] = []
+    if isinstance(job_or_jobs, dict):
+        job = job_or_jobs
+        owner = job.get("user_email")
+        if not owner:
+            return
+        data = json.dumps({"type": "patch", "job": job})
+        for queue, user_id in list(_sse_clients.items()):
+            if user_id != owner:
+                continue
+            try:
+                queue.put_nowait(data)
+            except asyncio.QueueFull:
+                dead.append(queue)
+    else:
+        # Legacy full-list path: filter per user before sending.
+        for queue, user_id in list(_sse_clients.items()):
+            visible = [job for job in job_or_jobs if job.get("user_email") == user_id]
+            try:
+                queue.put_nowait(json.dumps(visible))
+            except asyncio.QueueFull:
+                dead.append(queue)
+    for queue in dead:
+        # A slow reader stays subscribed; replace stale patches with one current snapshot.
+        user_id = _sse_clients.get(queue)
+        while not queue.empty():
+            queue.get_nowait()
+        with db_lock, open_db() as conn:
+            rows = conn.execute("SELECT * FROM jobs WHERE user_email = ? ORDER BY created_at DESC LIMIT 50", (user_id,)).fetchall()
+        queue.put_nowait(json.dumps([row_to_job(row) for row in rows]))
 
 
 def update_job(job_id: str, **fields: Any) -> None:
@@ -463,12 +552,24 @@ def update_job(job_id: str, **fields: Any) -> None:
     with db_lock, open_db() as conn:
         conn.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", values)
         conn.commit()
-        rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50").fetchall()
-    jobs = [row_to_job(row) for row in rows]
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if not row:
+        return
+    job = row_to_job(row)
+    # Debounce broadcast storms: max 1 notify/sec per job unless terminal.
+    is_terminal = str(fields.get("status", "")) in {"completed", "failed", "cancelled"}
+    now_mono = time.monotonic()
+    last = _last_sse_notify.get(job_id, 0.0)
+    if not is_terminal and now_mono - last < _SSE_NOTIFY_THROTTLE_SECONDS:
+        return
+    if is_terminal:
+        _last_sse_notify.pop(job_id, None)
+    else:
+        _last_sse_notify[job_id] = now_mono
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.call_soon_threadsafe(_notify_sse, jobs)
+            loop.call_soon_threadsafe(_notify_sse, job)
     except RuntimeError:
         pass
 
@@ -490,13 +591,21 @@ def get_job_or_404(job_id: str) -> dict[str, Any]:
 
 def directory_size_bytes(path: Path) -> int:
     total = 0
-    for item in path.rglob("*"):
-        if item.is_file():
-            total += item.stat().st_size
+    try:
+        for item in path.rglob("*"):
+            try:
+                if item.is_file():
+                    total += item.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return total
     return total
 
 
 def ensure_temp_capacity() -> None:
+    # Sync version (blocking). Async callers should use
+    # `await asyncio.to_thread(ensure_temp_capacity)` to stay async-friendly.
     cleanup_expired()
     used = directory_size_bytes(DOWNLOAD_DIR)
     limit = int(CACHE_LIMIT_GB * 1024 * 1024 * 1024)
@@ -504,8 +613,31 @@ def ensure_temp_capacity() -> None:
         raise HTTPException(status_code=507, detail=f"Download storage is full. Limit is {CACHE_LIMIT_GB:g} GB")
 
 
+async def ensure_temp_capacity_async() -> None:
+    """Async-friendly wrapper: runs blocking cleanup/size checks off the event loop."""
+    await asyncio.to_thread(cleanup_expired)
+    used = await asyncio.to_thread(directory_size_bytes, DOWNLOAD_DIR)
+    limit = int(CACHE_LIMIT_GB * 1024 * 1024 * 1024)
+    if used >= limit:
+        raise HTTPException(status_code=507, detail=f"Download storage is full. Limit is {CACHE_LIMIT_GB:g} GB")
+
+
+def job_output_bytes(job_id: str) -> int:
+    total = 0
+    for path in DOWNLOAD_DIR.glob(f"{job_id}.*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def reset_interrupted_jobs() -> None:
     with db_lock, open_db() as conn:
+        for row in conn.execute("SELECT id, user_email FROM jobs WHERE status = 'running'").fetchall():
+            if row["user_email"]:
+                conn.execute("UPDATE access_users SET ingress_bytes = ingress_bytes + ?, updated_at = ? WHERE user_id = ?", (job_output_bytes(row["id"]), now_iso(), row["user_email"]))
         conn.execute(
             """
             UPDATE jobs
@@ -527,7 +659,8 @@ def cleanup_expired() -> None:
     with db_lock, open_db() as conn:
         conn.execute("DELETE FROM download_tickets WHERE expires_at <= ?", (now_iso(),))
         conn.commit()
-    if directory_size_bytes(DOWNLOAD_DIR) < threshold:
+    used = directory_size_bytes(DOWNLOAD_DIR)
+    if used < threshold:
         return
 
     with db_lock, open_db() as conn:
@@ -535,11 +668,12 @@ def cleanup_expired() -> None:
             "SELECT id, file_path FROM jobs WHERE file_path IS NOT NULL AND status = 'completed' ORDER BY created_at ASC"
         ).fetchall()
         for row in rows:
-            if directory_size_bytes(DOWNLOAD_DIR) < threshold:
+            if used < threshold:
                 break
             if row["file_path"]:
                 path = Path(row["file_path"]).resolve()
-                if path.exists() and (path == DOWNLOAD_DIR or DOWNLOAD_DIR in path.parents):
+                if path.is_file() and DOWNLOAD_DIR in path.parents:
+                    used -= path.stat().st_size
                     path.unlink(missing_ok=True)
             conn.execute(
                 "UPDATE jobs SET file_path = NULL, file_name = NULL, message = ?, updated_at = ? WHERE id = ?",
@@ -547,18 +681,25 @@ def cleanup_expired() -> None:
             )
         conn.commit()
 
-    # Orphaned files are only removed if the cache is still over capacity.
-    for path in DOWNLOAD_DIR.glob("*"):
-        if directory_size_bytes(DOWNLOAD_DIR) < threshold:
-            break
-        if path.is_file():
-            path.unlink(missing_ok=True)
+    # Never evict an in-progress output or a file still referenced by a job.
+    with db_lock, open_db() as conn:
+        protected = {str(Path(row["file_path"]).resolve()) for row in conn.execute("SELECT file_path FROM jobs WHERE file_path IS NOT NULL")}
+        active_ids = [row["id"] for row in conn.execute("SELECT id FROM jobs WHERE status IN ('queued', 'running')")]
+        for path in DOWNLOAD_DIR.glob("*"):
+            if used < threshold:
+                break
+            if path.is_file() and str(path.resolve()) not in protected and not any(path.name.startswith(f"{job_id}.") for job_id in active_ids):
+                used -= path.stat().st_size
+                path.unlink(missing_ok=True)
 
 
 async def cleanup_loop() -> None:
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-        cleanup_expired()
+        try:
+            await asyncio.to_thread(cleanup_expired)
+        except OSError:
+            logging.getLogger(__name__).exception("Periodic cache cleanup failed")
 
 
 def normalized_options(info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -612,9 +753,22 @@ def cookies_args() -> list[str]:
     return []
 
 
-def run_metadata(url: str) -> dict[str, Any]:
+def format_selector(selected_format: str) -> str:
+    if selected_format in {"audio", "mp3"}:
+        return "ba/b"
+    if selected_format in {"1080p", "720p"}:
+        height = selected_format.removesuffix("p")
+        return f"bv*[height<={height}]+ba/b[height<={height}]/b"
+    return "bv*+ba/b"
+
+
+def run_metadata(url: str, selected_format: str = "best") -> dict[str, Any]:
+    cache_key = (url, selected_format)
+    cached = _metadata_cache.get(cache_key)
+    if cached and time.monotonic() - cached[0] < 300:
+        return cached[1]
     completed = subprocess.run(
-        ["yt-dlp", "--dump-single-json", "--no-playlist", "--no-warnings"] + cookies_args() + [url],
+        ["yt-dlp", "--dump-single-json", "--no-playlist", "--no-warnings", "--socket-timeout", "15", "-f", format_selector(selected_format)] + cookies_args() + [url],
         check=False,
         capture_output=True,
         text=True,
@@ -624,6 +778,8 @@ def run_metadata(url: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=(completed.stderr or "Metadata lookup failed")[-500:])
     info = json.loads(completed.stdout)
     duration = info.get("duration")
+    if info.get("is_live") or info.get("is_upcoming"):
+        raise HTTPException(status_code=400, detail="Live and upcoming streams cannot be queued")
     if isinstance(duration, (int, float)) and duration > MAX_DURATION_SECONDS:
         raise HTTPException(status_code=400, detail=f"Videos must be {MAX_DURATION_SECONDS // 60} minutes or shorter")
     formats = [
@@ -640,7 +796,12 @@ def run_metadata(url: str) -> dict[str, Any]:
         for item in info.get("formats", [])
         if item.get("format_id")
     ]
-    return {
+    selected = info.get("requested_formats") or [info]
+    expected_bytes = sum(int(item.get("filesize") or item.get("filesize_approx") or ((item.get("tbr") or 0) * 1000 / 8 * (duration or 0))) for item in selected)
+    expected_output_bytes = expected_bytes
+    if selected_format in {"audio", "mp3"}:
+        expected_output_bytes = max(expected_bytes, int((duration or 0) * 192000 / 8))
+    result = {
         "title": info.get("title"),
         "thumbnail": info.get("thumbnail"),
         "duration": duration,
@@ -648,10 +809,13 @@ def run_metadata(url: str) -> dict[str, Any]:
         "webpage_url": info.get("webpage_url") or url,
         "formats": formats[-12:],
         "options": normalized_options(info),
-        # A download can combine a separate video and audio stream. Reserving
-        # the two largest advertised streams is deliberately conservative.
-        "reserved_bytes": sum(sorted((int(item["filesize"]) for item in formats if isinstance(item.get("filesize"), (int, float)) and item["filesize"] > 0), reverse=True)[:2]),
+        # Include ingress and the first full download, plus a margin for remuxing.
+        "reserved_bytes": int(expected_output_bytes * 2.2),
     }
+    if len(_metadata_cache) >= 32:
+        _metadata_cache.pop(next(iter(_metadata_cache)))
+    _metadata_cache[cache_key] = (time.monotonic(), result)
+    return result
 
 
 def output_template(job_id: str) -> str:
@@ -663,36 +827,39 @@ def command_for(job_id: str, url: str, selected_format: str) -> list[str]:
         "yt-dlp",
         "--newline",
         "--no-playlist",
+        "--socket-timeout", "20",
+        "--retries", "5",
+        "--fragment-retries", "5",
+        "--concurrent-fragments", "4",
         "--restrict-filenames",
         "-o",
         output_template(job_id),
     ] + cookies_args()
-    if selected_format == "best_video":
-        return base + ["-f", "bv*+ba/b", "--merge-output-format", "mp4", url]
-    if selected_format == "1080p":
-        return base + ["-f", "bv*[height<=1080]+ba/b[height<=1080]/b/bv*+ba/b", "--merge-output-format", "mp4", url]
-    if selected_format == "720p":
-        return base + ["-f", "bv*[height<=720]+ba/b[height<=720]/b/bv*+ba/b", "--merge-output-format", "mp4", url]
-    if selected_format == "audio":
-        return base + ["-f", "ba/b", "-x", "--audio-format", "m4a", "--embed-thumbnail", "--embed-metadata", url]
-    if selected_format == "mp3":
-        return base + ["-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-thumbnail", "--embed-metadata", url]
-    return base + ["-f", "bv*+ba/b", "--merge-output-format", "mp4", url]
+    base += ["-f", format_selector(selected_format)]
+    if selected_format in {"audio", "mp3"}:
+        audio_format = "mp3" if selected_format == "mp3" else "m4a"
+        return base + ["-x", "--audio-format", audio_format, "--audio-quality", "192K", "--embed-thumbnail", "--embed-metadata", url]
+    return base + ["--merge-output-format", "mp4", url]
 
 
 def detect_output_file(job_id: str) -> Path | None:
-    files = sorted(DOWNLOAD_DIR.glob(f"{job_id}.*"), key=lambda path: path.stat().st_mtime, reverse=True)
+    files = sorted((path for path in DOWNLOAD_DIR.glob(f"{job_id}.*") if path.is_file() and path.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".opus", ".ogg", ".aac", ".flac", ".wav"}), key=lambda path: path.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
 
 async def run_job(job_id: str, url: str, selected_format: str) -> None:
     last_message = "Starting"
+    process = None
     try:
+        if get_job_or_404(job_id)["status"] == "cancelled":
+            return
         update_job(job_id, progress=1, message=last_message)
         process = await asyncio.create_subprocess_exec(
             *command_for(job_id, url, selected_format), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
         running_processes[job_id] = process
+        if get_job_or_404(job_id)["status"] == "cancelled" and process.returncode is None:
+            process.terminate()
         assert process.stdout is not None
         progress_pattern = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
         last_written_progress, last_write_time = 1.0, time.monotonic()
@@ -723,20 +890,46 @@ async def run_job(job_id: str, url: str, selected_format: str) -> None:
             update_job(job_id, status="failed", message="Download finished but no file was created")
             return
         expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_LINK_TTL_SECONDS, tz=timezone.utc).isoformat()
-        update_job(job_id, status="completed", progress=100, message="Ready", file_path=str(file_path), file_name=file_path.name.removeprefix(f"{job_id}."), expires_at=expires_at)
-        if row and row["user_email"]:
-            add_usage(str(row["user_email"]), "ingress_bytes", file_path.stat().st_size)
-        cleanup_expired()
+        with db_lock, open_db() as conn:
+            if row and row["user_email"]:
+                conn.execute("UPDATE access_users SET ingress_bytes = ingress_bytes + ?, updated_at = ? WHERE user_id = ?", (file_path.stat().st_size, now_iso(), row["user_email"]))
+            conn.execute(
+                "UPDATE jobs SET reserved_bytes = 0, status = 'completed', progress = 100, message = 'Ready', file_path = ?, file_name = ?, expires_at = ?, updated_at = ? WHERE id = ?",
+                (str(file_path), file_path.name.removeprefix(f"{job_id}."), expires_at, now_iso(), job_id),
+            )
+            completed = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            conn.commit()
+        _last_sse_notify.pop(job_id, None)
+        if completed:
+            _notify_sse(row_to_job(completed))
+        try:
+            await asyncio.to_thread(cleanup_expired)
+        except OSError:
+            logging.getLogger(__name__).exception("Cache cleanup failed after download %s", job_id)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         with db_lock, open_db() as conn:
             row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row and row["status"] != "cancelled":
+        if row and row["status"] not in {"cancelled", "completed"}:
             update_job(job_id, status="failed", message=f"Download failed: {str(exc)[-240:]}", progress=0)
     finally:
+        if process is not None and process.returncode is None:
+            try:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+            except ProcessLookupError:
+                pass
         running_processes.pop(job_id, None)
         with db_lock, open_db() as conn:
+            final = conn.execute("SELECT status, user_email FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if final and final["status"] in {"failed", "cancelled"} and final["user_email"]:
+                # ponytail: partial files conservatively count retained intermediate copies; exact network bytes need yt-dlp transfer telemetry.
+                partial_bytes = job_output_bytes(job_id)
+                conn.execute("UPDATE access_users SET ingress_bytes = ingress_bytes + ?, updated_at = ? WHERE user_id = ?", (partial_bytes, now_iso(), final["user_email"]))
             conn.execute("UPDATE jobs SET reserved_bytes = 0 WHERE id = ?", (job_id,))
             conn.commit()
         await schedule_next_jobs()
@@ -769,15 +962,14 @@ async def schedule_next_jobs() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    from importlib.metadata import PackageNotFoundError, version
     try:
-        result = subprocess.run(
-            ["yt-dlp", "--version"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-        ytdlp_version = result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
+        ytdlp_version = version("yt-dlp")
+    except PackageNotFoundError:
         ytdlp_version = "unknown"
-    return {"status": "ok", "yt_dlp_version": ytdlp_version}
+    with db_lock, open_db() as conn:
+        active_jobs = conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')").fetchone()[0]
+    return {"status": "ok", "yt_dlp_version": ytdlp_version, "active_jobs": active_jobs}
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -865,7 +1057,7 @@ def get_playlist(payload: UrlRequest, user: dict[str, Any] = Depends(require_use
 @app.post("/api/jobs")
 async def create_job(payload: JobRequest, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     url = validate_url(payload.url)
-    ensure_temp_capacity()
+    await ensure_temp_capacity_async()
     assert_quota(user)
     user_id = str(user["user_id"])
 
@@ -885,7 +1077,7 @@ async def create_job(payload: JobRequest, user: dict[str, Any] = Depends(require
             )
 
     try:
-        meta = await asyncio.to_thread(run_metadata, url)
+        meta = await asyncio.to_thread(run_metadata, url, payload.format)
     except HTTPException:
         raise
     except Exception as exc:
@@ -900,6 +1092,12 @@ async def create_job(payload: JobRequest, user: dict[str, Any] = Depends(require
     job_id = secrets.token_urlsafe(12)
     created_at = now_iso()
     with db_lock, open_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        assert_quota(user, reserved_bytes, conn)
+        active = conn.execute("SELECT COUNT(*) FROM jobs WHERE user_email = ? AND status IN ('queued', 'running')", (user_id,)).fetchone()[0]
+        queued = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").fetchone()[0]
+        if active >= MAX_JOBS_PER_USER or queued >= MAX_QUEUED_JOBS:
+            raise HTTPException(status_code=429, detail="Download queue is full; wait for an active job to finish")
         conn.execute(
             """
             INSERT INTO jobs (id, url, title, thumbnail, format, status, progress, message, created_at, updated_at, user_email, reserved_bytes)
@@ -920,7 +1118,7 @@ def list_jobs(user: dict[str, Any] = Depends(require_user)) -> list[dict[str, An
 
 
 class BulkDeleteRequest(BaseModel):
-    ids: list[str]
+    ids: list[str] = Field(max_length=100)
 
 
 @app.delete("/api/jobs")
@@ -1167,28 +1365,63 @@ def purge_cache(_admin: dict[str, Any] = Depends(require_admin)) -> dict[str, An
 
 @app.get("/api/jobs/stream")
 async def jobs_stream(user: dict[str, Any] = Depends(require_user)) -> StreamingResponse:
-
+    user_id = str(user["user_id"])
     queue: asyncio.Queue = asyncio.Queue(maxsize=20)
-    _sse_clients.add(queue)
+    _sse_clients[queue] = user_id
 
     async def event_generator():
+        # Local per-connection cache so single-job patches can be merged
+        # server-side, while the frontend keeps receiving a full filtered list.
+        jobs_by_id: dict[str, dict[str, Any]] = {}
         try:
             with db_lock, open_db() as conn:
-                rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50").fetchall()
-            initial = json.dumps([row_to_job(row) for row in rows if row["user_email"] == user["user_id"]])
+                rows = conn.execute(
+                    "SELECT * FROM jobs WHERE user_email = ? ORDER BY created_at DESC LIMIT 50",
+                    (user_id,),
+                ).fetchall()
+            for row in rows:
+                job = row_to_job(row)
+                jobs_by_id[job["id"]] = job
+            initial = json.dumps(sorted(jobs_by_id.values(), key=lambda j: j.get("created_at", ""), reverse=True))
             yield f"data: {initial}\n\n"
 
             while True:
                 try:
                     data = await asyncio.wait_for(queue.get(), timeout=25.0)
-                    visible = [job for job in json.loads(data) if job.get("user_email") == user["user_id"]]
-                    yield f"data: {json.dumps(visible)}\n\n"
+                    try:
+                        payload = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    # Single-job patch path (preferred): merge, then emit full list.
+                    if isinstance(payload, dict) and "job" in payload:
+                        job = payload.get("job")
+                        if not isinstance(job, dict):
+                            continue
+                        if job.get("user_email") != user_id:
+                            continue
+                        jobs_by_id[job["id"]] = job
+                        ordered = sorted(jobs_by_id.values(), key=lambda j: j.get("created_at", ""), reverse=True)[:50]
+                        jobs_by_id = {job["id"]: job for job in ordered}
+                        yield f"data: {json.dumps(ordered)}\n\n"
+                    elif isinstance(payload, dict):
+                        # Bare job dict (forward-compat).
+                        if payload.get("user_email") != user_id:
+                            continue
+                        if "id" in payload:
+                            jobs_by_id[payload["id"]] = payload
+                            ordered = sorted(jobs_by_id.values(), key=lambda j: j.get("created_at", ""), reverse=True)[:50]
+                            yield f"data: {json.dumps(ordered)}\n\n"
+                    elif isinstance(payload, list):
+                        # Legacy full-list broadcast: filter server-side per user.
+                        visible = [job for job in payload if isinstance(job, dict) and job.get("user_email") == user_id]
+                        jobs_by_id = {job["id"]: job for job in visible if "id" in job}
+                        yield f"data: {json.dumps(visible)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
         except asyncio.CancelledError:
             pass
         finally:
-            _sse_clients.discard(queue)
+            _sse_clients.pop(queue, None)
 
     return StreamingResponse(
         event_generator(),
@@ -1210,17 +1443,26 @@ def get_job(job_id: str, user: dict[str, Any] = Depends(require_user)) -> dict[s
 
 # ── File download ─────────────────────────────────────────────────────────────
 
+def cached_download_path(job: dict[str, Any]) -> Path:
+    path = Path(job["file_path"]).resolve()
+    if DOWNLOAD_DIR not in path.parents:
+        raise HTTPException(status_code=403, detail="Invalid file path")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File expired or missing")
+    return path
+
+
 @app.post("/api/jobs/{job_id}/download-ticket")
 def issue_download_ticket(job_id: str, user: dict[str, Any] = Depends(require_user)) -> JSONResponse:
-    """Set a single-use, HttpOnly download authorization cookie for one job."""
+    """Authorize one cached file, including resumable requests, until expiry."""
     job = get_job_or_404(job_id)
     if job.get("user_email") != user["user_id"] and not user["is_admin"]:
         raise HTTPException(status_code=404, detail="File not found")
     if job["status"] != "completed" or not job.get("file_path"):
         raise HTTPException(status_code=404, detail="File not ready")
-    if job.get("expires_at") and job["expires_at"] <= now_iso():
-        raise HTTPException(status_code=404, detail="This download link has expired")
 
+    path = cached_download_path(job)
+    assert_quota(user, path.stat().st_size)
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     expires_at = datetime.fromtimestamp(time.time() + DOWNLOAD_TICKET_TTL_SECONDS, tz=timezone.utc).isoformat()
@@ -1272,21 +1514,51 @@ def send_to_plex(job_id: str, _admin: dict[str, Any] = Depends(require_admin)) -
     return {"detail": "Copied to Plex", "destination": str(dest)}
 
 
-@app.get("/api/jobs/{job_id}/download")
-def download_file(job_id: str, holen_download_ticket: str | None = Cookie(default=None)) -> FileResponse:
+def requested_download_bytes(range_header: str | None, size: int) -> int:
+    if not range_header:
+        return size
+    # A single range supports browser resume and avoids multipart quota ambiguity.
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip()) if len(range_header) <= 200 else None
+    if not match or not any(match.groups()):
+        raise HTTPException(status_code=416, detail="Invalid byte range", headers={"Content-Range": f"bytes */{size}"})
+    start, end = match.groups()
+    if not start:
+        length = min(int(end), size)
+        if length <= 0:
+            raise HTTPException(status_code=416, detail="Invalid byte range", headers={"Content-Range": f"bytes */{size}"})
+        return length
+    first, last = int(start), min(int(end), size - 1) if end else size - 1
+    if first > last or first >= size:
+        raise HTTPException(status_code=416, detail="Invalid byte range", headers={"Content-Range": f"bytes */{size}"})
+    return last - first + 1
+
+
+@app.api_route("/api/jobs/{job_id}/download", methods=["GET", "HEAD"])
+def download_file(job_id: str, request: Request, holen_download_ticket: str | None = Cookie(default=None)) -> Response:
     user = consume_download_ticket(job_id, holen_download_ticket)
     job = get_job_or_404(job_id)
     if job.get("user_email") != user["user_id"] and not user["is_admin"]:
         raise HTTPException(status_code=404, detail="File not found")
     if job["status"] != "completed" or not job.get("file_path"):
         raise HTTPException(status_code=404, detail="File not ready")
-    if job.get("expires_at") and job["expires_at"] <= now_iso():
-        raise HTTPException(status_code=404, detail="This download link has expired")
-    path = Path(job["file_path"]).resolve()
-    if path != DOWNLOAD_DIR and DOWNLOAD_DIR not in path.parents:
-        raise HTTPException(status_code=403, detail="Invalid file path")
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File expired or missing")
-    assert_quota(user, path.stat().st_size)
-    add_usage(user["user_id"], "egress_bytes", path.stat().st_size)
-    return FileResponse(path, filename=job.get("file_name") or path.name)
+    path = cached_download_path(job)
+    stat = path.stat()
+    size = stat.st_size
+    response = FileResponse(path, filename=job.get("file_name") or path.name, stat_result=stat, headers={"Cache-Control": "private, no-store"})
+    range_header = request.headers.get("range")
+    if_range = request.headers.get("if-range")
+    etag = f'"{int(stat.st_mtime):x}-{size:x}"' if DOWNLOAD_ACCEL_REDIRECT else response.headers["etag"]
+    if if_range and if_range not in {etag, response.headers["last-modified"]}:
+        range_header = None  # Both nginx and FileResponse send the full file on a validator mismatch.
+    amount = requested_download_bytes(range_header, size) if request.method != "HEAD" else 0
+    if amount:
+        with db_lock, open_db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            assert_quota(user, amount, conn)
+            # ponytail: allocate requested bytes before nginx transfer; reconcile access logs if exact disconnect refunds are needed.
+            conn.execute("UPDATE access_users SET egress_bytes = egress_bytes + ?, updated_at = ? WHERE user_id = ?", (amount, now_iso(), user["user_id"]))
+            conn.commit()
+    if DOWNLOAD_ACCEL_REDIRECT:
+        headers = {"X-Accel-Redirect": "/_downloads/" + quote(path.relative_to(DOWNLOAD_DIR).as_posix(), safe="/"), "Cache-Control": "private, no-store", "Content-Disposition": response.headers["content-disposition"]}
+        return Response(headers=headers, media_type=response.media_type)
+    return response
