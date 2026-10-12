@@ -3,6 +3,7 @@ package com.yashasvm.holen
 import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +22,16 @@ class YtDlpDiagnosticTailTest {
         assertFalse(diagnostics.contains(PROGRESS_MARKER))
         assertTrue(diagnostics.contains("cookies are no longer valid"))
         assertTrue(diagnostics.contains("confirm you're not a bot"))
+    }
+
+    @Test
+    fun `download process ids are unique for every wrapper attempt`() {
+        val first = nextYtDlpDownloadProcessId()
+        val second = nextYtDlpDownloadProcessId()
+
+        assertTrue(first.startsWith("holen-download-"))
+        assertTrue(second.startsWith("holen-download-"))
+        assertNotEquals(first, second)
     }
 
     @Test
