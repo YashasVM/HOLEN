@@ -3,12 +3,16 @@
 ## bot/hourly-2026-10-13 — Android maintenance
 
 - Baseline: `main` `c6a27e9`; working branch: `bot/hourly-2026-10-13` (never commit to main).
+- Completed (2/5): removed the unsafe HTTP 416 completed-resume shortcut. Even with matching remote length, staged bytes are not verified; a 416 now restarts a fresh transfer. Correct 206 resumes still append.
+- Regression coverage: 416 with matching length or missing Content-Range restarts, mismatched 206 restarts, and correct 206 resumes are retained. Ten standalone Kotlin resume-policy assertions passed locally; full Android Gradle/CI and device tests pending.
+- Review archive: verified medium-severity BUG-001 in gpt-review commit 6137dca was still present; this change addresses the length-only 416 publication path.
+- PR creation remains blocked by the GitHub connector safety checks; generic CI for the prior commit passed. Android CI runs on pull requests, not pushes to this maintenance branch.
 - Completed (1/5): preserve literal `+` in RFC 5987 `filename*` values, accept optional language tags, and cover malformed percent escapes falling back to `filename`.
 - Validation: six standalone Kotlin parser assertions passed locally; full Android Gradle/CI and device verification pending.
 - Review: no open PR/issues at initial inspection; old gpt-review findings are archived and must be rechecked against current code before reuse.
 - Pending/manual: verify downloaded filenames with `+` and international characters on Android; inspect CI and reviewer feedback.
 - Blockers: local Android SDK/Gradle dependencies unavailable in this runtime; no physical-device test.
-- Next: address any confirmed CI/review issue, otherwise select one additional scoped Android download improvement.
+- Next: retry opening the weekend-review PR; validate full Android CI when possible, then address confirmed review findings before another scoped improvement.
 
 
 ## Branch baseline

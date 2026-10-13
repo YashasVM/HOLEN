@@ -10,14 +10,12 @@ class DirectDownloaderResponseTest {
     fun freshDownloadsRejectUnsolicitedPartialResponses() {
         assertTrue(
             DirectDownloader.isAcceptedTransferResponse(
-                completedResume = false,
                 attemptedResume = false,
                 responseCode = HttpURLConnection.HTTP_OK,
             ),
         )
         assertFalse(
             DirectDownloader.isAcceptedTransferResponse(
-                completedResume = false,
                 attemptedResume = false,
                 responseCode = HttpURLConnection.HTTP_PARTIAL,
             ),
@@ -25,19 +23,57 @@ class DirectDownloaderResponseTest {
     }
 
     @Test
-    fun validResumeResponsesRemainAccepted() {
+    fun validPartialResumeIsStillAccepted() {
         assertTrue(
             DirectDownloader.isAcceptedTransferResponse(
-                completedResume = false,
                 attemptedResume = true,
                 responseCode = HttpURLConnection.HTTP_PARTIAL,
             ),
         )
+        assertFalse(
+            DirectDownloader.shouldRestartAfterResume(
+                existingBytes = 512,
+                attemptedResume = true,
+                responseCode = HttpURLConnection.HTTP_PARTIAL,
+                contentRange = "bytes 512-1023/1024",
+            ),
+        )
+    }
+
+    @Test
+    fun completed416RangeNeverPublishesUnverifiedStagingBytes() {
         assertTrue(
-            DirectDownloader.isAcceptedTransferResponse(
-                completedResume = true,
+            DirectDownloader.shouldRestartAfterResume(
+                existingBytes = 512,
                 attemptedResume = true,
                 responseCode = 416,
+                contentRange = "bytes */512",
+            ),
+        )
+        assertFalse(
+            DirectDownloader.isAcceptedTransferResponse(
+                attemptedResume = true,
+                responseCode = 416,
+            ),
+        )
+        assertTrue(
+            DirectDownloader.shouldRestartAfterResume(
+                existingBytes = 512,
+                attemptedResume = true,
+                responseCode = 416,
+                contentRange = null,
+            ),
+        )
+    }
+
+    @Test
+    fun mismatchedPartialRangeAlsoRestarts() {
+        assertTrue(
+            DirectDownloader.shouldRestartAfterResume(
+                existingBytes = 512,
+                attemptedResume = true,
+                responseCode = HttpURLConnection.HTTP_PARTIAL,
+                contentRange = "bytes 0-511/1024",
             ),
         )
     }
