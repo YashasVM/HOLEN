@@ -1,5 +1,16 @@
 # Android Agent Progress
 
+## bot/hourly-2026-10-13 — Android maintenance
+
+- Baseline: `main` `c6a27e9`; working branch: `bot/hourly-2026-10-13` (never commit to main).
+- Completed (1/5): preserve literal `+` in RFC 5987 `filename*` values, accept optional language tags, and cover malformed percent escapes falling back to `filename`.
+- Validation: six standalone Kotlin parser assertions passed locally; full Android Gradle/CI and device verification pending.
+- Review: no open PR/issues at initial inspection; old gpt-review findings are archived and must be rechecked against current code before reuse.
+- Pending/manual: verify downloaded filenames with `+` and international characters on Android; inspect CI and reviewer feedback.
+- Blockers: local Android SDK/Gradle dependencies unavailable in this runtime; no physical-device test.
+- Next: address any confirmed CI/review issue, otherwise select one additional scoped Android download improvement.
+
+
 ## Branch baseline
 
 - Autonomous work stays on `agent-dev`; `main` remains user-controlled and untouched.
