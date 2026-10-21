@@ -138,6 +138,24 @@ class CoreLogicTest {
             "report.pdf",
             DirectDownloader.fileNameFromDisposition("attachment; filename=\"report.pdf\""),
         )
+        assertEquals(
+            "report+v2+notes.pdf",
+            DirectDownloader.fileNameFromDisposition(
+                "attachment; filename*=UTF-8''report+v2%2Bnotes.pdf",
+            ),
+        )
+        assertEquals(
+            "café+notes.pdf",
+            DirectDownloader.fileNameFromDisposition(
+                "attachment; filename*=UTF-8'en'caf%C3%A9+notes.pdf",
+            ),
+        )
+        assertEquals(
+            "fallback.pdf",
+            DirectDownloader.fileNameFromDisposition(
+                "attachment; filename*=UTF-8''bad%ZZ.pdf; filename=\"fallback.pdf\"",
+            ),
+        )
         assertNull(DirectDownloader.fileNameFromDisposition(null))
     }
 

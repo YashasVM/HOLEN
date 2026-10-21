@@ -19,7 +19,11 @@ import okhttp3.Call
 import okhttp3.Request
 import okhttp3.Response
 
-class DirectDownloader {
+class DirectDownloader private constructor(
+    private val responseOpener: ((String, Long?, ResumeState?) -> Response)?,
+) {
+    constructor() : this(null)
+
     private val cancelled = AtomicBoolean(false)
 
     @Volatile
@@ -47,22 +51,20 @@ class DirectDownloader {
             existing = 0
         }
 
-        var connection = open(
+        var connection = openResponse(
             job.sourceUrl,
             existing.takeIf { it > 0 },
             resumeState,
         )
         var attemptedResume = connection.request.header("Range") != null
-        var completedResume = existing > 0 && attemptedResume && isCompletedRangeResponse(
-            existing,
-            connection.code,
-            connection.header("Content-Range"),
-        )
-        if (existing > 0 && !completedResume && !(attemptedResume && shouldAppend(
+        // A 416 + matching length does not prove the staged bytes are current or intact.
+        // Restart instead of publishing the old .part without reading a response body.
+        if (shouldRestartAfterResume(
                 existing,
+                attemptedResume,
                 connection.code,
                 connection.header("Content-Range"),
-            ))
+            )
         ) {
             if (connection.code == HttpURLConnection.HTTP_OK) {
                 // A failed If-Range condition, or a redirect to a different resource, returns
@@ -75,18 +77,17 @@ class DirectDownloader {
                 part.delete()
                 existing = 0
                 resumeState = null
-                connection = open(job.sourceUrl, null, null)
+                connection = openResponse(job.sourceUrl, null, null)
                 attemptedResume = false
             }
-            completedResume = false
         }
 
         try {
             val responseCode = connection.code
-            if (!isAcceptedTransferResponse(completedResume, attemptedResume, responseCode)) {
+            if (!isAcceptedTransferResponse(attemptedResume, responseCode)) {
                 throw DirectHttpException(responseCode, connection.header("Retry-After"))
             }
-            val total = if (completedResume) existing else totalLength(connection, existing)
+            val total = totalLength(connection, existing)
             val disposition = connection.header("Content-Disposition")
             val suggested = fileNameFromDisposition(disposition)
                 ?: URI(job.sourceUrl).path.substringAfterLast('/').ifBlank { job.title }
@@ -96,56 +97,54 @@ class DirectDownloader {
             var lastBytes = existing
             var lastWrite = SystemClock.elapsedRealtime()
 
-            if (!completedResume) {
-                val state = createResumeState(
-                    connection.request.url.toString(),
-                    connection.header("ETag"),
-                    connection.header("Last-Modified"),
-                    connection.header("Date"),
-                )
-                if (state != null) {
-                    try {
-                        validatorFile.writeText(encodeResumeState(state))
-                    } catch (error: IOException) {
-                        throw StorageException("Could not save download resume state.", error)
-                    }
-                } else {
-                    clearResumeState(validatorFile)
+            val state = createResumeState(
+                connection.request.url.toString(),
+                connection.header("ETag"),
+                connection.header("Last-Modified"),
+                connection.header("Date"),
+            )
+            if (state != null) {
+                try {
+                    validatorFile.writeText(encodeResumeState(state))
+                } catch (error: IOException) {
+                    throw StorageException("Could not save download resume state.", error)
                 }
-                requireNotNull(connection.body).byteStream().use { input ->
-                    StorageFileOutput.open(part, existing > 0).use { output ->
-                        val buffer = ByteArray(COPY_BUFFER_SIZE)
-                        while (true) {
-                            currentCoroutineContext().ensureActive()
-                            if (cancelled.get() || isCancelled()) {
-                                throw CancellationException("Download cancelled")
-                            }
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            val now = SystemClock.elapsedRealtime()
-                            if (now - lastWrite >= 1_000) {
-                                val speed = ((downloaded - lastBytes) * 1_000L / (now - lastWrite))
-                                    .coerceAtLeast(0)
-                                val remaining = total?.minus(downloaded)?.coerceAtLeast(0)
-                                onProgress(
-                                    TransferProgress(
-                                        percent = total?.let {
-                                            (downloaded * 100 / it.coerceAtLeast(1)).toInt()
-                                        } ?: 0,
-                                        bytesDownloaded = downloaded,
-                                        totalBytes = total,
-                                        speedBytesPerSecond = speed,
-                                        etaSeconds = remaining?.let { if (speed > 0) it / speed else null },
-                                    ),
-                                )
-                                lastWrite = now
-                                lastBytes = downloaded
-                            }
+            } else {
+                clearResumeState(validatorFile)
+            }
+            requireNotNull(connection.body).byteStream().use { input ->
+                StorageFileOutput.open(part, existing > 0).use { output ->
+                    val buffer = ByteArray(COPY_BUFFER_SIZE)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        if (cancelled.get() || isCancelled()) {
+                            throw CancellationException("Download cancelled")
                         }
-                        output.sync()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        downloaded += read
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastWrite >= 1_000) {
+                            val speed = ((downloaded - lastBytes) * 1_000L / (now - lastWrite))
+                                .coerceAtLeast(0)
+                            val remaining = total?.minus(downloaded)?.coerceAtLeast(0)
+                            onProgress(
+                                TransferProgress(
+                                    percent = total?.let {
+                                        (downloaded * 100 / it.coerceAtLeast(1)).toInt()
+                                    } ?: 0,
+                                    bytesDownloaded = downloaded,
+                                    totalBytes = total,
+                                    speedBytesPerSecond = speed,
+                                    etaSeconds = remaining?.let { if (speed > 0) it / speed else null },
+                                ),
+                            )
+                            lastWrite = now
+                            lastBytes = downloaded
+                        }
                     }
+                    output.sync()
                 }
             }
             if (total != null && downloaded != total) {
@@ -169,6 +168,9 @@ class DirectDownloader {
         cancelled.set(true)
         activeCall?.cancel()
     }
+
+    private fun openResponse(rawUrl: String, rangeStart: Long?, resumeState: ResumeState?): Response =
+        responseOpener?.invoke(rawUrl, rangeStart, resumeState) ?: open(rawUrl, rangeStart, resumeState)
 
     private fun open(rawUrl: String, rangeStart: Long?, resumeState: ResumeState?): Response {
         var endpoint = resolvePublicHttpsEndpoint(rawUrl)
@@ -209,6 +211,12 @@ class DirectDownloader {
     }
 
     companion object {
+        // Internal response seam for deterministic file/body orchestration tests.
+        // The public constructor always uses the validated, DNS-pinned HTTPS path.
+        internal fun forResponseTest(
+            opener: (String, Long?, ResumeState?) -> Response,
+        ): DirectDownloader = DirectDownloader(opener)
+
         internal data class ResumeState(val resourceUrl: String, val validator: String)
 
         // Larger reads reduce Java/Kotlin stream overhead on fast mobile connections while
@@ -237,12 +245,18 @@ class DirectDownloader {
         }
 
         internal fun isAcceptedTransferResponse(
-            completedResume: Boolean,
             attemptedResume: Boolean,
             responseCode: Int,
-        ): Boolean = completedResume ||
-            responseCode == HttpURLConnection.HTTP_OK ||
+        ): Boolean = responseCode == HttpURLConnection.HTTP_OK ||
             (attemptedResume && responseCode == HttpURLConnection.HTTP_PARTIAL)
+
+        internal fun shouldRestartAfterResume(
+            existingBytes: Long,
+            attemptedResume: Boolean,
+            responseCode: Int,
+            contentRange: String?,
+        ): Boolean = existingBytes > 0 &&
+            !(attemptedResume && shouldAppend(existingBytes, responseCode, contentRange))
 
         fun shouldAppend(existingBytes: Long, responseCode: Int): Boolean =
             existingBytes > 0 && responseCode == HttpURLConnection.HTTP_PARTIAL
@@ -329,20 +343,6 @@ class DirectDownloader {
             createPersistedResumeState(lines[0], lines[1])
         }.getOrNull()
 
-        internal fun isCompletedRangeResponse(
-            existingBytes: Long,
-            responseCode: Int,
-            contentRange: String?,
-        ): Boolean {
-            if (existingBytes <= 0 || responseCode != 416) return false
-            val total = Regex("""^\s*bytes\s+\*/(\d+)\s*$""", RegexOption.IGNORE_CASE)
-                .matchEntire(contentRange.orEmpty())
-                ?.groupValues
-                ?.get(1)
-                ?.toLongOrNull()
-            return total == existingBytes
-        }
-
         fun totalLength(response: Response, existingBytes: Long): Long? {
             val rangeTotal = response.header("Content-Range")
                 ?.substringAfterLast('/', "")
@@ -354,10 +354,11 @@ class DirectDownloader {
 
         fun fileNameFromDisposition(header: String?): String? {
             if (header.isNullOrBlank()) return null
-            Regex("""filename\*=UTF-8''([^;]+)""", RegexOption.IGNORE_CASE)
+            Regex("""filename\*=UTF-8'[^\';]*'([^;]+)""", RegexOption.IGNORE_CASE)
                 .find(header)?.groupValues?.get(1)?.let { encoded ->
                     runCatching {
-                        URLDecoder.decode(encoded, StandardCharsets.UTF_8.name())
+                        // RFC 5987 percent-encoding preserves literal plus signs (unlike form data).
+                        URLDecoder.decode(encoded.replace("+", "%2B"), StandardCharsets.UTF_8.name())
                     }.getOrNull()?.let { return it }
                 }
             return Regex("""filename="?([^";]+)"?""", RegexOption.IGNORE_CASE)
