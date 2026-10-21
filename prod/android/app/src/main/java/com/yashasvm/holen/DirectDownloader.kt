@@ -19,7 +19,11 @@ import okhttp3.Call
 import okhttp3.Request
 import okhttp3.Response
 
-class DirectDownloader {
+class DirectDownloader private constructor(
+    private val responseOpener: ((String, Long?, ResumeState?) -> Response)?,
+) {
+    constructor() : this(null)
+
     private val cancelled = AtomicBoolean(false)
 
     @Volatile
@@ -47,7 +51,7 @@ class DirectDownloader {
             existing = 0
         }
 
-        var connection = open(
+        var connection = openResponse(
             job.sourceUrl,
             existing.takeIf { it > 0 },
             resumeState,
@@ -73,7 +77,7 @@ class DirectDownloader {
                 part.delete()
                 existing = 0
                 resumeState = null
-                connection = open(job.sourceUrl, null, null)
+                connection = openResponse(job.sourceUrl, null, null)
                 attemptedResume = false
             }
         }
@@ -165,6 +169,9 @@ class DirectDownloader {
         activeCall?.cancel()
     }
 
+    private fun openResponse(rawUrl: String, rangeStart: Long?, resumeState: ResumeState?): Response =
+        responseOpener?.invoke(rawUrl, rangeStart, resumeState) ?: open(rawUrl, rangeStart, resumeState)
+
     private fun open(rawUrl: String, rangeStart: Long?, resumeState: ResumeState?): Response {
         var endpoint = resolvePublicHttpsEndpoint(rawUrl)
         repeat(MAX_REDIRECTS + 1) { redirect ->
@@ -204,6 +211,12 @@ class DirectDownloader {
     }
 
     companion object {
+        // Internal response seam for deterministic file/body orchestration tests.
+        // The public constructor always uses the validated, DNS-pinned HTTPS path.
+        internal fun forResponseTest(
+            opener: (String, Long?, ResumeState?) -> Response,
+        ): DirectDownloader = DirectDownloader(opener)
+
         internal data class ResumeState(val resourceUrl: String, val validator: String)
 
         // Larger reads reduce Java/Kotlin stream overhead on fast mobile connections while
